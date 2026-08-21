@@ -1,0 +1,65 @@
+{
+  "name": "work-buddy",
+  "version": "0.6.1",
+  "description": "A friendly always-on-top time tracker for desktop",
+  "main": "./out/main/index.js",
+  "author": "Work Buddy",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "preview": "electron-vite preview",
+    "generate:icons": "node scripts/generate-icon.mjs",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb",
+    "postinstall": "node -e \"console.log('Dependencies ready')\""
+  },
+  "dependencies": {
+    "lucide-react": "1.33.0",
+    "motion": "13.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "22.19.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "com.workbuddy.app",
+    "productName": "Work Buddy",
+    "electronDownload": {
+      "cache": ".electron-cache"
+    },
+    "directories": {
+      "output": "release-v0.6.1"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    }
+  }
+}
