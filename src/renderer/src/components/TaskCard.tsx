@@ -26,7 +26,12 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96 }}
       className={`task-card ${isRunning ? 'task-card--running' : ''}`}
-      style={{ borderColor: project ? `${project.color}66` : 'rgba(184, 233, 134, .22)' }}
+      style={{
+        borderColor: project ? `${project.color}8c` : 'rgba(184, 233, 134, .22)',
+        '--project-color': project?.color ?? '#b8e986',
+        '--project-tint': project ? `${project.color}33` : 'rgba(184, 233, 134, .09)',
+        '--project-glow': project ? `${project.color}2e` : 'rgba(184, 233, 134, .08)'
+      } as React.CSSProperties}
       onDoubleClick={onEdit}
       onKeyDown={(event) => { if (event.key === 'Enter') onEdit() }}
       tabIndex={0}

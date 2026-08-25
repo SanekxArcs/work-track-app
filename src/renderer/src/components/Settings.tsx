@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { BellRing, BriefcaseBusiness, CalendarDays, Check, Coffee, Dumbbell, FolderOpen, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Volume2, X } from 'lucide-react'
-import type { AppSettings, AppSnapshot, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
+import { Archive, BellRing, BriefcaseBusiness, CalendarDays, Check, Cloud, Coffee, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
+import type { AppSettings, AppSnapshot, BackupPreview, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
 import { CustomSelect } from './CustomSelect'
@@ -42,6 +42,12 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [editingProjectName, setEditingProjectName] = useState('')
   const [editingProjectColor, setEditingProjectColor] = useState('')
   const [projectBusy, setProjectBusy] = useState(false)
+  const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupStatus, setBackupStatus] = useState('')
+  const [sanityBusy, setSanityBusy] = useState(false)
+  const [sanityStatus, setSanityStatus] = useState('')
+  const [appVersion, setAppVersion] = useState('')
   const lastSynced = useRef(JSON.stringify(snapshot.settings))
   const saveRevision = useRef(0)
 
@@ -51,6 +57,10 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     lastSynced.current = incoming
     setSettings(snapshot.settings)
   }, [snapshot.settings])
+
+  useEffect(() => {
+    void window.workBuddy.getAppVersion().then(setAppVersion).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     const serialized = JSON.stringify(settings)
@@ -212,6 +222,79 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     }
   }
 
+  const exportBackup = async (): Promise<void> => {
+    setBackupBusy(true)
+    setBackupStatus('')
+    try {
+      const result = await window.workBuddy.exportBackup()
+      if (result) setBackupStatus(t('backupSaved'))
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  const chooseBackup = async (): Promise<void> => {
+    setBackupBusy(true)
+    setBackupStatus('')
+    try {
+      const preview = await window.workBuddy.chooseBackupImport()
+      setBackupPreview(preview)
+      if (preview) setBackupStatus(t('backupReady'))
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  const importBackup = async (mode: 'merge' | 'replace'): Promise<void> => {
+    if (mode === 'replace' && !window.confirm(t('backupReplaceConfirm'))) return
+    setBackupBusy(true)
+    try {
+      const result = await window.workBuddy.applyBackupImport(mode)
+      onSnapshot(result)
+      setSettings(result.settings)
+      setBackupPreview(null)
+      setBackupStatus(t('backupImported'))
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  const syncSanity = async (): Promise<void> => {
+    setSanityBusy(true)
+    setSanityStatus('')
+    try {
+      const result = await window.workBuddy.syncSanity()
+      onSnapshot(await window.workBuddy.getSnapshot())
+      setSanityStatus(result.merged ? t('sanityMerged') : t('sanityUploaded'))
+    } catch (error) {
+      setSanityStatus(error instanceof Error ? error.message : t('sanityError'))
+    } finally {
+      setSanityBusy(false)
+    }
+  }
+
+  const loadSanityEnvironment = async (): Promise<void> => {
+    setSanityBusy(true)
+    setSanityStatus('')
+    try {
+      const result = await window.workBuddy.loadSanityEnvironment()
+      if (!result) return
+      onSnapshot(result)
+      setSettings(result.settings)
+      setSanityStatus(t('sanityConfigured'))
+    } catch (error) {
+      setSanityStatus(error instanceof Error ? error.message : t('sanityError'))
+    } finally {
+      setSanityBusy(false)
+    }
+  }
+
   return (
     <motion.div className="page-stack settings-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
       <section className="settings-section">
@@ -321,6 +404,36 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <p className="security-note">{t('googleSecurity')}</p>
       </section>
 
+      <section className="settings-section settings-section--backup">
+        <div className="settings-title"><Archive size={17} /><div><h3>{t('backup')}</h3><p>{t('backupBody')}</p></div></div>
+        <div className="sound-actions">
+          <button className="secondary-button" disabled={backupBusy} onClick={exportBackup}><Download size={14} />{t('backupExport')}</button>
+          <button className="secondary-button" disabled={backupBusy} onClick={chooseBackup}><Upload size={14} />{t('backupImport')}</button>
+        </div>
+        {backupPreview && <div className="backup-preview">
+          <p>{t('backupContents')}</p>
+          <strong>{backupPreview.projectCount} {t('backupProjects')} · {backupPreview.plannedTaskCount} {t('backupPlanned')} · {backupPreview.taskCount} {t('backupTasks')} · {backupPreview.intervalCount} {t('backupIntervals')}</strong>
+          <small>{backupPreview.workdayCount} {t('backupDays')} · {backupPreview.restCount} {t('backupRests')}</small>
+          <div className="sound-actions">
+            <button className="primary-button" disabled={backupBusy} onClick={() => void importBackup('merge')}>{t('backupMerge')}</button>
+            <button className="secondary-button" disabled={backupBusy} onClick={() => void importBackup('replace')}>{t('backupReplace')}</button>
+          </div>
+        </div>}
+        {backupStatus && <p className="settings-status">{backupStatus}</p>}
+        <p className="security-note">{t('backupSecurity')}</p>
+      </section>
+
+      <section className="settings-section settings-section--sanity">
+        <div className="settings-title"><Cloud size={17} /><div><h3>{t('sanity')}</h3><p>{t('sanityBody')}</p></div></div>
+        {settings.sanity.hasToken && settings.sanity.projectId && settings.sanity.dataset ? <>
+          <div className="google-connected"><span /><div><strong>{t('sanityConnected')}</strong><small>{settings.sanity.projectId} / {settings.sanity.dataset}</small></div></div>
+          <button className="primary-button wide" disabled={sanityBusy} onClick={syncSanity}><RefreshCw size={14} className={sanityBusy ? 'spin' : ''} />{sanityBusy ? t('sanitySyncing') : t('sanitySync')}</button>
+          {settings.sanity.lastSyncedAt && <p className="security-note">{t('sanityLastSync')} {new Intl.DateTimeFormat(settings.locale === 'uk' ? 'uk-UA' : 'en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(settings.sanity.lastSyncedAt)}</p>}
+        </> : <><p className="security-note">{t('sanityMissing')}</p><button className="secondary-button wide" disabled={sanityBusy} onClick={loadSanityEnvironment}><FolderOpen size={14} />{t('sanityLoadEnvironment')}</button></>}
+        {sanityStatus && <p className="settings-status">{sanityStatus}</p>}
+        <p className="security-note">{t('sanitySecurity')}</p>
+      </section>
+
       <section className="settings-section">
         <div className="settings-title"><Dumbbell size={17} /><div><h3>{t('wellness')}</h3><p>{t('wellnessBody')}</p></div><Toggle checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} /></div>
         <div className="wellness-list">
@@ -338,6 +451,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       <section className="settings-section compact-settings">
         <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
       </section>
+
+      <section className="app-version"><Info size={14} /><span>{t('appVersion')}</span><strong>{appVersion ? `v${appVersion}` : '…'}</strong></section>
 
       <div className={`autosave-indicator autosave-indicator--${saveState}`}><span />{saveState === 'saving' ? t('saving') : saveState === 'error' ? t('saveFailed') : t('autosaved')}</div>
     </motion.div>

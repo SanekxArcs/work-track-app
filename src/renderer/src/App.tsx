@@ -24,6 +24,10 @@ function isWorkdayReadyToEnd(startedAt: number | undefined, endTime: string, now
   return now >= scheduledEnd.getTime()
 }
 
+function taskTouchesWorkday(task: Task, workdayStartedAt: number, now: number): boolean {
+  return task.intervals.some((interval) => interval.startedAt <= now && (interval.endedAt ?? now) >= workdayStartedAt)
+}
+
 export default function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [now, setNow] = useState(Date.now())
@@ -35,7 +39,12 @@ export default function App(): React.JSX.Element {
   const [promptReason, setPromptReason] = useState<'endday' | undefined>()
   const [reviewQueue, setReviewQueue] = useState<string[]>([])
   const [showPlannedTasks, setShowPlannedTasks] = useState(false)
+  const [compactHovered, setCompactHovered] = useState(false)
+  const [compactAnchor, setCompactAnchor] = useState<'top' | 'bottom'>('top')
   const focusRef = useRef<HTMLDivElement>(null)
+  const compactOpenTimer = useRef<number | undefined>(undefined)
+  const compactCloseTimer = useRef<number | undefined>(undefined)
+  const compactTasksOpen = useRef(false)
 
   const reload = async (): Promise<void> => setSnapshot(await window.workBuddy.getSnapshot())
 
@@ -57,6 +66,11 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
+  useEffect(() => () => {
+    if (compactOpenTimer.current) window.clearTimeout(compactOpenTimer.current)
+    if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
+  }, [])
+
   useEffect(() => {
     if (!snapshot) return
     document.documentElement.lang = snapshot.settings.locale
@@ -66,18 +80,27 @@ export default function App(): React.JSX.Element {
   }, [snapshot?.settings])
 
   const t = useMemo(() => translator(snapshot?.settings.locale ?? 'uk'), [snapshot?.settings.locale])
-  const liveTasks = snapshot?.tasks.filter((task) => task.status === 'running') ?? []
-  const focusTasks = snapshot?.tasks.filter((task) => task.status !== 'stopped') ?? []
+  const openWorkdayStartedAt = snapshot?.workday?.endedAt === null ? snapshot.workday.startedAt : undefined
+  const workdayTasks = snapshot && openWorkdayStartedAt
+    ? snapshot.tasks.filter((task) => taskTouchesWorkday(task, openWorkdayStartedAt, now))
+    : []
+  const liveTasks = workdayTasks.filter((task) => task.status === 'running')
+  const focusTasks = workdayTasks.filter((task) => task.status !== 'stopped')
   const liveTotal = liveTasks.reduce((total, task) => total + taskDuration(task, now), 0)
-  const workedMs = snapshot ? unionDuration(dayIntervals(snapshot.tasks, now), now) : 0
+  const workedMs = unionDuration(dayIntervals(workdayTasks, now), now)
   const activeRest = snapshot?.rests.find((rest) => rest.status !== 'completed')
   const restRunning = activeRest?.status === 'running'
-  const compactRows = Math.max(1, focusTasks.length) + (activeRest ? 1 : 0)
+  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : 1
+  const compactPrimaryTask = activeRest ? null : liveTasks[0] ?? focusTasks[0] ?? null
+  const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
   const showFocusEndDay = snapshot?.workday?.endedAt === null && isWorkdayReadyToEnd(snapshot.workday.startedAt, snapshot.settings.workday.endTime, now)
 
   useEffect(() => {
-    if (compact) window.workBuddy.setWindowMode('compact', compactRows)
-  }, [compact, focusTasks.length, activeRest?.id])
+    if (!compact) return
+    void window.workBuddy.setWindowMode('compact', compactRows).then((anchor) => {
+      if (anchor) setCompactAnchor(anchor)
+    })
+  }, [compact, compactRows])
 
   useLayoutEffect(() => {
     if (compact) return
@@ -127,11 +150,40 @@ export default function App(): React.JSX.Element {
 
   const toggleCompact = async (): Promise<void> => {
     const next = !compact
+    if (!next) {
+      if (compactOpenTimer.current) window.clearTimeout(compactOpenTimer.current)
+      if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
+      compactTasksOpen.current = false
+      setCompactHovered(false)
+    }
     setCompact(next)
     await window.workBuddy.setWindowMode(next ? 'compact' : 'expanded', compactRows)
   }
 
   const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => setSnapshot(await promise)
+
+  const revealCompactTasks = (immediate = false): void => {
+    if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
+    if (compactTasksOpen.current) return
+    if (compactOpenTimer.current) window.clearTimeout(compactOpenTimer.current)
+    if (immediate) {
+      compactTasksOpen.current = true
+      setCompactHovered(true)
+    } else compactOpenTimer.current = window.setTimeout(() => {
+      compactTasksOpen.current = true
+      setCompactHovered(true)
+    }, 2000)
+  }
+
+  const concealCompactTasks = (): void => {
+    if (compactOpenTimer.current) window.clearTimeout(compactOpenTimer.current)
+    if (!compactTasksOpen.current) return
+    if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
+    compactCloseTimer.current = window.setTimeout(() => {
+      compactTasksOpen.current = false
+      setCompactHovered(false)
+    }, 2000)
+  }
 
   const openUnnamedReview = (result: AppSnapshot, ids: string[], reason: 'endday'): void => {
     const queue = ids.filter((id) => !result.tasks.find((task) => task.id === id)?.title.trim())
@@ -199,7 +251,20 @@ export default function App(): React.JSX.Element {
 
       <AnimatePresence mode="wait">
         {compact ? (
-          <motion.section key="compact" className="compact-view" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.section key="compact" className={`compact-view compact-view--${compactAnchor}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseEnter={() => revealCompactTasks()} onMouseLeave={concealCompactTasks}>
+            {compactAnchor === 'bottom' && compactExtraTasks.map((task) => (
+              <div className="compact-task-row compact-task-row--extra" key={task.id}>
+                <div className="compact-task-info drag-region">
+                  <span className={`status-dot ${task.status === 'running' ? 'status-dot--live' : ''}`} />
+                  <div><strong>{task.title || 'Untitled flow'}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
+                </div>
+                <div className="compact-task-actions no-drag">
+                  {task.status === 'running'
+                    ? <button onClick={() => mutate(window.workBuddy.pauseTask(task.id))} title={t('pause')}><Pause size={16} fill="currentColor" /></button>
+                    : <button className="play" disabled={restRunning} onClick={() => mutate(window.workBuddy.resumeTask(task.id, 'parallel'))} title={t('resume')}><Play size={16} fill="currentColor" /></button>}
+                </div>
+              </div>
+            ))}
             {activeRest && (
               <div className={`compact-task-row compact-rest-row compact-rest-row--${activeRest.type}`}>
                 <div className="compact-task-info drag-region">
@@ -212,27 +277,43 @@ export default function App(): React.JSX.Element {
                     : <button className="play" onClick={() => mutate(window.workBuddy.resumeRest(activeRest.id))} title={t('continueRest')}><Play size={16} fill="currentColor" /></button>}
                   <button className="stop" onClick={() => mutate(window.workBuddy.completeRest(activeRest.id))} title={t('finishRest')}><Square size={13} fill="currentColor" /></button>
                 </div>
+                <div className="compact-window-actions no-drag">
+                  <button disabled={restRunning} onClick={() => startInstant('parallel')} title={t('addParallel')}><Plus size={17} /></button>
+                  <button onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={17} /></button>
+                  <button onMouseEnter={() => revealCompactTasks(true)} onClick={toggleCompact} title={t('expand')}><ChevronDown size={17} /></button>
+                </div>
               </div>
             )}
-            {(focusTasks.length ? focusTasks : [null]).map((task, index) => (
-              <div className="compact-task-row" key={task?.id ?? 'empty'}>
+            {!activeRest && <div className="compact-task-row">
                 <div className="compact-task-info drag-region">
-                  <span className={`status-dot ${task?.status === 'running' ? 'status-dot--live' : ''}`} />
+                  <span className={`status-dot ${compactPrimaryTask?.status === 'running' ? 'status-dot--live' : ''}`} />
                   <div>
-                    <strong>{task ? task.title || 'Untitled flow' : t('noTimers')}</strong>
-                    <small>{task ? formatDuration(taskDuration(task, now)) : t('noTimersBody')}</small>
+                    <strong>{compactPrimaryTask ? compactPrimaryTask.title || 'Untitled flow' : t('noTimers')}</strong>
+                    <small>{compactPrimaryTask ? formatDuration(taskDuration(compactPrimaryTask, now)) : t('noTimersBody')}</small>
                   </div>
                 </div>
-                {task && <div className="compact-task-actions no-drag">
+                {compactPrimaryTask && <div className="compact-task-actions no-drag">
+                  {compactPrimaryTask.status === 'running'
+                    ? <button onClick={() => mutate(window.workBuddy.pauseTask(compactPrimaryTask.id))} title={t('pause')}><Pause size={16} fill="currentColor" /></button>
+                    : <button className="play" disabled={restRunning} onClick={() => mutate(window.workBuddy.resumeTask(compactPrimaryTask.id, 'parallel'))} title={t('resume')}><Play size={16} fill="currentColor" /></button>}
+                </div>}
+                <div className="compact-window-actions no-drag">
+                  <button disabled={restRunning} onClick={() => startInstant('parallel')} title={t('addParallel')}><Plus size={17} /></button>
+                  <button onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={17} /></button>
+                  <button onMouseEnter={() => revealCompactTasks(true)} onClick={toggleCompact} title={t('expand')}><ChevronDown size={17} /></button>
+                </div>
+              </div>}
+            {compactAnchor === 'top' && compactExtraTasks.map((task) => (
+              <div className="compact-task-row compact-task-row--extra" key={task.id}>
+                <div className="compact-task-info drag-region">
+                  <span className={`status-dot ${task.status === 'running' ? 'status-dot--live' : ''}`} />
+                  <div><strong>{task.title || 'Untitled flow'}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
+                </div>
+                <div className="compact-task-actions no-drag">
                   {task.status === 'running'
                     ? <button onClick={() => mutate(window.workBuddy.pauseTask(task.id))} title={t('pause')}><Pause size={16} fill="currentColor" /></button>
                     : <button className="play" disabled={restRunning} onClick={() => mutate(window.workBuddy.resumeTask(task.id, 'parallel'))} title={t('resume')}><Play size={16} fill="currentColor" /></button>}
-                </div>}
-                {index === 0 && <div className="compact-window-actions no-drag">
-                  <button disabled={restRunning} onClick={() => startInstant('parallel')} title={t('addParallel')}><Plus size={17} /></button>
-                  <button onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={17} /></button>
-                  <button onClick={toggleCompact} title={t('expand')}><ChevronDown size={17} /></button>
-                </div>}
+                </div>
               </div>
             ))}
           </motion.section>
@@ -314,6 +395,7 @@ export default function App(): React.JSX.Element {
                     onStartDay={() => mutate(window.workBuddy.startWorkday())}
                     onEndDay={endDay}
                     onEdit={openEdit}
+                    onSnapshot={setSnapshot}
                   />
                 )}
 

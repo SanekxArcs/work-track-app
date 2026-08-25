@@ -65,6 +65,7 @@ export interface RestSession {
   type: RestType
   status: RestStatus
   plannedMinutes: number
+  alarmMuted: boolean
   createdAt: number
   endedAt: number | null
   intervals: RestInterval[]
@@ -126,6 +127,13 @@ export interface AppSettings {
     hasConnection: boolean
     syncOnDayEnd: boolean
   }
+  sanity: {
+    projectId: string
+    dataset: string
+    apiVersion: string
+    hasToken: boolean
+    lastSyncedAt: number | null
+  }
 }
 
 export interface AppSnapshot {
@@ -168,6 +176,12 @@ export interface TaskUpdateInput {
   endedAt?: number
 }
 
+export interface TaskMergeInput {
+  targetId: string
+  sourceIds: string[]
+  date: string
+}
+
 export interface ProjectInput {
   name: string
   color: string
@@ -180,6 +194,13 @@ export interface ProjectUpdateInput {
 }
 
 export interface PlannedTaskInput {
+  title: string
+  projectId?: string | null
+  notes?: string
+}
+
+export interface PlannedTaskUpdateInput {
+  id: string
   title: string
   projectId?: string | null
   notes?: string
@@ -223,7 +244,38 @@ export interface GoogleSyncResult {
   calendarName: string
 }
 
+export interface SanitySyncResult {
+  merged: boolean
+  projectId: string
+  dataset: string
+  syncedAt: number
+}
+
+export type BackupImportMode = 'merge' | 'replace'
+
+export interface BackupData {
+  schemaVersion: 1
+  exportedAt: number
+  settings: Omit<AppSettings, 'ai' | 'googleCalendar' | 'sanity'>
+  projects: Project[]
+  plannedTasks: PlannedTask[]
+  tasks: Task[]
+  workdays: Workday[]
+  rests: RestSession[]
+}
+
+export interface BackupPreview {
+  exportedAt: number
+  projectCount: number
+  plannedTaskCount: number
+  taskCount: number
+  intervalCount: number
+  workdayCount: number
+  restCount: number
+}
+
 export interface WorkBuddyApi {
+  getAppVersion: () => Promise<string>
   getSnapshot: () => Promise<AppSnapshot>
   getHistory: (days?: number) => Promise<HistoryDay[]>
   getDaySnapshot: (date: string) => Promise<AppSnapshot>
@@ -241,9 +293,12 @@ export interface WorkBuddyApi {
   completeRest: (id: string) => Promise<AppSnapshot>
   skipRest: (type: RestType) => Promise<AppSnapshot>
   updateRestStart: (id: string, startedAt: number) => Promise<AppSnapshot>
+  setRestAlarmMuted: (id: string, muted: boolean) => Promise<AppSnapshot>
   updateTask: (input: TaskUpdateInput) => Promise<AppSnapshot>
+  mergeTasks: (input: TaskMergeInput) => Promise<AppSnapshot>
   deleteTask: (id: string) => Promise<AppSnapshot>
   createPlannedTask: (input: PlannedTaskInput) => Promise<AppSnapshot>
+  updatePlannedTask: (input: PlannedTaskUpdateInput) => Promise<AppSnapshot>
   deletePlannedTask: (id: string) => Promise<AppSnapshot>
   createProject: (input: ProjectInput) => Promise<AppSnapshot>
   updateProject: (input: ProjectUpdateInput) => Promise<AppSnapshot>
@@ -253,12 +308,18 @@ export interface WorkBuddyApi {
   disconnectGoogleCalendar: () => Promise<AppSnapshot>
   syncGoogleCalendar: () => Promise<GoogleSyncResult>
   openGoogleCalendarSetup: () => Promise<void>
+  syncSanity: () => Promise<SanitySyncResult>
+  loadSanityEnvironment: () => Promise<AppSnapshot | null>
+  exportBackup: () => Promise<{ path: string } | null>
+  chooseBackupImport: () => Promise<BackupPreview | null>
+  applyBackupImport: (mode: BackupImportMode) => Promise<AppSnapshot>
+  exportDayCalendar: (date: string) => Promise<{ path: string } | null>
   suggestTask: (taskId: string) => Promise<AiTaskSuggestion>
   interpretVoiceTask: (input: VoiceInput, taskId?: string) => Promise<VoiceTaskDraft>
   transcribeVoice: (input: VoiceInput) => Promise<string>
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
-  setWindowMode: (mode: 'compact' | 'expanded', rows?: number) => Promise<void>
+  setWindowMode: (mode: 'compact' | 'expanded', rows?: number) => Promise<'top' | 'bottom' | null>
   setWindowHeight: (height: number) => Promise<void>
   setWindowView: (view: 'focus' | 'manual') => Promise<void>
   chooseNotificationSound: () => Promise<{ path: string; name: string; dataUrl: string } | null>

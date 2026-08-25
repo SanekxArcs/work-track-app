@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Clock3, Coffee, Dumbbell, GitBranch, Layers3, Sparkles } from 'lucide-react'
+import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Rows3, Sparkles } from 'lucide-react'
 import type { AppSnapshot, HistoryDay, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
@@ -13,6 +13,7 @@ interface DaySummaryProps {
   onStartDay: () => void
   onEndDay: () => void
   onEdit: (task: Task) => void
+  onSnapshot: (snapshot: AppSnapshot) => void
 }
 
 function getProject(projects: Project[], task: Task): Project | undefined {
@@ -38,11 +39,12 @@ function historyLabel(value: string, locale: 'uk' | 'en'): string {
   return new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(year, month - 1, day, 12))
 }
 
-function scheduleSegments(snapshot: AppSnapshot, reference: number): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
+function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs = 0): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
   const { workday, lunch } = snapshot.settings
   const start = atTime(reference, workday.startTime)
   let end = atTime(reference, workday.endTime)
   if (end <= start) end += 24 * 60 * 60 * 1000
+  end += extraLunchMs
   const actualRests = snapshot.rests.flatMap((rest) => rest.intervals.map((interval): ScheduleSegment => ({
     type: rest.type,
     start: Math.max(start, interval.startedAt),
@@ -56,14 +58,21 @@ function scheduleSegments(snapshot: AppSnapshot, reference: number): { start: nu
   }
 }
 
-export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: DaySummaryProps): React.JSX.Element {
+export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onSnapshot }: DaySummaryProps): React.JSX.Element {
   const [aiSummary, setAiSummary] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [calendarExporting, setCalendarExporting] = useState(false)
+  const [calendarExportStatus, setCalendarExportStatus] = useState('')
   const todayKey = localDateKey(now)
   const [selectedDate, setSelectedDate] = useState(todayKey)
   const [history, setHistory] = useState<HistoryDay[]>([])
   const [historicalSnapshot, setHistoricalSnapshot] = useState<AppSnapshot | null>(null)
+  const [mergeMode, setMergeMode] = useState(false)
+  const [mergeTaskIds, setMergeTaskIds] = useState<string[]>([])
+  const [mergeBusy, setMergeBusy] = useState(false)
+  const [mergeError, setMergeError] = useState('')
+  const [timelineLayout, setTimelineLayout] = useState<'lanes' | 'overlay'>('lanes')
   const isHistorical = selectedDate !== todayKey
 
   useEffect(() => { void window.workBuddy.getHistory().then(setHistory).catch(() => undefined) }, [snapshot])
@@ -93,19 +102,47 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
   const timelineStart = startedAt ?? reportNow
   const timelineEnd = Math.max(timelineStart + 60_000, endedAt ?? reportNow)
   const timelineSpan = timelineEnd - timelineStart
-  const schedule = scheduleSegments(reportSnapshot, reportNow)
-  const scheduleSpan = schedule.end - schedule.start
-  const scheduleProgress = Math.min(100, Math.max(0, ((reportNow - schedule.start) / scheduleSpan) * 100))
-  const scheduledMinutes = scheduleSpan / 60_000
-  const countedMinutes = scheduledMinutes - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : schedule.lunchMinutes)
-  const overtimeReference = reportSnapshot.workday?.endedAt ?? (hasOpenDay ? reportNow : undefined)
-  const overtime = startedAt && overtimeReference ? Math.max(0, overtimeReference - schedule.end) : 0
   const restTime = (type: 'break' | 'lunch'): number => reportSnapshot.rests
     .filter((rest) => rest.type === type)
     .flatMap((rest) => rest.intervals)
     .reduce((total, interval) => total + Math.max(0, Math.min(interval.endedAt ?? reportNow, todayEnd) - Math.max(interval.startedAt, todayStart.getTime())), 0)
   const breakTime = restTime('break')
   const lunchTime = restTime('lunch')
+  const baseSchedule = scheduleSegments(reportSnapshot, reportNow)
+  const lunchOverage = Math.max(0, lunchTime - reportSnapshot.settings.lunch.durationMinutes * 60_000)
+  const schedule = scheduleSegments(reportSnapshot, reportNow, lunchOverage)
+  const scheduleSpan = schedule.end - schedule.start
+  const scheduleProgress = Math.min(100, Math.max(0, ((reportNow - schedule.start) / scheduleSpan) * 100))
+  const scheduledMinutes = scheduleSpan / 60_000
+  const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
+  const overtimeReference = reportSnapshot.workday?.endedAt ?? (hasOpenDay ? reportNow : undefined)
+  const overtime = startedAt && overtimeReference ? Math.max(0, overtimeReference - schedule.end) : 0
+  const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
+
+  const toggleMergeTask = (id: string): void => {
+    setMergeTaskIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
+  }
+
+  const leaveMergeMode = (): void => {
+    setMergeMode(false)
+    setMergeTaskIds([])
+    setMergeError('')
+  }
+
+  const mergeTasks = async (): Promise<void> => {
+    const [targetId, ...sourceIds] = mergeTaskIds
+    if (!targetId || !sourceIds.length) return
+    setMergeBusy(true)
+    setMergeError('')
+    try {
+      onSnapshot(await window.workBuddy.mergeTasks({ targetId, sourceIds, date: selectedDate }))
+      leaveMergeMode()
+    } catch (error) {
+      setMergeError(error instanceof Error ? error.message : t('mergeError'))
+    } finally {
+      setMergeBusy(false)
+    }
+  }
 
   const generateSummary = async (): Promise<void> => {
     setAiBusy(true)
@@ -116,6 +153,19 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
       setAiError(error instanceof Error ? error.message : t('aiError'))
     } finally {
       setAiBusy(false)
+    }
+  }
+
+  const exportCalendar = async (): Promise<void> => {
+    setCalendarExporting(true)
+    setCalendarExportStatus('')
+    try {
+      const result = await window.workBuddy.exportDayCalendar(selectedDate)
+      if (result) setCalendarExportStatus(t('calendarExportReady'))
+    } catch (error) {
+      setCalendarExportStatus(error instanceof Error ? error.message : t('calendarExportError'))
+    } finally {
+      setCalendarExporting(false)
     }
   }
 
@@ -137,8 +187,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
           {startedAt && endedAt && <p>{formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : 'now'} · {formatDuration(span, true)}</p>}
         </div>
-        <div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div>
+        <div className="day-hero__tools">
+          {tasks.length > 0 && <button className="day-calendar-button" disabled={calendarExporting} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>}
+          <div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div>
+        </div>
       </section>
+      {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
 
       <section className="panel schedule-panel">
         <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong>{Math.round(scheduleProgress)}%</strong></div>
@@ -149,7 +203,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
           ))}
           {reportNow >= schedule.start && reportNow <= schedule.end && <i className="schedule-progress__now" style={{ left: `${scheduleProgress}%` }} />}
         </div>
-        <div className="schedule-times"><span>{reportSnapshot.settings.workday.startTime}</span><span>{reportSnapshot.settings.workday.endTime}</span></div>
+        <div className="schedule-times"><span>{reportSnapshot.settings.workday.startTime}</span><span>{formatClock(schedule.end, reportSnapshot.settings.locale)}</span></div>
         <div className="schedule-legend"><span><i className="work" />{t('workSegment')}</span><span><i className="break" />{t('breakTaken')}</span><span><i className="lunch" />{t('lunchTaken')}</span></div>
         <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
       </section>
@@ -173,10 +227,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
       <section className="panel timeline-panel">
         <div className="section-heading">
           <div><span className="eyebrow">Timeline</span><h3>{t('timeline')}</h3></div>
-          {startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}
+          <div className="timeline-heading-actions"><button className={`timeline-layout-toggle ${timelineLayout === 'overlay' ? 'is-overlay' : ''}`} onClick={() => setTimelineLayout((current) => current === 'lanes' ? 'overlay' : 'lanes')} title={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')} aria-label={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')}>{timelineLayout === 'lanes' ? <Layers3 size={14} /> : <Rows3 size={14} />}</button>{startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}</div>
         </div>
         {tasks.length === 0 ? <p className="empty-copy">{t('noHistory')}</p> : (
-          <div className="timeline">
+          timelineLayout === 'lanes' ? <div className="timeline">
             {tasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
               const color = project?.color ?? '#b8e986'
@@ -193,19 +247,38 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit }: D
                 </div>
               )
             })}
+          </div> : <div className="timeline timeline--overlay">
+            <div className="timeline-track timeline-track--overlay">
+              {tasks.flatMap((task) => {
+                const project = getProject(reportSnapshot.projects, task)
+                const color = project?.color ?? '#b8e986'
+                return task.intervals.filter((interval) => intervals.includes(interval)).map((interval) => {
+                  const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
+                  const width = (((interval.endedAt ?? reportNow) - interval.startedAt) / timelineSpan) * 100
+                  return <motion.span key={interval.id} title={`${task.title || t('untitled')} · ${formatDuration(intervalDuration(interval, reportNow), true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
+                })
+              })}
+            </div>
+            <div className="timeline-overlay-legend">{tasks.map((task) => {
+              const project = getProject(reportSnapshot.projects, task)
+              return <span key={task.id}><i style={{ background: project?.color ?? '#b8e986' }} />{task.title || t('untitled')}</span>
+            })}</div>
           </div>
         )}
       </section>
 
       <section className="panel day-tasks-panel">
-        <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{t('todayTasks')}</h3></div><span className="timeline-range">{tasks.length}</span></div>
+        <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        {mergeMode && <div className="day-merge-controls"><p>{t('mergeTasksHint')}</p>{mergeError && <small>{mergeError}</small>}<div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div>}
         {tasks.length === 0 ? <p className="empty-copy">{t('noHistory')}</p> : <div className="day-task-list">
           {tasks.map((task) => {
             const project = getProject(reportSnapshot.projects, task)
-            return <button className="day-task-row" key={task.id} onClick={() => onEdit(task)} title={t('editTaskHint')}>
-              <span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
+            const selected = mergeTaskIds.includes(task.id)
+            const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
               <span className="day-task-row__copy"><strong>{task.title || t('untitled')}</strong><small>{project?.name ?? t('noProject')}</small></span>
-              <span>{formatDuration(taskDuration(task, reportNow), true)}</span>
+              <span>{formatDuration(taskDuration(task, reportNow), true)}</span></>
+            return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task)} title={t('editTaskHint')}>
+              {taskRow}
             </button>
           })}
         </div>}

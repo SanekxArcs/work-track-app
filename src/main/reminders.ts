@@ -134,7 +134,7 @@ export class ReminderService {
       this.once(`lunch-due:${reminderBucket}`, () => this.show(text.lunchTitle, text.lunchBody(settings.lunch.durationMinutes)))
     }
     const runningRest = snapshot.rests.find((rest) => rest.status === 'running')
-    if (runningRest && restRemaining(runningRest) === 0) {
+    if (runningRest && restRemaining(runningRest) === 0 && !runningRest.alarmMuted) {
       this.once(`rest-done:${runningRest.id}`, () => this.show(text.restDoneTitle, text.restDoneBody))
       this.repeatRestAlarm(runningRest.id, settings)
     } else this.restAlarm = null

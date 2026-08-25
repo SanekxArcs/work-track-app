@@ -3,9 +3,13 @@ import { DatabaseSync } from 'node:sqlite'
 import type {
   AppSettings,
   AppSnapshot,
+  BackupData,
+  BackupImportMode,
+  BackupPreview,
   HistoryDay,
   PlannedTask,
   PlannedTaskInput,
+  PlannedTaskUpdateInput,
   Project,
   ProjectInput,
   ProjectUpdateInput,
@@ -15,6 +19,7 @@ import type {
   StartMode,
   StartTaskInput,
   Task,
+  TaskMergeInput,
   TaskUpdateInput,
   TimeInterval,
   Workday
@@ -70,6 +75,13 @@ export const defaultSettings: AppSettings = {
     hasConnection: false,
     syncOnDayEnd: true
   },
+  sanity: {
+    projectId: '',
+    dataset: '',
+    apiVersion: '2026-08-21',
+    hasToken: false,
+    lastSyncedAt: null
+  },
   wellnessActions: [
     { id: randomUUID(), labelUk: '10 разів віджатися', labelEn: 'Do 10 push-ups', enabled: true },
     { id: randomUUID(), labelUk: 'Розім’яти спину', labelEn: 'Stretch your back', enabled: true },
@@ -97,6 +109,7 @@ type RestRow = {
   type: RestType
   status: RestSession['status']
   planned_minutes: number
+  alarm_muted: number
   created_at: number
   ended_at: number | null
   resume_task_ids_json: string
@@ -135,9 +148,18 @@ function deepSettings(raw?: string): AppSettings {
     notifications: { ...defaultSettings.notifications, ...stored.notifications },
     ai: { ...defaultSettings.ai, ...stored.ai },
     googleCalendar: { ...defaultSettings.googleCalendar, ...stored.googleCalendar },
+    sanity: { ...defaultSettings.sanity, ...stored.sanity },
     projectColors: stored.projectColors?.length ? stored.projectColors : [...defaultSettings.projectColors],
     wellnessActions: stored.wellnessActions ?? structuredClone(defaultSettings.wellnessActions)
   }
+}
+
+function icsEscape(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/;/g, '\\;').replace(/,/g, '\\,')
+}
+
+function icsTimestamp(value: number): string {
+  return new Date(value).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
 }
 
 export class WorkBuddyDatabase {
@@ -198,6 +220,7 @@ export class WorkBuddyDatabase {
         type TEXT NOT NULL CHECK(type IN ('lunch', 'break')),
         status TEXT NOT NULL CHECK(status IN ('running', 'paused', 'completed')),
         planned_minutes INTEGER NOT NULL,
+        alarm_muted INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         ended_at INTEGER,
         resume_task_ids_json TEXT NOT NULL DEFAULT '[]'
@@ -230,6 +253,8 @@ export class WorkBuddyDatabase {
 
     const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
+    const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
+    if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
 
     const settings = this.db.prepare('SELECT id FROM app_settings WHERE id = 1').get()
     if (!settings) {
@@ -242,6 +267,7 @@ export class WorkBuddyDatabase {
     const settings = deepSettings(row?.json)
     settings.ai.hasApiKey = this.hasSecret('gemini_api_key')
     settings.googleCalendar.hasConnection = this.hasSecret('google_calendar_tokens')
+    settings.sanity.hasToken = this.hasSecret('sanity_api_token')
     return settings
   }
 
@@ -333,6 +359,7 @@ export class WorkBuddyDatabase {
       type: row.type,
       status: row.status,
       plannedMinutes: row.planned_minutes,
+      alarmMuted: Boolean(row.alarm_muted),
       createdAt: row.created_at,
       endedAt: row.ended_at,
       intervals: (restIntervalStatement.all(row.id) as RestIntervalRow[]).map((interval): RestInterval => ({
@@ -426,10 +453,181 @@ export class WorkBuddyDatabase {
     const restRows = this.db.prepare('SELECT * FROM rest_sessions WHERE created_at < ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY created_at').all(dayEnd, dayStart) as RestRow[]
     const restIntervalStatement = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
     const rests = restRows.map((row): RestSession => ({
-      id: row.id, type: row.type, status: row.status, plannedMinutes: row.planned_minutes, createdAt: row.created_at, endedAt: row.ended_at,
+      id: row.id, type: row.type, status: row.status, plannedMinutes: row.planned_minutes, alarmMuted: Boolean(row.alarm_muted), createdAt: row.created_at, endedAt: row.ended_at,
       intervals: (restIntervalStatement.all(row.id) as RestIntervalRow[]).map((interval): RestInterval => ({ id: interval.id, restId: interval.rest_id, startedAt: interval.started_at, endedAt: interval.ended_at }))
     }))
     return { projects, plannedTasks, tasks, workday, rests, settings: this.getSettings(), now: Math.min(Date.now(), dayEnd - 1) }
+  }
+
+  exportBackup(): BackupData {
+    const settings = this.getSettings()
+    const { ai: _ai, googleCalendar: _googleCalendar, sanity: _sanity, ...backupSettings } = settings
+    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map((row): Project => ({
+      id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at
+    }))
+    const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at').all() as PlannedTaskRow[]).map((row): PlannedTask => ({
+      id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at
+    }))
+    const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
+    const tasks = (this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as TaskRow[]).map((row): Task => ({
+      id: row.id,
+      title: row.title,
+      projectId: row.project_id,
+      plannedTaskId: row.planned_task_id,
+      notes: row.notes,
+      tags: JSON.parse(row.tags_json) as string[],
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      intervals: (intervalStatement.all(row.id) as IntervalRow[]).map((interval): TimeInterval => ({
+        id: interval.id, taskId: interval.task_id, startedAt: interval.started_at, endedAt: interval.ended_at
+      }))
+    }))
+    const workdays = (this.db.prepare('SELECT * FROM workdays ORDER BY started_at').all() as WorkdayRow[]).map((row): Workday => ({
+      id: row.id, startedAt: row.started_at, endedAt: row.ended_at
+    }))
+    const restIntervals = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
+    const rests = (this.db.prepare('SELECT * FROM rest_sessions ORDER BY created_at').all() as RestRow[]).map((row): RestSession => ({
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      plannedMinutes: row.planned_minutes,
+      alarmMuted: Boolean(row.alarm_muted),
+      createdAt: row.created_at,
+      endedAt: row.ended_at,
+      intervals: (restIntervals.all(row.id) as RestIntervalRow[]).map((interval): RestInterval => ({
+        id: interval.id, restId: interval.rest_id, startedAt: interval.started_at, endedAt: interval.ended_at
+      }))
+    }))
+    return { schemaVersion: 1, exportedAt: Date.now(), settings: backupSettings, projects, plannedTasks, tasks, workdays, rests }
+  }
+
+  parseBackup(raw: string): BackupData {
+    let backup: unknown
+    try {
+      backup = JSON.parse(raw)
+    } catch {
+      throw new Error('The selected file is not valid JSON')
+    }
+    if (!backup || typeof backup !== 'object') throw new Error('The selected file is not a Work Buddy backup')
+    const candidate = backup as Partial<BackupData>
+    if (candidate.schemaVersion !== 1 || !Number.isFinite(candidate.exportedAt) || !candidate.settings || typeof candidate.settings !== 'object') {
+      throw new Error('The selected file is not a compatible Work Buddy backup')
+    }
+    const collections = [candidate.projects, candidate.plannedTasks, candidate.tasks, candidate.workdays, candidate.rests]
+    if (!collections.every(Array.isArray)) throw new Error('The selected backup is incomplete')
+    return candidate as BackupData
+  }
+
+  getBackupPreview(backup: BackupData): BackupPreview {
+    return {
+      exportedAt: backup.exportedAt,
+      projectCount: backup.projects.length,
+      plannedTaskCount: backup.plannedTasks.length,
+      taskCount: backup.tasks.length,
+      intervalCount: backup.tasks.reduce((count, task) => count + task.intervals.length, 0),
+      workdayCount: backup.workdays.length,
+      restCount: backup.rests.length
+    }
+  }
+
+  importBackup(backup: BackupData, mode: BackupImportMode): AppSnapshot {
+    if (mode !== 'merge' && mode !== 'replace') throw new Error('Invalid import mode')
+    const existingSettings = this.getSettings()
+    this.transaction(() => {
+      if (mode === 'replace') {
+        this.db.exec('DELETE FROM rest_intervals; DELETE FROM time_intervals; DELETE FROM rest_sessions; DELETE FROM tasks; DELETE FROM planned_tasks; DELETE FROM workdays; DELETE FROM projects;')
+      }
+      const project = this.db.prepare(`INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at`)
+      const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at`)
+      const task = this.db.prepare(`INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at`)
+      const interval = this.db.prepare(`INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
+      const workday = this.db.prepare(`INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at`)
+      const rest = this.db.prepare(`INSERT INTO rest_sessions (id, type, status, planned_minutes, alarm_muted, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, '[]')
+        ON CONFLICT(id) DO UPDATE SET type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = '[]'`)
+      const restInterval = this.db.prepare(`INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET rest_id = excluded.rest_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
+
+      for (const item of backup.projects) project.run(item.id, item.name, item.color, Number(item.archived), item.createdAt)
+      for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.createdAt)
+      for (const item of backup.tasks) {
+        task.run(item.id, item.title, item.projectId, item.plannedTaskId, item.notes, JSON.stringify(item.tags), item.status, item.createdAt, item.updatedAt)
+        for (const itemInterval of item.intervals) interval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
+      }
+      for (const item of backup.workdays) workday.run(item.id, item.startedAt, item.endedAt)
+      for (const item of backup.rests) {
+        rest.run(item.id, item.type, item.status, item.plannedMinutes, Number(item.alarmMuted ?? false), item.createdAt, item.endedAt)
+        for (const itemInterval of item.intervals) restInterval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
+      }
+      if (mode === 'replace') {
+        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai, googleCalendar: existingSettings.googleCalendar, sanity: existingSettings.sanity }))
+        this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(restoredSettings))
+      }
+    })
+    return this.getSnapshot()
+  }
+
+  createDayCalendarIcs(date: string): string {
+    const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
+    const now = Date.now()
+    const rows = this.db.prepare(
+      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, t.tags_json, p.name AS project_name
+       FROM time_intervals i
+       JOIN tasks t ON t.id = i.task_id
+       LEFT JOIN projects p ON p.id = t.project_id
+       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
+       ORDER BY i.started_at`
+    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; title: string; notes: string; tags_json: string; project_name: string | null }>
+    const taskEvents = rows.flatMap((row) => {
+      const startedAt = Math.max(row.started_at, dayStart)
+      const endedAt = Math.min(row.ended_at ?? now, dayEnd)
+      if (endedAt <= startedAt) return []
+      const tags = JSON.parse(row.tags_json) as string[]
+      const title = row.title || 'Untitled task'
+      const summary = row.project_name ? `${row.project_name} · ${title}` : title
+      const details = [row.notes, tags.length ? `Tags: ${tags.join(', ')}` : ''].filter(Boolean).join('\n')
+      return [
+        'BEGIN:VEVENT',
+        `UID:work-buddy-${row.id}@local`,
+        `DTSTAMP:${icsTimestamp(now)}`,
+        `DTSTART:${icsTimestamp(startedAt)}`,
+        `DTEND:${icsTimestamp(endedAt)}`,
+        `SUMMARY:${icsEscape(summary)}`,
+        ...(details ? [`DESCRIPTION:${icsEscape(details)}`] : []),
+        'END:VEVENT'
+      ]
+    })
+    const restRows = this.db.prepare(
+      `SELECT i.id, i.started_at, i.ended_at, s.type
+       FROM rest_intervals i
+       JOIN rest_sessions s ON s.id = i.rest_id
+       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
+       ORDER BY i.started_at`
+    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; type: RestType }>
+    const restEvents = restRows.flatMap((row) => {
+      const startedAt = Math.max(row.started_at, dayStart)
+      const endedAt = Math.min(row.ended_at ?? now, dayEnd)
+      if (endedAt <= startedAt) return []
+      const title = row.type === 'lunch' ? 'Lunch · Work Buddy' : 'Break · Work Buddy'
+      return [
+        'BEGIN:VEVENT',
+        `UID:work-buddy-rest-${row.id}@local`,
+        `DTSTAMP:${icsTimestamp(now)}`,
+        `DTSTART:${icsTimestamp(startedAt)}`,
+        `DTEND:${icsTimestamp(endedAt)}`,
+        `SUMMARY:${icsEscape(title)}`,
+        `DESCRIPTION:${icsEscape(row.type === 'lunch' ? 'Tracked lunch in Work Buddy' : 'Tracked break in Work Buddy')}`,
+        'END:VEVENT'
+      ]
+    })
+    const events = [...taskEvents, ...restEvents]
+    if (!events.length) throw new Error('There is no tracked work to export for this day')
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Work Buddy//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...events, 'END:VCALENDAR', ''].join('\r\n')
   }
 
   getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {
@@ -443,7 +641,7 @@ export class WorkBuddyDatabase {
        WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
        ORDER BY i.started_at`
     ).all(start) as Array<{ id: string; title: string; notes: string; tags_json: string; project_name: string | null; started_at: number; ended_at: number }>
-    return rows.map((row) => ({
+    const taskEvents = rows.map((row) => ({
       id: row.id,
       title: row.title,
       projectName: row.project_name ?? '',
@@ -452,6 +650,23 @@ export class WorkBuddyDatabase {
       startedAt: row.started_at,
       endedAt: row.ended_at
     }))
+    const restRows = this.db.prepare(
+      `SELECT i.id, i.started_at, i.ended_at, s.type
+       FROM rest_intervals i
+       JOIN rest_sessions s ON s.id = i.rest_id
+       WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
+       ORDER BY i.started_at`
+    ).all(start) as Array<{ id: string; started_at: number; ended_at: number; type: RestType }>
+    const restEvents = restRows.map((row) => ({
+      id: `rest-${row.id}`,
+      title: row.type === 'lunch' ? 'Lunch' : 'Break',
+      projectName: '',
+      notes: row.type === 'lunch' ? 'Tracked lunch in Work Buddy' : 'Tracked break in Work Buddy',
+      tags: [] as string[],
+      startedAt: row.started_at,
+      endedAt: row.ended_at
+    }))
+    return [...taskEvents, ...restEvents].sort((a, b) => a.startedAt - b.startedAt)
   }
 
   startWorkday(): AppSnapshot {
@@ -466,7 +681,7 @@ export class WorkBuddyDatabase {
     const now = Date.now()
     const transaction = (): void => this.transaction(() => {
       this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE ended_at IS NULL').run(now)
-      this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status = 'running'").run(now)
+      this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status != 'stopped'").run(now)
       this.db.prepare('UPDATE workdays SET ended_at = ? WHERE ended_at IS NULL').run(now)
       this.db.prepare('UPDATE rest_intervals SET ended_at = ? WHERE ended_at IS NULL').run(now)
       this.db.prepare("UPDATE rest_sessions SET status = 'completed', ended_at = ?, resume_task_ids_json = '[]' WHERE status IN ('running', 'paused')").run(now)
@@ -625,6 +840,12 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
+  setRestAlarmMuted(id: string, muted: boolean): AppSnapshot {
+    const result = this.db.prepare("UPDATE rest_sessions SET alarm_muted = ? WHERE id = ? AND status != 'completed'").run(Number(muted), id)
+    if (!result.changes) throw new Error('Active break not found')
+    return this.getSnapshot()
+  }
+
   updateTask(input: TaskUpdateInput): AppSnapshot {
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
@@ -664,6 +885,31 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
+  mergeTasks(input: TaskMergeInput): AppSnapshot {
+    const sourceIds = [...new Set(input.sourceIds)].filter((id) => id !== input.targetId)
+    if (!input.targetId || !sourceIds.length) throw new Error('Choose at least two tasks to merge')
+    const reference = localDateTimestamp(input.date)
+    const [dayStart, dayEnd] = localDayBounds(reference)
+    const taskIds = [input.targetId, ...sourceIds]
+    const placeholders = taskIds.map(() => '?').join(', ')
+    const tasks = this.db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...taskIds) as Array<{ id: string; status: Task['status'] }>
+    if (tasks.length !== taskIds.length) throw new Error('One of the selected tasks was not found')
+    if (tasks.some((task) => task.status !== 'stopped')) throw new Error('Finish the workday before merging tasks')
+
+    this.transaction(() => {
+      const moveIntervals = this.db.prepare('UPDATE time_intervals SET task_id = ? WHERE task_id = ? AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)')
+      const countIntervals = this.db.prepare('SELECT COUNT(*) AS count FROM time_intervals WHERE task_id = ?')
+      const removeTask = this.db.prepare('DELETE FROM tasks WHERE id = ?')
+      for (const sourceId of sourceIds) {
+        moveIntervals.run(input.targetId, sourceId, dayEnd, dayStart)
+        const remaining = countIntervals.get(sourceId) as { count: number }
+        if (!remaining.count) removeTask.run(sourceId)
+      }
+      this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(Date.now(), input.targetId)
+    })
+    return this.getSnapshot()
+  }
+
   deleteTask(id: string): AppSnapshot {
     const result = this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
     if (!result.changes) throw new Error('Task not found')
@@ -676,6 +922,16 @@ export class WorkBuddyDatabase {
     this.db.prepare('INSERT INTO planned_tasks (id, title, project_id, notes, created_at) VALUES (?, ?, ?, ?, ?)').run(
       randomUUID(), title, input.projectId ?? null, input.notes?.trim() ?? '', Date.now()
     )
+    return this.getSnapshot()
+  }
+
+  updatePlannedTask(input: PlannedTaskUpdateInput): AppSnapshot {
+    const title = input.title.trim()
+    if (!title) throw new Error('Planned task name is required')
+    const result = this.db.prepare('UPDATE planned_tasks SET title = ?, project_id = ?, notes = ? WHERE id = ?').run(
+      title, input.projectId ?? null, input.notes?.trim() ?? '', input.id
+    )
+    if (!result.changes) throw new Error('Planned task not found')
     return this.getSnapshot()
   }
 

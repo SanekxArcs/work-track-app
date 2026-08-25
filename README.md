@@ -12,6 +12,8 @@ The interface is available in Ukrainian and English.
 - Planned-task backlog that can be attached to a tracked task
 - Gemini-powered task refinement and optional voice input
 - Optional Google Calendar export to a separate Work Buddy calendar
+- Portable `.workbuddy.json` backups with Merge or Replace restore modes
+- Per-day `.ics` calendar export for a manual Google Calendar import
 - Tray controls, autostart, reminders, custom sounds, and desktop-transparent UI
 - Local SQLite storage; the tracker works offline
 
@@ -79,7 +81,7 @@ npm run dist:win
 The installer will be similar to:
 
 ```text
-release-v0.6.1/Work Buddy Setup 0.6.1.exe
+release-v0.8.10/Work Buddy Setup 0.8.10.exe
 ```
 
 ### macOS
@@ -128,6 +130,27 @@ Voice input is push-to-record: Work Buddy asks for microphone permission only af
 ### Google Calendar
 
 Google Calendar sync is optional. Create a Google OAuth client of type **Desktop app**, enable the Calendar API, paste the client ID under **Settings → Google Calendar**, and connect your account. Work Buddy creates and writes only to its own separate calendar.
+
+For a one-off daily export without connecting Google, open **Day**, select a day from history, and choose **Export `.ics`**. Import that file manually in Google Calendar.
+
+### Sanity Cloud Sync
+
+Sanity sync is optional and keeps one cloud snapshot of tracker data. Press **Settings → Sanity Cloud Sync → Sync with Sanity** to merge the cloud snapshot with the local history, then save the merged result back to Sanity. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
+
+For development, place these values in a local `.env` file (it is gitignored):
+
+```text
+NEXT_PUBLIC_SANITY_PROJECT_ID=...
+NEXT_PUBLIC_SANITY_DATASET=...
+NEXT_PUBLIC_SANITY_API_VERSION=2026-08-21
+NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL=...
+```
+
+For an installed build, use **Choose Sanity .env** once in Settings. The token is then encrypted through the operating system’s secure storage and the `.env` file is not copied into the app. Prefer a dedicated Sanity project robot token with only Content Lake read/write access over a personal or full-control token.
+
+### Backups
+
+In **Settings → Backup**, export a portable `.workbuddy.json` file. Imports offer two modes: **Merge** adds the backup data to the current local database; **Replace** replaces the local tracker data and regular settings. Gemini API keys, Google OAuth tokens, and Gemini/Google integration settings are never written to backups.
 
 ## Project structure
 

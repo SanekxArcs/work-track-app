@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import { Check, Coffee, Dumbbell, Pause, Pencil, Play, SkipForward, Square, X } from 'lucide-react'
+import { Check, Coffee, Dumbbell, Pause, Pencil, Play, SkipForward, Square, Volume2, VolumeX, X } from 'lucide-react'
 import type { AppSnapshot, RestSession, RestType } from '@shared/types'
 import { dueRestTypes, restElapsed, restRemaining } from '@shared/rest'
 import type { Translator } from '../lib/i18n'
@@ -58,6 +58,7 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
   const Icon = rest.type === 'lunch' ? Coffee : Dumbbell
   const remaining = restRemaining(rest, now)
   const elapsed = restElapsed(rest, now)
+  const overtime = Math.max(0, elapsed - rest.plannedMinutes * 60_000)
   const progress = Math.min(100, elapsed / (rest.plannedMinutes * 60_000) * 100)
   const paused = rest.status === 'paused'
   const copy = restCopy(rest.type, t)
@@ -83,7 +84,7 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
     <motion.section className={`active-rest active-rest--${rest.type}`} layout initial={{ opacity: 0, scale: .98 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="active-rest__top">
         <div className="active-rest__identity"><span><Icon size={18} /></span><div><small>{paused ? t('restPaused') : t('nowResting')}</small><strong>{copy.title}</strong></div></div>
-        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}><span>{remaining === 0 ? t('restTimeUp') : formatDuration(remaining)}</span><Pencil size={11} /></button>
+        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}><span>{remaining === 0 ? t('restTimeUp') : formatDuration(remaining)}</span>{overtime > 0 && <small>+{formatDuration(overtime, true)}</small>}<Pencil size={11} /></button>
       </div>
       {editingTime && (
         <div className="rest-time-editor">
@@ -95,10 +96,11 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
       )}
       <div className="active-rest__progress"><motion.span animate={{ width: `${progress}%` }} /></div>
       <p>{paused ? t('restPausedBody') : t('restRunningBody')}</p>
-      <div className="active-rest__actions">
+      <div className={`active-rest__actions ${remaining === 0 ? 'active-rest__actions--with-sound' : ''}`}>
         {paused
           ? <button className="rest-primary" onClick={() => void mutate(window.workBuddy.resumeRest(rest.id))}><Play size={15} fill="currentColor" />{t('continueRest')}</button>
           : <button onClick={() => void mutate(window.workBuddy.pauseRest(rest.id))}><Pause size={15} fill="currentColor" />{t('pauseRest')}</button>}
+        {remaining === 0 && <button className={`rest-sound-toggle ${rest.alarmMuted ? 'is-muted' : ''}`} onClick={() => void mutate(window.workBuddy.setRestAlarmMuted(rest.id, !rest.alarmMuted))} title={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')} aria-label={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')}>{rest.alarmMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
         <button className="rest-finish" onClick={() => void mutate(window.workBuddy.completeRest(rest.id))}><Square size={13} fill="currentColor" />{t('finishRest')}</button>
       </div>
     </motion.section>

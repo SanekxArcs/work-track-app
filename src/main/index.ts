@@ -1,12 +1,13 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { GoogleCalendarService } from './google-calendar'
 import { ReminderService } from './reminders'
+import { SanityService } from './sanity'
 import { channels } from '../shared/channels'
-import type { AppSettings, NotificationInput, PlannedTaskInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskUpdateInput, VoiceInput } from '../shared/types'
+import type { AppSettings, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -17,12 +18,63 @@ let database: WorkBuddyDatabase
 let reminders: ReminderService
 let gemini: GeminiService
 let googleCalendar: GoogleCalendarService
+let sanity: SanityService
+let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
 let compactWindow = false
 let manualHeight = 760
 let programmaticHeight: number | undefined
 let compactBottomAnchored = false
+
+function readEnvironment(raw: string): Record<string, string> {
+  const values: Record<string, string> = {}
+  for (const line of raw.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/)
+    if (!match) continue
+    values[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2')
+  }
+  return values
+}
+
+async function loadLocalEnvironment(): Promise<void> {
+  const locations = [join(process.cwd(), '.env')]
+  if (app.isPackaged) locations.push(join(process.resourcesPath, '.env'))
+  for (const location of locations) {
+    let raw = ''
+    try {
+      raw = await readFile(location, 'utf8')
+    } catch {
+      continue
+    }
+    for (const [key, value] of Object.entries(readEnvironment(raw))) {
+      if (process.env[key] !== undefined) continue
+      process.env[key] = value
+    }
+    return
+  }
+}
+
+function configureSanityFromEnvironment(values: Record<string, string | undefined> = process.env): boolean {
+  const projectId = values.NEXT_PUBLIC_SANITY_PROJECT_ID?.trim() ?? ''
+  const dataset = values.NEXT_PUBLIC_SANITY_DATASET?.trim() ?? ''
+  const apiVersion = values.NEXT_PUBLIC_SANITY_API_VERSION?.trim() ?? ''
+  const token = values.NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL?.trim() ?? ''
+  if (!projectId || !dataset || !token) return false
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+  database.setSecret('sanity_api_token', safeStorage.encryptString(token).toString('base64'))
+  const settings = database.getSettings()
+  database.updateSettings({
+    ...settings,
+    sanity: {
+      ...settings.sanity,
+      projectId,
+      dataset,
+      apiVersion: apiVersion.replace(/^v/, '') || settings.sanity.apiVersion
+    }
+  })
+  return true
+}
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -184,6 +236,7 @@ function emitChanged(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(channels.appVersion, () => app.getVersion())
   ipcMain.handle(channels.snapshot, () => database.getSnapshot())
   ipcMain.handle(channels.history, (_, days?: number) => database.getHistory(days))
   ipcMain.handle(channels.daySnapshot, (_, date: string) => database.getDaySnapshot(date))
@@ -260,8 +313,18 @@ function registerIpc(): void {
     emitChanged()
     return result
   })
+  ipcMain.handle(channels.setRestAlarmMuted, (_, id: string, muted: boolean) => {
+    const result = database.setRestAlarmMuted(id, muted)
+    emitChanged()
+    return result
+  })
   ipcMain.handle(channels.updateTask, (_, input: TaskUpdateInput) => {
     const result = database.updateTask(input)
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.mergeTasks, (_, input: TaskMergeInput) => {
+    const result = database.mergeTasks(input)
     emitChanged()
     return result
   })
@@ -272,6 +335,11 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.createPlannedTask, (_, input: PlannedTaskInput) => {
     const result = database.createPlannedTask(input)
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.updatePlannedTask, (_, input: PlannedTaskUpdateInput) => {
+    const result = database.updatePlannedTask(input)
     emitChanged()
     return result
   })
@@ -319,6 +387,67 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.googleSync, () => googleCalendar.sync())
   ipcMain.handle(channels.googleSetup, () => shell.openExternal('https://console.cloud.google.com/apis/credentials'))
+  ipcMain.handle(channels.sanitySync, async () => {
+    const result = await sanity.sync()
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.sanityLoadEnvironment, async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: database.getSettings().locale === 'uk' ? 'Обрати Sanity .env' : 'Choose Sanity .env',
+      properties: ['openFile'],
+      filters: [{ name: 'Environment file', extensions: ['env'] }, { name: 'All files', extensions: ['*'] }]
+    })
+    const path = result.filePaths[0]
+    if (result.canceled || !path) return null
+    if (!configureSanityFromEnvironment(readEnvironment(await readFile(path, 'utf8')))) throw new Error('The selected file does not contain a complete Sanity configuration')
+    const snapshot = database.getSnapshot()
+    emitChanged()
+    return snapshot
+  })
+  ipcMain.handle(channels.backupExport, async () => {
+    if (!mainWindow) return null
+    const date = new Date().toISOString().slice(0, 10)
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: database.getSettings().locale === 'uk' ? 'Зберегти резервну копію' : 'Save backup',
+      defaultPath: join(app.getPath('downloads'), `work-buddy-backup-${date}.workbuddy.json`),
+      filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, JSON.stringify(database.exportBackup(), null, 2), 'utf8')
+    return { path: result.filePath }
+  })
+  ipcMain.handle(channels.backupChoose, async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: database.getSettings().locale === 'uk' ? 'Обрати резервну копію' : 'Choose backup',
+      properties: ['openFile'],
+      filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
+    })
+    const path = result.filePaths[0]
+    if (result.canceled || !path) return null
+    pendingBackup = database.parseBackup(await readFile(path, 'utf8'))
+    return database.getBackupPreview(pendingBackup)
+  })
+  ipcMain.handle(channels.backupApply, (_, mode: BackupImportMode) => {
+    if (!pendingBackup) throw new Error('Choose a backup file first')
+    const result = database.importBackup(pendingBackup, mode)
+    pendingBackup = null
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.calendarExportDay, async (_, date: string) => {
+    if (!mainWindow) return null
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: database.getSettings().locale === 'uk' ? 'Експортувати день у календар' : 'Export day to calendar',
+      defaultPath: join(app.getPath('downloads'), `work-buddy-${date}.ics`),
+      filters: [{ name: 'Calendar file', extensions: ['ics'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, database.createDayCalendarIcs(date), 'utf8')
+    return { path: result.filePath }
+  })
   ipcMain.handle(channels.suggestTask, (_, taskId: string) => gemini.suggestTask(taskId))
   ipcMain.handle(channels.interpretVoiceTask, (_, input: VoiceInput, taskId?: string) => gemini.interpretVoiceTask(input, taskId))
   ipcMain.handle(channels.transcribeVoice, (_, input: VoiceInput) => gemini.transcribeVoice(input))
@@ -327,7 +456,7 @@ function registerIpc(): void {
     if (Notification.isSupported()) new Notification(input).show()
   })
   ipcMain.handle(channels.windowMode, (_, mode: 'compact' | 'expanded', rows = 1) => {
-    if (!mainWindow) return
+    if (!mainWindow) return null
     const current = mainWindow.getBounds()
     const display = screen.getDisplayMatching(current)
     const area = display.workArea
@@ -336,17 +465,24 @@ function registerIpc(): void {
     const height = nextCompact
       ? Math.min(24 + Math.max(1, rows) * 50, screen.getDisplayMatching(current).workArea.height - 24)
       : Math.min(manualHeight, screen.getDisplayMatching(current).workArea.height - 24)
-    const wasAtBottom = Math.abs(current.y + current.height - (area.y + area.height)) <= 16
-    if (nextCompact && !wasCompact) compactBottomAnchored = wasAtBottom
-    const keepBottom = nextCompact ? compactBottomAnchored : wasCompact && (compactBottomAnchored || wasAtBottom)
+    const currentBottom = current.y + current.height
+    const wasAtBottom = Math.abs(currentBottom - (area.y + area.height)) <= 16
+    const extraHeight = Math.max(0, height - current.height)
+    const spaceAbove = Math.max(0, current.y - area.y)
+    const spaceBelow = Math.max(0, area.y + area.height - currentBottom)
+    const keepBottom = nextCompact
+      ? (wasAtBottom || (extraHeight > spaceBelow && spaceAbove >= extraHeight))
+      : wasCompact && (compactBottomAnchored || wasAtBottom)
+    if (nextCompact) compactBottomAnchored = keepBottom
     const x = Math.min(Math.max(current.x, area.x), area.x + area.width - current.width)
     const y = keepBottom
-      ? area.y + area.height - height
+      ? Math.min(Math.max(currentBottom - height, area.y), area.y + area.height - height)
       : Math.min(Math.max(current.y, area.y), area.y + area.height - height)
     compactWindow = nextCompact
     mainWindow.setResizable(!nextCompact)
     programmaticHeight = height
     mainWindow.setBounds({ ...current, x, y, height }, true)
+    return nextCompact ? (keepBottom ? 'bottom' : 'top') : null
   })
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
     if (!mainWindow || compactWindow) return
@@ -387,8 +523,10 @@ else {
     mainWindow?.focus()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    await loadLocalEnvironment()
     database = new WorkBuddyDatabase(join(app.getPath('userData'), 'work-buddy.sqlite'))
+    configureSanityFromEnvironment()
     gemini = new GeminiService(database, () => {
       const encrypted = database.getSecret('gemini_api_key')
       if (!encrypted) return ''
@@ -396,6 +534,12 @@ else {
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
     googleCalendar = new GoogleCalendarService(database)
+    sanity = new SanityService(database, () => {
+      const encrypted = database.getSecret('sanity_api_token')
+      if (!encrypted) return ''
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+    })
     registerIpc()
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))

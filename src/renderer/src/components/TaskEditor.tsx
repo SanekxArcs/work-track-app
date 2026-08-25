@@ -55,10 +55,6 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
   const parsedTags = (): string[] => tags.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)
 
   const saveTask = async (mode: StartMode): Promise<void> => {
-    if (!projectId) {
-      setSaveError(t('projectRequired'))
-      return
-    }
     setBusy(true)
     setSaveError('')
     try {
@@ -197,7 +193,7 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
                   value={projectId}
                   ariaLabel={t('project')}
                   onChange={setProjectId}
-                  options={[{ value: '', label: t('selectProject') }, ...snapshot.projects.filter((project) => !project.archived).map((project) => ({ value: project.id, label: project.name, color: project.color }))]}
+                  options={[{ value: '', label: t('noProject') }, ...snapshot.projects.filter((project) => !project.archived).map((project) => ({ value: project.id, label: project.name, color: project.color }))]}
                 />
               </label>
             </div>
@@ -256,12 +252,12 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
                     <VoiceButton t={t} disabled={aiBusy || busy} onVoice={applyVoice} onError={setAiMessage} />
                   </div>}
                   {promptReason && <button className="secondary-button" disabled={busy} onClick={onClose}>{t('skip')}</button>}
-                  <button className="primary-button" disabled={busy || !projectId} onClick={() => saveTask(defaultMode)}>{t('save')}</button>
+                  <button className="primary-button" disabled={busy} onClick={() => saveTask(defaultMode)}>{t('save')}</button>
                 </>
               ) : (
                 <>
-                  <button className="secondary-button" disabled={busy || !projectId} onClick={() => saveTask('switch')}>{t('startSwitch')}</button>
-                  <button className="primary-button" disabled={busy || !projectId} onClick={() => saveTask(defaultMode)}>{t('startParallel')}</button>
+                  <button className="secondary-button" disabled={busy} onClick={() => saveTask('switch')}>{t('startSwitch')}</button>
+                  <button className="primary-button" disabled={busy} onClick={() => saveTask(defaultMode)}>{t('startParallel')}</button>
                 </>
               )}
             </div>
