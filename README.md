@@ -161,7 +161,7 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`, then add your Google OAuth credentials and your allowed email address. Do not use a `NEXT_PUBLIC_` prefix for the token.
+Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`. Do not use a `NEXT_PUBLIC_` prefix for the token. Google OAuth is optional: when its three variables are absent, the personal dashboard opens directly; when they are present, only `WORK_BUDDY_ALLOWED_EMAIL` may access it.
 
 For Vercel, import the repository and set the project Root Directory to `apps/web`. Add the values from `.env.example` in Vercel's Environment Variables, keeping `SANITY_API_WRITE_TOKEN`, `GOOGLE_CLIENT_SECRET`, and `NEXTAUTH_SECRET` server-only. Configure the Google OAuth redirect URL as:
 
