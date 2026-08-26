@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Work Buddy' }
 }
 
-export const viewport: Viewport = { themeColor: '#161914', colorScheme: 'dark' }
+export const viewport: Viewport = { themeColor: '#000000', colorScheme: 'dark' }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>): React.JSX.Element {
   return <html lang="uk"><body><PwaRegistration />{children}</body></html>
