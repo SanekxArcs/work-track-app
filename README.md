@@ -55,6 +55,9 @@ npm run dev
 # TypeScript checks for Electron and the renderer
 npm run typecheck
 
+# Run time-tracking, backup, sync, and calendar-export tests
+npm test
+
 # Production build without creating an installer
 npm run build
 
@@ -135,7 +138,7 @@ For a one-off daily export without connecting Google, open **Day**, select a day
 
 ### Sanity Cloud Sync
 
-Sanity sync is optional and keeps one cloud snapshot of tracker data. Press **Settings → Sanity Cloud Sync → Sync with Sanity** to merge the cloud snapshot with the local history, then save the merged result back to Sanity. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
+Sanity sync is optional and keeps one cloud snapshot of tracker data. On a fresh desktop with no local history, **Settings → Sanity Cloud Sync → Sync with Sanity** restores the cloud snapshot. Once there is local history, the desktop safely publishes its local data instead of silently overwriting it with an older cloud snapshot. Use the portable backup **Merge** flow when you intentionally need to combine two histories. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
 
 For development, place these values in a local `.env` file (it is gitignored):
 
@@ -161,7 +164,7 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`. Do not use a `NEXT_PUBLIC_` prefix for the token. Google OAuth is optional: the personal dashboard opens directly by default, even if OAuth credentials exist. To require it, set `WORK_BUDDY_REQUIRE_GOOGLE_LOGIN=true`; then only `WORK_BUDDY_ALLOWED_EMAIL` may access the dashboard.
+Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`. Do not use a `NEXT_PUBLIC_` prefix for the token. Google OAuth is optional: the personal dashboard opens directly by default, even if OAuth credentials exist. To require it, set `WORK_BUDDY_REQUIRE_GOOGLE_LOGIN=true`; then only `WORK_BUDDY_ALLOWED_EMAIL` may access the dashboard. Without that protection, anyone who can open the deployment URL can view the dashboard and queue its remote controls, so only use public mode for a deliberately private deployment URL.
 
 For Vercel, import the repository and set the project Root Directory to `apps/web`. Add the values from `.env.example` in Vercel's Environment Variables, keeping `SANITY_API_WRITE_TOKEN`, `GOOGLE_CLIENT_SECRET`, and `NEXTAUTH_SECRET` server-only. Configure the Google OAuth redirect URL as:
 
