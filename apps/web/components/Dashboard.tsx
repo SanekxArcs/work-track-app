@@ -5,6 +5,14 @@ import { activeWorkday, formatDuration, taskElapsed, type WebRest, type WebTask,
 
 type WorkspaceResponse = { workspace: WebWorkspace | null; error?: string }
 type DashboardMode = 'dashboard' | 'focus'
+type FocusFont = 'modern' | 'mono' | 'rounded' | 'wide'
+
+const focusFonts: Record<FocusFont, { label: string; family: string }> = {
+  modern: { label: 'Сучасний', family: 'Inter, ui-sans-serif, system-ui, sans-serif' },
+  mono: { label: 'Моно', family: 'ui-monospace, "Cascadia Mono", "Roboto Mono", monospace' },
+  rounded: { label: 'М’який', family: 'ui-rounded, "Arial Rounded MT Bold", "Trebuchet MS", sans-serif' },
+  wide: { label: 'Широкий', family: '"Arial Black", "Helvetica Neue", sans-serif' }
+}
 
 function taskLabel(task: WebTask): string {
   return task.notes.trim() || task.title.trim() || 'Без опису'
@@ -32,12 +40,21 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
   const [focusShowSeconds, setFocusShowSeconds] = useState(true)
   const [focusShowContext, setFocusShowContext] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [focusBrightness, setFocusBrightness] = useState(100)
+  const [focusFont, setFocusFont] = useState<FocusFont>('modern')
+  const [focusScale, setFocusScale] = useState(100)
 
   useEffect(() => {
     const savedMode = window.localStorage.getItem('work-buddy-dashboard-mode')
     if (savedMode === 'focus' || savedMode === 'dashboard') setMode(savedMode)
     setFocusShowSeconds(window.localStorage.getItem('work-buddy-focus-seconds') !== 'false')
     setFocusShowContext(window.localStorage.getItem('work-buddy-focus-context') !== 'false')
+    const savedBrightness = Number(window.localStorage.getItem('work-buddy-focus-brightness'))
+    if (Number.isFinite(savedBrightness) && savedBrightness >= 35 && savedBrightness <= 130) setFocusBrightness(savedBrightness)
+    const savedFont = window.localStorage.getItem('work-buddy-focus-font')
+    if (savedFont && savedFont in focusFonts) setFocusFont(savedFont as FocusFont)
+    const savedScale = Number(window.localStorage.getItem('work-buddy-focus-scale'))
+    if (Number.isFinite(savedScale) && savedScale >= 70 && savedScale <= 125) setFocusScale(savedScale)
     const clock = window.setInterval(() => setNow(Date.now()), 1_000)
     const refresh = async (): Promise<void> => {
       const response = await fetch('/api/workspace', { cache: 'no-store' })
@@ -104,6 +121,21 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
     window.localStorage.setItem(`work-buddy-focus-${key}`, String(value))
   }
 
+  const updateFocusBrightness = (value: number): void => {
+    setFocusBrightness(value)
+    window.localStorage.setItem('work-buddy-focus-brightness', String(value))
+  }
+
+  const updateFocusFont = (value: FocusFont): void => {
+    setFocusFont(value)
+    window.localStorage.setItem('work-buddy-focus-font', value)
+  }
+
+  const updateFocusScale = (value: number): void => {
+    setFocusScale(value)
+    window.localStorage.setItem('work-buddy-focus-scale', String(value))
+  }
+
   const toggleFullscreen = async (): Promise<void> => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen()
@@ -113,7 +145,7 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
     }
   }
 
-  return <main className={`dashboard-shell dashboard-shell--${mode}`} style={{ '--focus-color': focusColor } as React.CSSProperties}>
+  return <main className={`dashboard-shell dashboard-shell--${mode}`} style={{ '--focus-color': focusColor, '--focus-brightness': String(focusBrightness / 100), '--focus-font': focusFonts[focusFont].family, '--focus-scale': String(focusScale / 100) } as React.CSSProperties}>
     {mode === 'dashboard' && <header className="dashboard-header">
       <div className="brand-block"><p className="eyebrow">Work Buddy · live</p><p className="today-label">{formatDate(now)}</p></div>
       <div className="header-actions">
@@ -136,6 +168,9 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
         <div><p className="eyebrow">Focus Clock</p><button onClick={() => setFocusSettingsOpen(false)} aria-label="Закрити налаштування">×</button></div>
         <label><span>Секунди у звичайному годиннику</span><input type="checkbox" checked={focusShowSeconds} onChange={(event) => updateFocusSetting('seconds', event.target.checked)} /></label>
         <label><span>Показувати контекст задачі</span><input type="checkbox" checked={focusShowContext} onChange={(event) => updateFocusSetting('context', event.target.checked)} /></label>
+        <label className="focus-range"><span>Яскравість цифр <b>{focusBrightness}%</b></span><input type="range" min="35" max="130" step="5" value={focusBrightness} onChange={(event) => updateFocusBrightness(Number(event.target.value))} /></label>
+        <label className="focus-range"><span>Розмір годинника <b>{focusScale}%</b></span><input type="range" min="70" max="125" step="5" value={focusScale} onChange={(event) => updateFocusScale(Number(event.target.value))} /></label>
+        <label className="focus-font-select"><span>Шрифт цифр</span><select value={focusFont} onChange={(event) => updateFocusFont(event.target.value as FocusFont)}>{Object.entries(focusFonts).map(([value, font]) => <option key={value} value={value}>{font.label}</option>)}</select></label>
       </aside>}
       <div className="focus-orbit focus-orbit--one" /><div className="focus-orbit focus-orbit--two" />
       <div className="focus-content">
