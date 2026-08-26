@@ -11,3 +11,4 @@ release-*/
 .electron-builder-cache/
 *.log
 .DS_Store
+*.tsbuildinfo

@@ -62,6 +62,14 @@ export function overlapDuration(intervals: TimeInterval[], now = Date.now()): nu
 export function dayIntervals(tasks: Task[], dayTimestamp = Date.now()): TimeInterval[] {
   const start = new Date(dayTimestamp)
   start.setHours(0, 0, 0, 0)
-  const end = start.getTime() + 24 * 60 * 60 * 1000
-  return tasks.flatMap((task) => task.intervals).filter((interval) => interval.startedAt >= start.getTime() && interval.startedAt < end)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  const dayStart = start.getTime()
+  const dayEnd = end.getTime()
+  return tasks.flatMap((task) => task.intervals.flatMap((interval) => {
+    const startedAt = Math.max(interval.startedAt, dayStart)
+    const endedAt = Math.min(interval.endedAt ?? dayTimestamp, dayEnd)
+    if (endedAt <= startedAt) return []
+    return [{ ...interval, startedAt, endedAt }]
+  }))
 }

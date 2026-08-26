@@ -26,8 +26,7 @@ import type {
   Workday
 } from '../shared/types'
 import { workdayOvertimeMs } from '../shared/workday'
-
-const DAY_MS = 24 * 60 * 60 * 1000
+import { localDateKey, localDateTimestamp, localDayBounds, localDaysBefore } from '../shared/local-date'
 
 export const defaultSettings: AppSettings = {
   locale: 'uk',
@@ -118,23 +117,81 @@ type RestRow = {
 }
 type RestIntervalRow = { id: string; rest_id: string; started_at: number; ended_at: number | null }
 
-function localDayBounds(now = Date.now()): [number, number] {
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  return [start.getTime(), start.getTime() + DAY_MS]
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function localDateKey(timestamp: number): string {
-  const date = new Date(timestamp)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+function isId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
 }
 
-function localDateTimestamp(value: string): number {
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!match) throw new Error('Invalid history date')
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0)
-  if (localDateKey(date.getTime()) !== value) throw new Error('Invalid history date')
-  return date.getTime()
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isOptionalId(value: unknown): value is string | null {
+  return value === null || isId(value)
+}
+
+function hasUniqueIds(items: unknown[]): boolean {
+  const ids = items.map((item) => isRecord(item) ? item.id : undefined)
+  return ids.every(isId) && new Set(ids).size === ids.length
+}
+
+function validIntervals(value: unknown, ownerId: string): boolean {
+  if (!Array.isArray(value) || !hasUniqueIds(value)) return false
+  return value.every((item) => {
+    if (!isRecord(item) || !isId(item.id)) return false
+    return item.taskId === ownerId || item.restId === ownerId
+  }) && value.every((item) => {
+    if (!isRecord(item) || !isTimestamp(item.startedAt)) return false
+    return item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.startedAt)
+  })
+}
+
+function validateBackup(backup: BackupData): void {
+  if (!isRecord(backup.settings)) throw new Error('The selected backup has invalid settings')
+  if (!hasUniqueIds(backup.projects) || !backup.projects.every((item) => isId(item.name) && isId(item.color) && typeof item.archived === 'boolean' && isTimestamp(item.createdAt))) {
+    throw new Error('The selected backup has invalid projects')
+  }
+  const projectIds = new Set(backup.projects.map((item) => item.id))
+  if (!hasUniqueIds(backup.plannedTasks) || !backup.plannedTasks.every((item) => isId(item.title) && typeof item.notes === 'string' && isTimestamp(item.createdAt) && isOptionalId(item.projectId) && (item.projectId === null || projectIds.has(item.projectId)))) {
+    throw new Error('The selected backup has invalid planned tasks')
+  }
+  const plannedTaskIds = new Set(backup.plannedTasks.map((item) => item.id))
+  if (!hasUniqueIds(backup.tasks) || !backup.tasks.every((item) =>
+    typeof item.title === 'string'
+    && typeof item.notes === 'string'
+    && Array.isArray(item.tags)
+    && item.tags.every((tag) => typeof tag === 'string')
+    && (item.status === 'running' || item.status === 'paused' || item.status === 'stopped')
+    && isTimestamp(item.createdAt)
+    && isTimestamp(item.updatedAt)
+    && isOptionalId(item.projectId)
+    && (item.projectId === null || projectIds.has(item.projectId))
+    && isOptionalId(item.plannedTaskId)
+    && (item.plannedTaskId === null || plannedTaskIds.has(item.plannedTaskId))
+    && validIntervals(item.intervals, item.id)
+  )) throw new Error('The selected backup has invalid tasks')
+  const intervalIds = backup.tasks.flatMap((item) => item.intervals.map((interval) => interval.id))
+  if (!hasUniqueIds(backup.workdays) || !backup.workdays.every((item) => isTimestamp(item.startedAt) && (item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.startedAt)))) {
+    throw new Error('The selected backup has invalid workdays')
+  }
+  if (backup.workdays.filter((item) => item.endedAt === null).length > 1) throw new Error('The selected backup has more than one active workday')
+  if (!hasUniqueIds(backup.rests) || !backup.rests.every((item) =>
+    (item.type === 'lunch' || item.type === 'break')
+    && (item.status === 'running' || item.status === 'paused' || item.status === 'completed')
+    && Number.isFinite(item.plannedMinutes)
+    && item.plannedMinutes >= 0
+    && typeof item.alarmMuted === 'boolean'
+    && isTimestamp(item.createdAt)
+    && (item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.createdAt))
+    && validIntervals(item.intervals, item.id)
+  )) throw new Error('The selected backup has invalid rest sessions')
+  intervalIds.push(...backup.rests.flatMap((item) => item.intervals.map((interval) => interval.id)))
+  if (new Set(intervalIds).size !== intervalIds.length) throw new Error('The selected backup has duplicate interval IDs')
+  if (backup.rests.filter((item) => item.status !== 'completed').length > 1) throw new Error('The selected backup has more than one active break')
+  for (const date of backup.overtimeRedeemedDates ?? []) localDateTimestamp(date)
 }
 
 function deepSettings(raw?: string): AppSettings {
@@ -172,6 +229,10 @@ export class WorkBuddyDatabase {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
     this.migrate()
+  }
+
+  close(): void {
+    this.db.close()
   }
 
   private migrate(): void {
@@ -320,10 +381,10 @@ export class WorkBuddyDatabase {
       .prepare(
         `SELECT DISTINCT t.* FROM tasks t
          LEFT JOIN time_intervals i ON i.task_id = t.id
-         WHERE t.status IN ('running', 'paused') OR i.started_at BETWEEN ? AND ?
+         WHERE t.status IN ('running', 'paused') OR (i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?))
          ORDER BY CASE t.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, t.updated_at DESC`
       )
-      .all(dayStart, dayEnd) as TaskRow[]
+      .all(dayEnd, dayStart) as TaskRow[]
 
     const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
     const tasks = taskRows.map((row): Task => {
@@ -350,16 +411,16 @@ export class WorkBuddyDatabase {
     })
 
     const workdayRow = this.db
-      .prepare('SELECT * FROM workdays WHERE started_at BETWEEN ? AND ? ORDER BY started_at DESC LIMIT 1')
-      .get(dayStart, dayEnd) as WorkdayRow | undefined
+      .prepare('SELECT * FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at DESC LIMIT 1')
+      .get(dayEnd, dayStart) as WorkdayRow | undefined
 
     const workday: Workday | null = workdayRow
       ? { id: workdayRow.id, startedAt: workdayRow.started_at, endedAt: workdayRow.ended_at }
       : null
 
     const restRows = this.db
-      .prepare("SELECT * FROM rest_sessions WHERE created_at BETWEEN ? AND ? OR status IN ('running', 'paused') ORDER BY created_at")
-      .all(dayStart, dayEnd) as RestRow[]
+      .prepare("SELECT * FROM rest_sessions WHERE (created_at < ? AND (ended_at IS NULL OR ended_at > ?)) OR status IN ('running', 'paused') ORDER BY created_at")
+      .all(dayEnd, dayStart) as RestRow[]
     const restIntervalStatement = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
     const rests = restRows.map((row): RestSession => ({
       id: row.id,
@@ -382,13 +443,11 @@ export class WorkBuddyDatabase {
 
   getHistory(days = 182): HistoryDay[] {
     const safeDays = Math.min(730, Math.max(14, Math.round(days)))
-    const [todayStart] = localDayBounds()
-    const rangeStart = todayStart - (safeDays - 1) * DAY_MS
-    const rangeEnd = todayStart + DAY_MS
+    const [todayStart, rangeEnd] = localDayBounds()
+    const rangeStart = localDaysBefore(todayStart, safeDays - 1)
     type DayBucket = HistoryDay & { ranges: Array<readonly [number, number]>; taskIds: Set<string>; projectIds: Set<string> }
     const buckets = new Map<string, DayBucket>()
-    for (let index = 0; index < safeDays; index += 1) {
-      const start = rangeStart + index * DAY_MS
+    for (let start = rangeStart; start < rangeEnd; start = localDayBounds(start)[1]) {
       const key = localDateKey(start)
       buckets.set(key, { date: key, workedMs: 0, taskCount: 0, projectCount: 0, startedAt: null, endedAt: null, ranges: [], taskIds: new Set(), projectIds: new Set() })
     }
@@ -401,16 +460,17 @@ export class WorkBuddyDatabase {
     const now = Date.now()
     for (const interval of intervals) {
       const intervalEnd = Math.min(interval.ended_at ?? now, rangeEnd)
-      for (let dayStart = Math.max(rangeStart, localDayBounds(interval.started_at)[0]); dayStart < intervalEnd; dayStart += DAY_MS) {
+      for (let dayStart = Math.max(rangeStart, localDayBounds(interval.started_at)[0]); dayStart < intervalEnd; dayStart = localDayBounds(dayStart)[1]) {
         const bucket = buckets.get(localDateKey(dayStart))
         if (!bucket) continue
-        bucket.ranges.push([Math.max(interval.started_at, dayStart), Math.min(intervalEnd, dayStart + DAY_MS)])
+        const [, dayEnd] = localDayBounds(dayStart)
+        bucket.ranges.push([Math.max(interval.started_at, dayStart), Math.min(intervalEnd, dayEnd)])
         bucket.taskIds.add(interval.task_id)
         if (interval.project_id) bucket.projectIds.add(interval.project_id)
       }
     }
 
-    const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at >= ?)').all(rangeEnd, rangeStart) as Array<{ started_at: number; ended_at: number | null }>
+    const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?)').all(rangeEnd, rangeStart) as Array<{ started_at: number; ended_at: number | null }>
     for (const workday of workdays) {
       const bucket = buckets.get(localDateKey(Math.max(workday.started_at, rangeStart)))
       if (!bucket) continue
@@ -492,9 +552,9 @@ export class WorkBuddyDatabase {
       id: row.id, title: row.title, projectId: row.project_id, plannedTaskId: row.planned_task_id, notes: row.notes, tags: JSON.parse(row.tags_json) as string[], status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
       intervals: (intervalStatement.all(row.id) as IntervalRow[]).map((item): TimeInterval => ({ id: item.id, taskId: item.task_id, startedAt: item.started_at, endedAt: item.ended_at }))
     }))
-    const workdayRow = this.db.prepare('SELECT * FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY started_at DESC LIMIT 1').get(dayEnd, dayStart) as WorkdayRow | undefined
+    const workdayRow = this.db.prepare('SELECT * FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at DESC LIMIT 1').get(dayEnd, dayStart) as WorkdayRow | undefined
     const workday = workdayRow ? { id: workdayRow.id, startedAt: workdayRow.started_at, endedAt: workdayRow.ended_at } : null
-    const restRows = this.db.prepare('SELECT * FROM rest_sessions WHERE created_at < ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY created_at').all(dayEnd, dayStart) as RestRow[]
+    const restRows = this.db.prepare('SELECT * FROM rest_sessions WHERE created_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY created_at').all(dayEnd, dayStart) as RestRow[]
     const restIntervalStatement = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
     const rests = restRows.map((row): RestSession => ({
       id: row.id, type: row.type, status: row.status, plannedMinutes: row.planned_minutes, alarmMuted: Boolean(row.alarm_muted), createdAt: row.created_at, endedAt: row.ended_at,
@@ -561,7 +621,14 @@ export class WorkBuddyDatabase {
     }
     const collections = [candidate.projects, candidate.plannedTasks, candidate.tasks, candidate.workdays, candidate.rests]
     if (!collections.every(Array.isArray)) throw new Error('The selected backup is incomplete')
-    return { ...candidate, overtimeRedeemedDates: Array.isArray(candidate.overtimeRedeemedDates) ? candidate.overtimeRedeemedDates.filter((date): date is string => typeof date === 'string') : [] } as BackupData
+    const rawRests = candidate.rests as unknown[]
+    const normalized = {
+      ...candidate,
+      rests: rawRests.map((item) => isRecord(item) && typeof item.alarmMuted !== 'boolean' ? { ...item, alarmMuted: false } : item),
+      overtimeRedeemedDates: Array.isArray(candidate.overtimeRedeemedDates) ? candidate.overtimeRedeemedDates.filter((date): date is string => typeof date === 'string') : []
+    } as BackupData
+    validateBackup(normalized)
+    return normalized
   }
 
   getBackupPreview(backup: BackupData): BackupPreview {
@@ -678,7 +745,7 @@ export class WorkBuddyDatabase {
 
   getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {
     const safeDays = Math.min(730, Math.max(1, Math.round(days)))
-    const start = Date.now() - safeDays * DAY_MS
+    const start = localDaysBefore(Date.now(), safeDays)
     const rows = this.db.prepare(
       `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name
        FROM time_intervals i
@@ -870,7 +937,7 @@ export class WorkBuddyDatabase {
     if (this.getActiveRest()) throw new Error('Finish the active break first')
     const now = Date.now()
     const [dayStart, dayEnd] = localDayBounds(now)
-    const alreadySkipped = this.db.prepare('SELECT 1 FROM rest_sessions WHERE type = ? AND planned_minutes = 0 AND created_at BETWEEN ? AND ?').get(type, dayStart, dayEnd)
+    const alreadySkipped = this.db.prepare('SELECT 1 FROM rest_sessions WHERE type = ? AND planned_minutes = 0 AND created_at >= ? AND created_at < ?').get(type, dayStart, dayEnd)
     if (!alreadySkipped) {
       this.db.prepare("INSERT INTO rest_sessions (id, type, status, planned_minutes, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, 'completed', 0, ?, ?, '[]')")
         .run(randomUUID(), type, now, now)
@@ -1015,9 +1082,12 @@ export class WorkBuddyDatabase {
   getWorkedCoverageToday(now = Date.now()): number {
     const [dayStart, dayEnd] = localDayBounds(now)
     const rows = this.db
-      .prepare('SELECT started_at, ended_at FROM time_intervals WHERE started_at BETWEEN ? AND ? ORDER BY started_at')
-      .all(dayStart, dayEnd) as Array<{ started_at: number; ended_at: number | null }>
-    const ranges = rows.map((row) => [row.started_at, row.ended_at ?? now] as const).sort((a, b) => a[0] - b[0])
+      .prepare('SELECT started_at, ended_at FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at')
+      .all(dayEnd, dayStart) as Array<{ started_at: number; ended_at: number | null }>
+    const ranges = rows
+      .map((row) => [Math.max(row.started_at, dayStart), Math.min(row.ended_at ?? now, dayEnd)] as const)
+      .filter(([, end]) => end > dayStart)
+      .sort((a, b) => a[0] - b[0])
     if (!ranges.length) return 0
     let total = 0
     let [start, end] = ranges[0]

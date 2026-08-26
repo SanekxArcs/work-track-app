@@ -576,6 +576,7 @@ app.on('before-quit', () => {
   reminders?.stop()
   if (sanityPushTimer) clearTimeout(sanityPushTimer)
   if (sanityCommandTimer) clearInterval(sanityCommandTimer)
+  database?.close()
 })
 
 app.on('will-quit', () => globalShortcut.unregisterAll())

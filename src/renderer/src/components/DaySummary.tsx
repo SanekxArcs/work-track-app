@@ -5,6 +5,7 @@ import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
 import { workdayOvertimeMs } from '@shared/workday'
+import { localDateKey, localDayBounds } from '@shared/local-date'
 import { HistoryPanel } from './HistoryPanel'
 
 interface DaySummaryProps {
@@ -34,11 +35,6 @@ function atTime(reference: number, value: string): number {
   return date.getTime()
 }
 
-function localDateKey(timestamp: number): string {
-  const date = new Date(timestamp)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
 function historyLabel(value: string, locale: 'uk' | 'en'): string {
   const [year, month, day] = value.split('-').map(Number)
   return new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(year, month - 1, day, 12))
@@ -48,7 +44,11 @@ function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs
   const { workday, lunch } = snapshot.settings
   const start = atTime(reference, workday.startTime)
   let end = atTime(reference, workday.endTime)
-  if (end <= start) end += 24 * 60 * 60 * 1000
+  if (end <= start) {
+    const nextDay = new Date(end)
+    nextDay.setDate(nextDay.getDate() + 1)
+    end = nextDay.getTime()
+  }
   end += extraLunchMs
   const actualRests = snapshot.rests.flatMap((rest) => rest.intervals.map((interval): ScheduleSegment => ({
     type: rest.type,
@@ -102,10 +102,8 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const span = startedAt && endedAt ? endedAt - startedAt : 0
   const switches = Math.max(0, intervals.length - reportSnapshot.tasks.filter((task) => task.intervals.length > 0).length)
   const hasOpenDay = !isHistorical && reportSnapshot.workday?.endedAt === null
-  const todayStart = new Date(reportNow)
-  todayStart.setHours(0, 0, 0, 0)
-  const todayEnd = todayStart.getTime() + 24 * 60 * 60 * 1000
-  const tasks = reportSnapshot.tasks.filter((task) => task.intervals.some((interval) => interval.startedAt < todayEnd && (interval.endedAt ?? reportNow) >= todayStart.getTime()))
+  const [todayStart, todayEnd] = localDayBounds(reportNow)
+  const tasks = reportSnapshot.tasks.filter((task) => task.intervals.some((interval) => interval.startedAt < todayEnd && (interval.endedAt ?? reportNow) > todayStart))
   const timelineStart = intervals.length ? Math.min(...intervals.map((interval) => interval.startedAt)) : startedAt ?? reportNow
   const intervalEnd = intervals.length ? Math.max(...intervals.map((interval) => interval.endedAt ?? reportNow)) : endedAt ?? reportNow
   const timelineEnd = Math.max(timelineStart + 60_000, intervalEnd)
@@ -113,7 +111,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const restTime = (type: 'break' | 'lunch'): number => reportSnapshot.rests
     .filter((rest) => rest.type === type)
     .flatMap((rest) => rest.intervals)
-    .reduce((total, interval) => total + Math.max(0, Math.min(interval.endedAt ?? reportNow, todayEnd) - Math.max(interval.startedAt, todayStart.getTime())), 0)
+    .reduce((total, interval) => total + Math.max(0, Math.min(interval.endedAt ?? reportNow, todayEnd) - Math.max(interval.startedAt, todayStart)), 0)
   const breakTime = restTime('break')
   const lunchTime = restTime('lunch')
   const baseSchedule = scheduleSegments(reportSnapshot, reportNow)
