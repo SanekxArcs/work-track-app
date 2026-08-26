@@ -221,6 +221,28 @@ function icsTimestamp(value: number): string {
   return new Date(value).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
 }
 
+/** RFC 5545 limits each physical iCalendar line to 75 UTF-8 octets. */
+function foldIcsLine(line: string): string {
+  if (Buffer.byteLength(line, 'utf8') <= 75) return line
+  const parts: string[] = []
+  let current = ''
+  let width = 0
+  for (const character of line) {
+    const characterWidth = Buffer.byteLength(character, 'utf8')
+    const maximum = parts.length ? 74 : 75
+    if (current && width + characterWidth > maximum) {
+      parts.push(current)
+      current = character
+      width = characterWidth
+    } else {
+      current += character
+      width += characterWidth
+    }
+  }
+  if (current) parts.push(current)
+  return parts.map((part, index) => index === 0 ? part : ` ${part}`).join('\r\n')
+}
+
 export class WorkBuddyDatabase {
   private readonly db: DatabaseSync
 
@@ -740,7 +762,7 @@ export class WorkBuddyDatabase {
     })
     const events = [...taskEvents, ...restEvents]
     if (!events.length) throw new Error('There is no tracked work to export for this day')
-    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Work Buddy//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...events, 'END:VCALENDAR', ''].join('\r\n')
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Work Buddy//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...events, 'END:VCALENDAR', ''].map(foldIcsLine).join('\r\n')
   }
 
   getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {

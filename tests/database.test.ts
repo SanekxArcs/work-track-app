@@ -70,3 +70,15 @@ test('rejects an invalid backup before it can be imported into SQLite', async ()
     assert.equal(database.exportBackup().tasks.length, 1)
   })
 })
+
+test('folds long calendar lines without splitting UTF-8 characters', async () => {
+  await withDatabase(async (database) => {
+    const notes = 'Робота над дуже довгим описом для календаря, який має лишатися валідним після експорту. '.repeat(3)
+    await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes }))
+    await atTime(at(26, 11), () => database.endWorkday())
+    const calendar = database.createDayCalendarIcs('2026-08-26')
+
+    assert.ok(calendar.split('\r\n').every((line) => Buffer.byteLength(line, 'utf8') <= 75))
+    assert.match(calendar, /\r\n /)
+  })
+})
