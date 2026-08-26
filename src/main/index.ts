@@ -6,6 +6,7 @@ import { GeminiService } from './gemini'
 import { GoogleCalendarService } from './google-calendar'
 import { ReminderService } from './reminders'
 import { SanityService } from './sanity'
+import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
 import type { AppSettings, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
@@ -413,13 +414,14 @@ function registerIpc(): void {
     const path = result.filePaths[0]
     if (result.canceled || !path) return null
     if (!configureSanityFromEnvironment(readEnvironment(await readFile(path, 'utf8')))) throw new Error('The selected file does not contain a complete Sanity configuration')
+    await sanity.sync()
     const snapshot = database.getSnapshot()
     emitChanged()
     return snapshot
   })
   ipcMain.handle(channels.backupExport, async () => {
     if (!mainWindow) return null
-    const date = new Date().toISOString().slice(0, 10)
+    const date = localDateKey(Date.now())
     const result = await dialog.showSaveDialog(mainWindow, {
       title: database.getSettings().locale === 'uk' ? 'Зберегти резервну копію' : 'Save backup',
       defaultPath: join(app.getPath('downloads'), `work-buddy-backup-${date}.workbuddy.json`),
@@ -551,7 +553,7 @@ else {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
-    void sanity.push().catch(() => undefined)
+    void sanity.sync().then(() => emitChanged()).catch(() => undefined)
     sanityCommandTimer = setInterval(() => {
       void sanity.processPendingCommands().then((changed) => { if (changed) emitChanged() }).catch(() => undefined)
     }, 1_500)

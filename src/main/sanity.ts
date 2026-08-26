@@ -16,6 +16,16 @@ type WorkBuddyCommand = {
   restType?: RestType
 }
 
+/** A fresh desktop can restore its cloud workspace without overwriting local work. */
+export function shouldRestoreCloudBackup(backup: BackupData): boolean {
+  return backup.projects.length === 0
+    && backup.plannedTasks.length === 0
+    && backup.tasks.length === 0
+    && backup.workdays.length === 0
+    && backup.rests.length === 0
+    && (backup.overtimeRedeemedDates?.length ?? 0) === 0
+}
+
 function readError(body: unknown): string {
   if (body && typeof body === 'object' && 'error' in body) {
     const error = (body as { error?: { description?: string; message?: string } | string }).error
@@ -149,13 +159,13 @@ export class SanityService {
   }
 
   async sync(): Promise<SanitySyncResult> {
+    const local = this.database.exportBackup()
     const remote = await this.readCloudBackup()
-    const merged = Boolean(remote)
-    if (remote) this.database.importBackup(remote, 'merge')
+    const merged = Boolean(remote && shouldRestoreCloudBackup(local))
+    if (remote && merged) this.database.importBackup(remote, 'replace')
     await this.push()
     const syncedAt = this.database.getSettings().sanity.lastSyncedAt ?? Date.now()
     const settings = this.database.getSettings()
-    this.database.updateSettings({ ...settings, sanity: { ...settings.sanity, lastSyncedAt: syncedAt } })
     return { merged, projectId: settings.sanity.projectId, dataset: settings.sanity.dataset, syncedAt }
   }
 }
