@@ -5,9 +5,10 @@ const clientId = process.env.GOOGLE_CLIENT_ID
 const clientSecret = process.env.GOOGLE_CLIENT_SECRET
 
 export const googleLoginConfigured = Boolean(clientId && clientSecret)
+export const googleLoginEnabled = googleLoginConfigured && process.env.WORK_BUDDY_REQUIRE_GOOGLE_LOGIN === 'true'
 
 export const authOptions: NextAuthOptions = {
-  providers: googleLoginConfigured ? [GoogleProvider({ clientId: clientId!, clientSecret: clientSecret! })] : [],
+  providers: googleLoginEnabled ? [GoogleProvider({ clientId: clientId!, clientSecret: clientSecret! })] : [],
   callbacks: {
     async signIn({ profile }) {
       const allowedEmail = process.env.WORK_BUDDY_ALLOWED_EMAIL?.trim().toLowerCase()

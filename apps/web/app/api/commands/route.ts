@@ -1,6 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { NextRequest, NextResponse } from 'next/server'
-import { authOptions, googleLoginConfigured } from '../../../auth-options'
+import { authOptions, googleLoginEnabled } from '../../../auth-options'
 import { queueCommand } from '../../../lib/sanity'
 import type { WorkBuddyCommand } from '../../../lib/workspace'
 
@@ -15,7 +15,7 @@ function isCommand(value: unknown): value is WorkBuddyCommand {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const session = await getServerSession(authOptions)
-  if (googleLoginConfigured && !session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (googleLoginEnabled && !session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const body: unknown = await request.json().catch(() => null)
   if (!isCommand(body)) return NextResponse.json({ error: 'Invalid command' }, { status: 400 })
   try {
