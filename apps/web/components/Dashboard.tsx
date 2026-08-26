@@ -14,8 +14,8 @@ function restElapsed(rest: WebRest, now: number): number {
   return rest.intervals.reduce((total, interval) => total + Math.max(0, (interval.endedAt ?? now) - interval.startedAt), 0)
 }
 
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('uk-UA', { hour: '2-digit', minute: '2-digit', hour12: false }).format(timestamp)
+function formatTime(timestamp: number, withSeconds = false): string {
+  return new Intl.DateTimeFormat('uk-UA', { hour: '2-digit', minute: '2-digit', ...(withSeconds ? { second: '2-digit' } : {}), hour12: false }).format(timestamp)
 }
 
 function formatDate(timestamp: number): string {
@@ -28,10 +28,16 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
   const [commandStatus, setCommandStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [mode, setMode] = useState<DashboardMode>('dashboard')
+  const [focusSettingsOpen, setFocusSettingsOpen] = useState(false)
+  const [focusShowSeconds, setFocusShowSeconds] = useState(true)
+  const [focusShowContext, setFocusShowContext] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   useEffect(() => {
     const savedMode = window.localStorage.getItem('work-buddy-dashboard-mode')
     if (savedMode === 'focus' || savedMode === 'dashboard') setMode(savedMode)
+    setFocusShowSeconds(window.localStorage.getItem('work-buddy-focus-seconds') !== 'false')
+    setFocusShowContext(window.localStorage.getItem('work-buddy-focus-context') !== 'false')
     const clock = window.setInterval(() => setNow(Date.now()), 1_000)
     const refresh = async (): Promise<void> => {
       const response = await fetch('/api/workspace', { cache: 'no-store' })
@@ -40,7 +46,9 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
     }
     void refresh()
     const sync = window.setInterval(() => void refresh(), 1_500)
-    return () => { window.clearInterval(clock); window.clearInterval(sync) }
+    const onFullscreenChange = (): void => setIsFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => { window.clearInterval(clock); window.clearInterval(sync); document.removeEventListener('fullscreenchange', onFullscreenChange) }
   }, [])
 
   const setDashboardMode = (nextMode: DashboardMode): void => {
@@ -59,6 +67,13 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
   const heroTitle = activeRest ? (activeRest.type === 'lunch' ? 'Твій обід' : 'Твоя перерва') : primaryTask ? taskLabel(primaryTask) : 'Поки тихо'
   const heroProject = activeRest ? 'Час для себе' : primaryProject?.name || 'Вільний фокус'
   const focusColor = activeRest ? '#f7a072' : primaryProject?.color || '#b8e986'
+  const focusUsesWorkTimer = Boolean(workday)
+  const focusMainTime = focusUsesWorkTimer ? formatDuration(heroDuration) : formatTime(now, focusShowSeconds)
+  const focusTitle = focusUsesWorkTimer ? heroTitle : 'Твій час'
+  const focusProject = focusUsesWorkTimer ? heroProject : 'Work Buddy'
+  const focusState = focusUsesWorkTimer
+    ? (activeRest ? 'Відпочинок іде' : runningTasks.length ? `${runningTasks.length} активн${runningTasks.length === 1 ? 'а задача' : 'і задачі'}` : 'Обери задачу на десктопі')
+    : 'Робочий день завершено'
 
   const send = async (command: WorkBuddyCommand): Promise<void> => {
     setLoading(true)
@@ -83,35 +98,59 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
 
   if (!workspace) return <main className="setup-card"><p className="eyebrow">Work Buddy Web</p><h1>Чекаю першу синхронізацію</h1><p>Відкрий десктопний Work Buddy і виконай синхронізацію з Sanity. Після цього цей екран оживе сам.</p></main>
 
+  const updateFocusSetting = (key: 'seconds' | 'context', value: boolean): void => {
+    if (key === 'seconds') setFocusShowSeconds(value)
+    else setFocusShowContext(value)
+    window.localStorage.setItem(`work-buddy-focus-${key}`, String(value))
+  }
+
+  const toggleFullscreen = async (): Promise<void> => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else await document.documentElement.requestFullscreen()
+    } catch {
+      setCommandStatus('Цей браузер не дозволив повноекранний режим.')
+    }
+  }
+
   return <main className={`dashboard-shell dashboard-shell--${mode}`} style={{ '--focus-color': focusColor } as React.CSSProperties}>
-    <header className="dashboard-header">
+    {mode === 'dashboard' && <header className="dashboard-header">
       <div className="brand-block"><p className="eyebrow">Work Buddy · live</p><p className="today-label">{formatDate(now)}</p></div>
       <div className="header-actions">
         <span className="live-chip"><i />онлайн</span>
         <div className="view-switcher" aria-label="Режим дашборду">
-          <button className={mode === 'dashboard' ? 'is-active' : ''} onClick={() => setDashboardMode('dashboard')} aria-label="Звичайний дашборд">▦<span>Дашборд</span></button>
-          <button className={mode === 'focus' ? 'is-active' : ''} onClick={() => setDashboardMode('focus')} aria-label="Focus Clock">◷<span>Focus</span></button>
+          <button className="is-active" onClick={() => setDashboardMode('dashboard')} aria-label="Звичайний дашборд">▦<span>Дашборд</span></button>
+          <button onClick={() => setDashboardMode('focus')} aria-label="Focus Clock">◷<span>Focus</span></button>
         </div>
       </div>
-    </header>
+    </header>}
 
     {mode === 'focus' ? <section className="focus-clock" aria-label="Focus Clock">
-      <p className="focus-wall-clock">{formatTime(now)}</p>
+      {focusUsesWorkTimer && <p className="focus-wall-clock">{formatTime(now)}</p>}
+      <div className="focus-controls">
+        <button className="focus-icon-button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? 'Вийти з повного екрана' : 'На весь екран'}>{isFullscreen ? '⤢' : '⛶'}</button>
+        <button className="focus-icon-button" onClick={() => setFocusSettingsOpen((open) => !open)} aria-label="Налаштування Focus Clock" aria-expanded={focusSettingsOpen}>⚙</button>
+        <button className="focus-icon-button" onClick={() => setDashboardMode('dashboard')} aria-label="Відкрити дашборд">▦</button>
+      </div>
+      {focusSettingsOpen && <aside className="focus-settings" aria-label="Налаштування годинника">
+        <div><p className="eyebrow">Focus Clock</p><button onClick={() => setFocusSettingsOpen(false)} aria-label="Закрити налаштування">×</button></div>
+        <label><span>Секунди у звичайному годиннику</span><input type="checkbox" checked={focusShowSeconds} onChange={(event) => updateFocusSetting('seconds', event.target.checked)} /></label>
+        <label><span>Показувати контекст задачі</span><input type="checkbox" checked={focusShowContext} onChange={(event) => updateFocusSetting('context', event.target.checked)} /></label>
+      </aside>}
       <div className="focus-orbit focus-orbit--one" /><div className="focus-orbit focus-orbit--two" />
       <div className="focus-content">
-        <p className="focus-project">{heroProject}</p>
-        <h1>{heroTitle}</h1>
-        <strong>{formatDuration(heroDuration)}</strong>
-        <p className="focus-state">{activeRest ? 'Відпочинок іде' : runningTasks.length ? `${runningTasks.length} активн${runningTasks.length === 1 ? 'а задача' : 'і задачі'}` : workday ? 'Обери задачу на десктопі' : 'Розпочни день на десктопі'}</p>
+        {focusShowContext && <><p className="focus-project">{focusProject}</p><h1>{focusTitle}</h1></>}
+        <strong>{focusMainTime}</strong>
+        {focusShowContext && <p className="focus-state">{focusState}</p>}
       </div>
       <div className="focus-dock">
         {activeRest ? restActions() : primaryTask ? <button className={primaryTask.status === 'running' ? 'primary-button' : ''} disabled={loading} onClick={() => void send(primaryTask.status === 'running' ? { command: 'pause-task', taskId: primaryTask.id } : { command: 'resume-task', taskId: primaryTask.id })}>{primaryTask.status === 'running' ? 'Ⅱ Пауза' : '▶ Продовжити'}</button> : null}
         {!activeRest && workday && <button disabled={loading} onClick={() => void send({ command: 'start-rest', restType: 'break' })}>Перерва</button>}
       </div>
-      <div className="focus-task-rail">{activeTasks.slice(0, 4).map((task) => {
+      {focusUsesWorkTimer && <div className="focus-task-rail">{activeTasks.slice(0, 4).map((task) => {
         const project = task.projectId ? projectById.get(task.projectId) : undefined
         return <span key={task.id} className={task.status === 'running' ? 'is-running' : ''} style={{ '--project': project?.color ?? '#b8e986' } as React.CSSProperties}>{project?.name || taskLabel(task)}</span>
-      })}</div>
+      })}</div>}
     </section> : <>
       <section className="dashboard-grid">
         <article className="hero-clock">
@@ -143,6 +182,6 @@ export function Dashboard({ initialWorkspace, email }: { initialWorkspace: WebWo
         })}</div> : <p className="empty-state">Поки тихо. Запусти першу задачу на десктопі.</p>}
       </section>
     </>}
-    <p className="account-label">{email}</p>
+    {mode === 'dashboard' && <p className="account-label">{email}</p>}
   </main>
 }
