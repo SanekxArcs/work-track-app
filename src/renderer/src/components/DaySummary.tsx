@@ -4,6 +4,7 @@ import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, 
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
+import { workdayOvertimeMs } from '@shared/workday'
 import { HistoryPanel } from './HistoryPanel'
 
 interface DaySummaryProps {
@@ -105,8 +106,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   todayStart.setHours(0, 0, 0, 0)
   const todayEnd = todayStart.getTime() + 24 * 60 * 60 * 1000
   const tasks = reportSnapshot.tasks.filter((task) => task.intervals.some((interval) => interval.startedAt < todayEnd && (interval.endedAt ?? reportNow) >= todayStart.getTime()))
-  const timelineStart = startedAt ?? reportNow
-  const timelineEnd = Math.max(timelineStart + 60_000, endedAt ?? reportNow)
+  const timelineStart = intervals.length ? Math.min(...intervals.map((interval) => interval.startedAt)) : startedAt ?? reportNow
+  const intervalEnd = intervals.length ? Math.max(...intervals.map((interval) => interval.endedAt ?? reportNow)) : endedAt ?? reportNow
+  const timelineEnd = Math.max(timelineStart + 60_000, intervalEnd)
   const timelineSpan = timelineEnd - timelineStart
   const restTime = (type: 'break' | 'lunch'): number => reportSnapshot.rests
     .filter((rest) => rest.type === type)
@@ -121,9 +123,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const scheduleProgress = Math.min(100, Math.max(0, ((reportNow - schedule.start) / scheduleSpan) * 100))
   const scheduledMinutes = scheduleSpan / 60_000
   const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
-  const overtimeReference = reportSnapshot.workday?.endedAt ?? (hasOpenDay ? reportNow : undefined)
-  const overtime = startedAt && overtimeReference ? Math.max(0, overtimeReference - schedule.end) : 0
   const overtimeDay = overtimeOverview.days.find((day) => day.date === selectedDate)
+  const overtime = hasOpenDay
+    ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow)
+    : overtimeDay?.overtimeMs ?? 0
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
 
   const toggleMergeTask = (id: string): void => {

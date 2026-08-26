@@ -25,6 +25,7 @@ import type {
   TimeInterval,
   Workday
 } from '../shared/types'
+import { workdayOvertimeMs } from '../shared/workday'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -134,14 +135,6 @@ function localDateTimestamp(value: string): number {
   const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0)
   if (localDateKey(date.getTime()) !== value) throw new Error('Invalid history date')
   return date.getTime()
-}
-
-function scheduledEndAt(startedAt: number, endTime: string): number {
-  const [hours, minutes] = endTime.split(':').map(Number)
-  const scheduled = new Date(startedAt)
-  scheduled.setHours(hours || 0, minutes || 0, 0, 0)
-  if (scheduled.getTime() <= startedAt) scheduled.setDate(scheduled.getDate() + 1)
-  return scheduled.getTime()
 }
 
 function deepSettings(raw?: string): AppSettings {
@@ -421,8 +414,8 @@ export class WorkBuddyDatabase {
     for (const workday of workdays) {
       const bucket = buckets.get(localDateKey(Math.max(workday.started_at, rangeStart)))
       if (!bucket) continue
-      bucket.startedAt = workday.started_at
-      bucket.endedAt = workday.ended_at
+      bucket.startedAt = bucket.startedAt === null ? workday.started_at : Math.min(bucket.startedAt, workday.started_at)
+      if (workday.ended_at !== null) bucket.endedAt = bucket.endedAt === null ? workday.ended_at : Math.max(bucket.endedAt, workday.ended_at)
     }
 
     return [...buckets.values()].map((bucket) => {
@@ -448,17 +441,19 @@ export class WorkBuddyDatabase {
     const settings = this.getSettings()
     const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE ended_at IS NOT NULL ORDER BY started_at DESC').all() as Array<{ started_at: number; ended_at: number }>
     const redemptions = new Set((this.db.prepare('SELECT date FROM overtime_redemptions').all() as Array<{ date: string }>).map((row) => row.date))
-    const lunchIntervals = this.db.prepare(
-      `SELECT i.started_at, i.ended_at FROM rest_intervals i
-       JOIN rest_sessions r ON r.id = i.rest_id
+    const lunchSessions = this.db.prepare(
+      `SELECT r.*, i.id AS interval_id, i.started_at AS interval_started_at, i.ended_at AS interval_ended_at
+       FROM rest_sessions r JOIN rest_intervals i ON i.rest_id = r.id
        WHERE r.type = 'lunch' AND i.started_at < ? AND i.ended_at > ?`
     )
     const dailyOvertime = new Map<string, number>()
     for (const workday of workdays) {
-      const lunchMs = (lunchIntervals.all(workday.ended_at, workday.started_at) as Array<{ started_at: number; ended_at: number }>)
-        .reduce((total, interval) => total + Math.max(0, Math.min(interval.ended_at, workday.ended_at) - Math.max(interval.started_at, workday.started_at)), 0)
-      const lunchOverage = Math.max(0, lunchMs - settings.lunch.durationMinutes * 60_000)
-      const overtime = Math.max(0, workday.ended_at - (scheduledEndAt(workday.started_at, settings.workday.endTime) + lunchOverage))
+      const rests = (lunchSessions.all(workday.ended_at, workday.started_at) as Array<RestRow & { interval_id: string; interval_started_at: number; interval_ended_at: number }>)
+        .map((row): RestSession => ({
+          id: row.id, type: 'lunch', status: row.status, plannedMinutes: row.planned_minutes, alarmMuted: Boolean(row.alarm_muted), createdAt: row.created_at, endedAt: row.ended_at,
+          intervals: [{ id: row.interval_id, restId: row.id, startedAt: row.interval_started_at, endedAt: row.interval_ended_at }]
+        }))
+      const overtime = workdayOvertimeMs(settings, { id: '', startedAt: workday.started_at, endedAt: workday.ended_at }, rests, workday.ended_at)
       if (overtime > 0) {
         const date = localDateKey(workday.started_at)
         dailyOvertime.set(date, (dailyOvertime.get(date) ?? 0) + overtime)
