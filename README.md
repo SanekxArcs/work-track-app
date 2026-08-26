@@ -81,7 +81,7 @@ npm run dist:win
 The installer will be similar to:
 
 ```text
-release-v0.8.10/Work Buddy Setup 0.8.10.exe
+release-v0.8.11/Work Buddy Setup 0.8.11.exe
 ```
 
 ### macOS
@@ -143,10 +143,33 @@ For development, place these values in a local `.env` file (it is gitignored):
 NEXT_PUBLIC_SANITY_PROJECT_ID=...
 NEXT_PUBLIC_SANITY_DATASET=...
 NEXT_PUBLIC_SANITY_API_VERSION=2026-08-21
-NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL=...
+SANITY_API_WRITE_TOKEN=...
 ```
 
-For an installed build, use **Choose Sanity .env** once in Settings. The token is then encrypted through the operating system’s secure storage and the `.env` file is not copied into the app. Prefer a dedicated Sanity project robot token with only Content Lake read/write access over a personal or full-control token.
+The older `NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL` name remains supported for existing desktop installations, but must never be used on Vercel or in browser code. Prefer `SANITY_PROJECT_ID`, `SANITY_DATASET`, `SANITY_API_VERSION`, and the server-only `SANITY_API_WRITE_TOKEN` names shown above.
+
+For an installed build, use **Choose Sanity .env** once in Settings. The token is then encrypted through the operating system’s secure storage and the `.env` file is not copied into the app. Use a dedicated Sanity robot token with Content Lake read/write access only; do not use a personal or full-control token.
+
+### Web PWA
+
+The phone/tablet companion lives in `apps/web`. It is a Next.js PWA that shows the same active workday and sends remote commands to the desktop tracker through Sanity. The desktop app automatically publishes local changes and checks for remote commands roughly every 1.5 seconds while it is running.
+
+```powershell
+cd apps/web
+npm install
+Copy-Item .env.example .env.local
+npm run dev
+```
+
+Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`, then add your Google OAuth credentials and your allowed email address. Do not use a `NEXT_PUBLIC_` prefix for the token.
+
+For Vercel, import the repository and set the project Root Directory to `apps/web`. Add the values from `.env.example` in Vercel's Environment Variables, keeping `SANITY_API_WRITE_TOKEN`, `GOOGLE_CLIENT_SECRET`, and `NEXTAUTH_SECRET` server-only. Configure the Google OAuth redirect URL as:
+
+```text
+https://your-domain.com/api/auth/callback/google
+```
+
+The current PWA controls Play/Pause, lunch, breaks, finishing a rest, and ending the workday while the desktop tracker is online. Its dashboard refreshes automatically as the desktop publishes updates.
 
 ### Backups
 
@@ -162,6 +185,7 @@ src/
   shared/     Shared types, IPC channels, and time/rest helpers
 build/        Application icon assets
 scripts/      Asset-generation scripts
+apps/web/     Next.js PWA, Google sign-in, and server-side Sanity routes
 ```
 
 ## Data and privacy

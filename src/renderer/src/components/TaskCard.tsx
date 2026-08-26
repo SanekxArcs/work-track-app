@@ -18,6 +18,7 @@ interface TaskCardProps {
 export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, controlsDisabled = false }: TaskCardProps): React.JSX.Element {
   const project = projects.find((item) => item.id === task.projectId)
   const isRunning = task.status === 'running'
+  const description = task.notes.trim() || task.title.trim()
 
   return (
     <motion.article
@@ -45,7 +46,7 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
               {project.name}
             </div>
           )}
-          <h3 className={task.title ? '' : 'task-card__untitled'}>{task.title || 'Untitled flow'}</h3>
+          {description && <h3>{description}</h3>}
         </div>
 
         <div className="task-time-row">

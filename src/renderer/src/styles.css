@@ -296,6 +296,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .color-dots button.selected { border-color: white; transform: scale(1.13); }
 .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
 .modal-actions > button { min-width: 0; }
+.modal-actions .delete-task-icon { width: 34px; min-width: 34px; height: 34px; padding: 0; border-radius: 10px; color: #efad89; background: rgba(247,160,114,.07); }.modal-actions .delete-task-icon:hover { background: rgba(247,160,114,.14); }
 .ai-refine-button { flex: 1; padding: 0 10px; font-size: 10px; white-space: nowrap; }
 .ai-editor-actions { min-width: 0; flex: 1; display: flex; gap: 6px; }
 .voice-button { width: 34px; min-width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 10px; color: var(--blue); background: rgba(123,223,242,.07); display: inline-grid; place-items: center; cursor: pointer; }
@@ -348,13 +349,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .color-adder .icon-button { width: 27px; height: 26px; border-radius: 8px; }
 .project-manager-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 .project-manager-row, .project-editor { min-height: 38px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-readable); display: grid; align-items: center; gap: 8px; }
-.project-manager-row { grid-template-columns: 9px minmax(0, 1fr) 28px; }
+.project-manager-row { grid-template-columns: 9px minmax(0, 1fr) 28px 28px; }
 .project-manager-row > span { width: 9px; height: 25px; border-radius: 5px; }
 .project-manager-row strong { min-width: 0; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.project-manager-row--archived { opacity: .64; }
 .project-manager-row .icon-button, .project-editor .icon-button { width: 27px; height: 27px; border-radius: 8px; }
 .project-editor { grid-template-columns: minmax(0, 1fr) minmax(54px, auto) 27px 27px; }
 .project-editor input { min-width: 0; height: 27px; padding: 0 7px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: #10120f; font-size: 9.5px; }
 .project-editor .color-dots { max-width: 92px; }
+.archived-projects-toggle { min-height: 29px; margin-top: 10px; padding: 0 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: rgba(255,255,255,.025); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 9px; }
+.archived-projects-toggle--active, .archived-projects-toggle:hover { color: var(--text); border-color: rgba(184,233,134,.3); background: rgba(184,233,134,.08); }
+.project-archive-button { color: #cfbfdb; }
 .field > span:has(svg) { display: flex; align-items: center; gap: 5px; }
 .field > span em { margin-left: auto; color: var(--accent); font-size: 8px; font-style: normal; }
 .api-key-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; }
@@ -398,7 +403,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .ai-summary-panel > p, .ai-summary-copy { margin: 12px 0; color: #c0c6bb; font-size: 10px; line-height: 1.55; white-space: pre-line; }
 .ai-summary-panel .ai-error { color: #efad89; }
 .secondary-button.wide { width: 100%; }
-.overtime-card { padding: 12px 13px; border: 1px solid rgba(247,160,114,.18); border-radius: 15px; background: linear-gradient(120deg, rgba(247,160,114,.12), transparent 56%), var(--surface-raised); display: grid; grid-template-columns: 35px 1fr; gap: 10px; align-items: center; }.overtime-card > span { width: 34px; height: 34px; border-radius: 11px; color: var(--warm); background: rgba(247,160,114,.09); display: grid; place-items: center; }.overtime-card small { color: var(--muted); font-size: 8.5px; }.overtime-card strong { display: block; margin-top: 1px; color: #f4b99a; font-size: 16px; }.overtime-card p { margin: 3px 0 0; color: var(--muted); font-size: 8.5px; line-height: 1.35; }
+.overtime-balance-card, .overtime-card { padding: 12px 13px; border: 1px solid rgba(247,160,114,.18); border-radius: 15px; background: linear-gradient(120deg, rgba(247,160,114,.12), transparent 56%), var(--surface-raised); display: grid; grid-template-columns: 35px 1fr; gap: 10px; align-items: center; }.overtime-balance-card > span, .overtime-card > span { width: 34px; height: 34px; border-radius: 11px; color: var(--warm); background: rgba(247,160,114,.09); display: grid; place-items: center; }.overtime-balance-card small, .overtime-card small { color: var(--muted); font-size: 8.5px; }.overtime-balance-card strong, .overtime-card strong { display: block; margin-top: 1px; color: #f4b99a; font-size: 16px; }.overtime-balance-card p, .overtime-card p { margin: 3px 0 0; color: var(--muted); font-size: 8.5px; line-height: 1.35; }.overtime-card { grid-template-columns: 35px minmax(0, 1fr) auto; }.overtime-redeem-button { min-height: 29px; padding: 0 8px; border: 1px solid rgba(247,160,114,.26); border-radius: 9px; color: #f8c0a2; background: rgba(247,160,114,.08); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 8.5px; font-weight: 750; }.overtime-redeem-button.is-redeemed { color: var(--accent); border-color: rgba(184,233,134,.28); background: rgba(184,233,134,.1); }
 .resize-corner { position: absolute; z-index: 50; right: 3px; bottom: 3px; width: 13px; height: 13px; pointer-events: none; opacity: .45; background: linear-gradient(135deg, transparent 0 48%, var(--muted) 49% 55%, transparent 56% 67%, var(--muted) 68% 74%, transparent 75%); }
 .window-bottom-edge { position: absolute; z-index: 49; left: 9px; right: 9px; bottom: 3px; height: 2px; border-radius: 4px; pointer-events: none; background: linear-gradient(90deg, transparent, rgba(184,233,134,.28) 14%, rgba(255,255,255,.16) 50%, rgba(184,233,134,.28) 86%, transparent); box-shadow: 0 -2px 8px rgba(184,233,134,.05); }
 

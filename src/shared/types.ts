@@ -155,6 +155,17 @@ export interface HistoryDay {
   endedAt: number | null
 }
 
+export interface OvertimeDay {
+  date: string
+  overtimeMs: number
+  redeemed: boolean
+}
+
+export interface OvertimeOverview {
+  balanceMs: number
+  days: OvertimeDay[]
+}
+
 export interface StartTaskInput {
   taskId?: string
   title?: string
@@ -191,6 +202,7 @@ export interface ProjectUpdateInput {
   id: string
   name: string
   color: string
+  archived?: boolean
 }
 
 export interface PlannedTaskInput {
@@ -212,10 +224,8 @@ export interface NotificationInput {
 }
 
 export interface AiTaskSuggestion {
-  title: string
   projectId: string | null
-  tags: string[]
-  note: string
+  notes: string
 }
 
 export interface AiDaySummary {
@@ -229,11 +239,9 @@ export interface VoiceInput {
 
 export interface VoiceTaskDraft {
   transcript: string
-  title: string | null
   projectId: string | null
   newProjectName: string | null
   notes: string | null
-  tags: string[] | null
   startTime: string | null
   endTime: string | null
 }
@@ -262,6 +270,7 @@ export interface BackupData {
   tasks: Task[]
   workdays: Workday[]
   rests: RestSession[]
+  overtimeRedeemedDates?: string[]
 }
 
 export interface BackupPreview {
@@ -279,6 +288,8 @@ export interface WorkBuddyApi {
   getSnapshot: () => Promise<AppSnapshot>
   getHistory: (days?: number) => Promise<HistoryDay[]>
   getDaySnapshot: (date: string) => Promise<AppSnapshot>
+  getOvertimeOverview: () => Promise<OvertimeOverview>
+  setOvertimeRedeemed: (date: string, redeemed: boolean) => Promise<OvertimeOverview>
   startWorkday: () => Promise<AppSnapshot>
   endWorkday: () => Promise<AppSnapshot>
   startTask: (input: StartTaskInput) => Promise<AppSnapshot>

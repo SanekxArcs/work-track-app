@@ -1,6 +1,7 @@
 import { Notification, powerMonitor } from 'electron'
 import type { AppSettings, Locale, NotificationSound, WellnessAction } from '../shared/types'
-import { dueRestTypes, restRemaining } from '../shared/rest'
+import { breakStreakStartedAt, dueRestTypes, restRemaining } from '../shared/rest'
+import { scheduledWorkdayEndAt } from '../shared/workday'
 import type { WorkBuddyDatabase } from './database'
 
 const MINUTE = 60_000
@@ -112,18 +113,18 @@ export class ReminderService {
     const nowMinute = currentMinute()
     const activeTasks = snapshot.tasks.filter((task) => task.status === 'running')
     const openWorkday = snapshot.workday && snapshot.workday.endedAt === null
-    const workedMinutes = Math.floor(this.database.getWorkedCoverageToday() / MINUTE)
 
     if (!openWorkday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
       this.once('start', () => this.show(text.startTitle, text.startBody))
     }
-    if (openWorkday && settings.workday.endReminder && nowMinute >= minuteOfDay(settings.workday.endTime)) {
+    const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests)
+    if (openWorkday && settings.workday.endReminder && scheduledEndAt !== null && Date.now() >= scheduledEndAt) {
       this.once('end', () => this.show(text.endTitle, text.endBody))
     }
-    const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, workedMinutes * MINUTE)
+    const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, snapshot.tasks)
     if (due.includes('break')) {
-      const reminderBucket = Math.floor(nowMinute / 15)
-      this.once(`break-due:${reminderBucket}`, () => {
+      const streakStart = snapshot.workday ? breakStreakStartedAt(snapshot.workday, snapshot.rests) : Date.now()
+      this.once(`break-due:${streakStart}`, () => {
         const wellness = enabledWellness(settings)
         const extra = wellness ? ` ${text.wellness(locale === 'uk' ? wellness.labelUk : wellness.labelEn)}` : ''
         this.show(text.breakTitle, `${text.breakBody(settings.breaks.durationMinutes)}${extra}`)

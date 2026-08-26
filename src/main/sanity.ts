@@ -1,4 +1,4 @@
-import type { BackupData, SanitySyncResult } from '../shared/types'
+import type { BackupData, RestType, SanitySyncResult, StartMode } from '../shared/types'
 import { WorkBuddyDatabase } from './database'
 
 const DOCUMENT_ID = 'workBuddySync.v1'
@@ -6,6 +6,14 @@ const DOCUMENT_TYPE = 'workBuddySync'
 
 type SanityDocument = {
   payload?: unknown
+}
+
+type WorkBuddyCommand = {
+  _id: string
+  command?: string
+  taskId?: string
+  restId?: string
+  restType?: RestType
 }
 
 function readError(body: unknown): string {
@@ -68,13 +76,84 @@ export class SanityService {
     })
   }
 
+  private async writeCommandStatus(id: string, status: 'applied' | 'failed', error?: string): Promise<void> {
+    const config = this.config()
+    await this.request(`data/mutate/${encodeURIComponent(config.dataset)}?returnIds=true`, {
+      method: 'POST',
+      body: JSON.stringify({
+        mutations: [{ patch: { id, set: { status, processedAt: new Date().toISOString(), ...(error ? { error } : {}) } } }]
+      })
+    })
+  }
+
+  private applyCommand(command: WorkBuddyCommand): void {
+    switch (command.command) {
+      case 'pause-task':
+        if (!command.taskId) throw new Error('Task id is required')
+        this.database.pauseTask(command.taskId)
+        return
+      case 'resume-task':
+        if (!command.taskId) throw new Error('Task id is required')
+        this.database.resumeTask(command.taskId, 'parallel' as StartMode)
+        return
+      case 'start-rest':
+        if (command.restType !== 'break' && command.restType !== 'lunch') throw new Error('Rest type is required')
+        this.database.startRest(command.restType)
+        return
+      case 'complete-rest':
+        if (!command.restId) throw new Error('Rest id is required')
+        this.database.completeRest(command.restId)
+        return
+      case 'end-workday':
+        this.database.endWorkday()
+        return
+      default:
+        throw new Error('Unsupported Work Buddy command')
+    }
+  }
+
+  async push(): Promise<void> {
+    try {
+      await this.writeCloudBackup(this.database.exportBackup())
+      const settings = this.database.getSettings()
+      this.database.updateSettings({ ...settings, sanity: { ...settings.sanity, lastSyncedAt: Date.now() } })
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Sanity is not configured on this device') return
+      throw error
+    }
+  }
+
+  async processPendingCommands(): Promise<boolean> {
+    let config: { projectId: string; dataset: string; apiVersion: string; token: string }
+    try {
+      config = this.config()
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Sanity is not configured on this device') return false
+      throw error
+    }
+    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType}')
+    const response = await this.request<{ result?: WorkBuddyCommand[] }>(`data/query/${encodeURIComponent(config.dataset)}?query=${query}`)
+    const commands = response.result ?? []
+    let changed = false
+    for (const command of commands) {
+      try {
+        this.applyCommand(command)
+        await this.writeCommandStatus(command._id, 'applied')
+        changed = true
+      } catch (error) {
+        await this.writeCommandStatus(command._id, 'failed', error instanceof Error ? error.message : 'Could not apply command')
+      }
+    }
+    if (changed) await this.push()
+    return changed
+  }
+
   async sync(): Promise<SanitySyncResult> {
     const remote = await this.readCloudBackup()
     const merged = Boolean(remote)
     if (remote) this.database.importBackup(remote, 'merge')
-    const backup = this.database.exportBackup()
-    await this.writeCloudBackup(backup)
-    const syncedAt = Date.now()
+    await this.push()
+    const syncedAt = this.database.getSettings().sanity.lastSyncedAt ?? Date.now()
     const settings = this.database.getSettings()
     this.database.updateSettings({ ...settings, sanity: { ...settings.sanity, lastSyncedAt: syncedAt } })
     return { merged, projectId: settings.sanity.projectId, dataset: settings.sanity.dataset, syncedAt }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Rows3, Sparkles } from 'lucide-react'
-import type { AppSnapshot, HistoryDay, Project, Task } from '@shared/types'
+import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, RedoDot, Sparkles } from 'lucide-react'
+import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
 import { HistoryPanel } from './HistoryPanel'
@@ -18,6 +18,10 @@ interface DaySummaryProps {
 
 function getProject(projects: Project[], task: Task): Project | undefined {
   return projects.find((project) => project.id === task.projectId)
+}
+
+function taskLabel(task: Task, t: Translator): string {
+  return task.notes.trim() || task.title.trim() || t('noDescription')
 }
 
 type ScheduleSegment = { type: 'work' | 'break' | 'lunch'; start: number; end: number }
@@ -67,6 +71,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const todayKey = localDateKey(now)
   const [selectedDate, setSelectedDate] = useState(todayKey)
   const [history, setHistory] = useState<HistoryDay[]>([])
+  const [overtimeOverview, setOvertimeOverview] = useState<OvertimeOverview>({ balanceMs: 0, days: [] })
   const [historicalSnapshot, setHistoricalSnapshot] = useState<AppSnapshot | null>(null)
   const [mergeMode, setMergeMode] = useState(false)
   const [mergeTaskIds, setMergeTaskIds] = useState<string[]>([])
@@ -76,6 +81,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const isHistorical = selectedDate !== todayKey
 
   useEffect(() => { void window.workBuddy.getHistory().then(setHistory).catch(() => undefined) }, [snapshot])
+  useEffect(() => { void window.workBuddy.getOvertimeOverview().then(setOvertimeOverview).catch(() => undefined) }, [snapshot])
   useEffect(() => {
     if (!isHistorical) {
       setHistoricalSnapshot(null)
@@ -117,6 +123,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
   const overtimeReference = reportSnapshot.workday?.endedAt ?? (hasOpenDay ? reportNow : undefined)
   const overtime = startedAt && overtimeReference ? Math.max(0, overtimeReference - schedule.end) : 0
+  const overtimeDay = overtimeOverview.days.find((day) => day.date === selectedDate)
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
 
   const toggleMergeTask = (id: string): void => {
@@ -142,6 +149,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     } finally {
       setMergeBusy(false)
     }
+  }
+
+  const toggleOvertimeRedemption = async (): Promise<void> => {
+    if (!overtimeDay) return
+    const result = await window.workBuddy.setOvertimeRedeemed(overtimeDay.date, !overtimeDay.redeemed)
+    setOvertimeOverview(result)
   }
 
   const generateSummary = async (): Promise<void> => {
@@ -181,6 +194,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   return (
     <motion.div className="page-stack" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
       <HistoryPanel days={history} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
+      <section className="overtime-balance-card">
+        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
+      </section>
       <section className="day-hero">
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
@@ -210,7 +226,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
 
       {overtime > 0 && (
         <motion.section className="overtime-card" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
-          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+{formatDuration(overtime, true)}</strong><p>{t('overtimeBody')}</p></div>
+          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+{formatDuration(overtime, true)}</strong><p>{t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} />{overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')}</button>}
         </motion.section>
       )}
 
@@ -227,7 +243,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
       <section className="panel timeline-panel">
         <div className="section-heading">
           <div><span className="eyebrow">Timeline</span><h3>{t('timeline')}</h3></div>
-          <div className="timeline-heading-actions"><button className={`timeline-layout-toggle ${timelineLayout === 'overlay' ? 'is-overlay' : ''}`} onClick={() => setTimelineLayout((current) => current === 'lanes' ? 'overlay' : 'lanes')} title={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')} aria-label={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')}>{timelineLayout === 'lanes' ? <Layers3 size={14} /> : <Rows3 size={14} />}</button>{startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}</div>
+          <div className="timeline-heading-actions"><button className={`timeline-layout-toggle ${timelineLayout === 'overlay' ? 'is-overlay' : ''}`} onClick={() => setTimelineLayout((current) => current === 'lanes' ? 'overlay' : 'lanes')} title={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')} aria-label={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')}><RedoDot size={15} /></button>{startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}</div>
         </div>
         {tasks.length === 0 ? <p className="empty-copy">{t('noHistory')}</p> : (
           timelineLayout === 'lanes' ? <div className="timeline">
@@ -236,7 +252,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
               const color = project?.color ?? '#b8e986'
               return (
                 <div className="timeline-row" key={task.id}>
-                  <div className="timeline-label"><strong>{task.title || 'Untitled flow'}</strong><span>{formatDuration(taskDuration(task, reportNow), true)}</span></div>
+                  <div className="timeline-label"><strong>{taskLabel(task, t)}</strong><span>{formatDuration(taskDuration(task, reportNow), true)}</span></div>
                   <div className="timeline-track">
                     {task.intervals.filter((interval) => intervals.includes(interval)).map((interval) => {
                       const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
@@ -255,13 +271,13 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
                 return task.intervals.filter((interval) => intervals.includes(interval)).map((interval) => {
                   const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
                   const width = (((interval.endedAt ?? reportNow) - interval.startedAt) / timelineSpan) * 100
-                  return <motion.span key={interval.id} title={`${task.title || t('untitled')} · ${formatDuration(intervalDuration(interval, reportNow), true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
+                  return <motion.span key={interval.id} title={`${taskLabel(task, t)} · ${formatDuration(intervalDuration(interval, reportNow), true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
                 })
               })}
             </div>
             <div className="timeline-overlay-legend">{tasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
-              return <span key={task.id}><i style={{ background: project?.color ?? '#b8e986' }} />{task.title || t('untitled')}</span>
+              return <span key={task.id}><i style={{ background: project?.color ?? '#b8e986' }} />{taskLabel(task, t)}</span>
             })}</div>
           </div>
         )}
@@ -275,7 +291,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
             const project = getProject(reportSnapshot.projects, task)
             const selected = mergeTaskIds.includes(task.id)
             const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
-              <span className="day-task-row__copy"><strong>{task.title || t('untitled')}</strong><small>{project?.name ?? t('noProject')}</small></span>
+              <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
               <span>{formatDuration(taskDuration(task, reportNow), true)}</span></>
             return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task)} title={t('editTaskHint')}>
               {taskRow}

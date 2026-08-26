@@ -10,7 +10,6 @@ import { TimeInput } from './TimeInput'
 interface RestControlProps {
   snapshot: AppSnapshot
   now: number
-  workedMs: number
   t: Translator
   onSnapshot: (snapshot: AppSnapshot) => void
 }
@@ -21,9 +20,9 @@ function restCopy(type: RestType, t: Translator): { title: string; due: string }
     : { title: t('breakInProgress'), due: t('breakDueBody') }
 }
 
-export function RestControl({ snapshot, now, workedMs, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
+export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
   const active = snapshot.rests.find((rest) => rest.status !== 'completed')
-  const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, workedMs, now)
+  const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
 
   const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => onSnapshot(await promise)
   const start = (type: RestType): void => { void mutate(window.workBuddy.startRest(type)) }

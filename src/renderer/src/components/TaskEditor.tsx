@@ -13,18 +13,15 @@ interface TaskEditorProps {
   defaultMode: StartMode
   snapshot: AppSnapshot
   t: Translator
-  promptReason?: 'endday'
   onClose: () => void
   onSnapshot: (snapshot: AppSnapshot) => void
   onSaved: (snapshot: AppSnapshot) => void
 }
 
-export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
-  const [title, setTitle] = useState('')
+export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
   const [notes, setNotes] = useState('')
-  const [tags, setTags] = useState('')
   const [newProject, setNewProject] = useState('')
   const [projectColor, setProjectColor] = useState(snapshot.settings.projectColors[0])
   const [addingProject, setAddingProject] = useState(false)
@@ -37,11 +34,9 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
 
   useEffect(() => {
     if (!open) return
-    setTitle(task?.title ?? '')
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
     setNotes(task?.notes ?? '')
-    setTags(task?.tags.join(', ') ?? '')
     setAddingProject(false)
     setAiMessage('')
     setProjectColor(snapshot.settings.projectColors[0])
@@ -51,8 +46,6 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
     setEndTime(finalEnd ? `${String(new Date(finalEnd).getHours()).padStart(2, '0')}:${String(new Date(finalEnd).getMinutes()).padStart(2, '0')}` : '')
     setSaveError('')
   }, [open, task])
-
-  const parsedTags = (): string[] => tags.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)
 
   const saveTask = async (mode: StartMode): Promise<void> => {
     setBusy(true)
@@ -75,8 +68,8 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
         adjustedEnd = date.getTime()
       }
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: parsedTags(), startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
-        : await window.workBuddy.startTask({ title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: parsedTags(), mode })
+        ? await window.workBuddy.updateTask({ id: task.id, title: '', projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
+        : await window.workBuddy.startTask({ title: '', projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
@@ -104,7 +97,6 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
     setPlannedTaskId(id)
     const planned = snapshot.plannedTasks.find((item) => item.id === id)
     if (!planned) return
-    if (!title.trim()) setTitle(planned.title)
     if (!projectId && planned.projectId) setProjectId(planned.projectId)
     if (!notes.trim() && planned.notes) setNotes(planned.notes)
   }
@@ -115,10 +107,9 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
     setAiMessage('')
     try {
       const suggestion = await window.workBuddy.suggestTask(task.id)
-      setTitle(suggestion.title)
       setProjectId(suggestion.projectId ?? '')
-      setTags(suggestion.tags.join(', '))
-      setAiMessage(suggestion.note)
+      setNotes(suggestion.notes)
+      setAiMessage('')
     } catch (error) {
       setAiMessage(error instanceof Error ? error.message : t('aiError'))
     } finally {
@@ -143,10 +134,8 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
           onSnapshot(result)
         }
       }
-      if (draft.title) setTitle(draft.title)
       if (resolvedProjectId) setProjectId(resolvedProjectId)
       if (draft.notes) setNotes(draft.notes)
-      if (draft.tags) setTags(draft.tags.join(', '))
       if (draft.startTime) setStartTime(draft.startTime)
       if (draft.endTime) setEndTime(draft.endTime)
       setAiMessage(draft.transcript ? `${t('voiceApplied')} ${draft.transcript}` : t('voiceApplied'))
@@ -174,29 +163,21 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
           <motion.section className="modal-sheet" initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }} transition={{ type: 'spring', damping: 26, stiffness: 300 }}>
             <div className="modal-header">
               <div>
-                <span className="eyebrow">{promptReason ? t('namingReview') : task ? t('edit') : t('startTask')}</span>
-                <h2>{promptReason === 'endday' ? t('nameAtDayEnd') : task ? t('editTask') : t('newTask')}</h2>
+                <span className="eyebrow">{task ? t('edit') : t('startTask')}</span>
+                <h2>{task ? t('editTask') : t('newTask')}</h2>
               </div>
               <button className="icon-button" onClick={onClose}><X size={18} /></button>
             </div>
 
-            {promptReason && <p className="naming-hint">{t('nameAtDayEnd')}</p>}
-
-            <div className="task-identity-fields">
-              <label className="field">
-                <span>{t('taskName')}</span>
-                <input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('taskPlaceholder')} />
-              </label>
-              <label className="field">
-                <span>{t('project')}</span>
-                <CustomSelect
-                  value={projectId}
-                  ariaLabel={t('project')}
-                  onChange={setProjectId}
-                  options={[{ value: '', label: t('noProject') }, ...snapshot.projects.filter((project) => !project.archived).map((project) => ({ value: project.id, label: project.name, color: project.color }))]}
-                />
-              </label>
-            </div>
+            <label className="field">
+              <span>{t('project')}</span>
+              <CustomSelect
+                value={projectId}
+                ariaLabel={t('project')}
+                onChange={setProjectId}
+                options={[{ value: '', label: t('noProject') }, ...snapshot.projects.filter((project) => !project.archived).map((project) => ({ value: project.id, label: project.name, color: project.color }))]}
+              />
+            </label>
 
             {task && startTime && (
               <div className={`task-time-fields ${endTime ? 'task-time-fields--complete' : ''}`}>
@@ -233,12 +214,7 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
 
             <label className="field">
               <span>{t('notes')}</span>
-              <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
-            </label>
-
-            <label className="field">
-              <span>{t('tags')}</span>
-              <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={t('tagsPlaceholder')} />
+              <textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
             </label>
 
             {aiMessage && <p className="ai-note">{aiMessage}</p>}
@@ -247,11 +223,11 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
             <div className="modal-actions">
               {task ? (
                 <>
+                  <button className="icon-button icon-button--quiet delete-task-icon" disabled={busy} onClick={deleteTask} title={t('deleteTask')} aria-label={t('deleteTask')}><Trash2 size={15} /></button>
                   {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <div className="ai-editor-actions">
-                    <button className="secondary-button ai-refine-button" disabled={aiBusy || busy} onClick={suggestWithAi}><Sparkles size={14} />{aiBusy ? t('aiThinking') : t('refineAi')}</button>
+                    {notes.trim() && <button className="secondary-button ai-refine-button" disabled={aiBusy || busy} onClick={suggestWithAi}><Sparkles size={14} />{aiBusy ? t('aiThinking') : t('refineAi')}</button>}
                     <VoiceButton t={t} disabled={aiBusy || busy} onVoice={applyVoice} onError={setAiMessage} />
                   </div>}
-                  {promptReason && <button className="secondary-button" disabled={busy} onClick={onClose}>{t('skip')}</button>}
                   <button className="primary-button" disabled={busy} onClick={() => saveTask(defaultMode)}>{t('save')}</button>
                 </>
               ) : (
@@ -261,7 +237,6 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, promptReason,
                 </>
               )}
             </div>
-            {task && !promptReason && <button className="delete-task-button" disabled={busy} onClick={deleteTask}><Trash2 size={13} />{t('deleteTask')}</button>}
           </motion.section>
         </motion.div>
       )}

@@ -7,6 +7,7 @@ import type {
   BackupImportMode,
   BackupPreview,
   HistoryDay,
+  OvertimeOverview,
   PlannedTask,
   PlannedTaskInput,
   PlannedTaskUpdateInput,
@@ -135,6 +136,14 @@ function localDateTimestamp(value: string): number {
   return date.getTime()
 }
 
+function scheduledEndAt(startedAt: number, endTime: string): number {
+  const [hours, minutes] = endTime.split(':').map(Number)
+  const scheduled = new Date(startedAt)
+  scheduled.setHours(hours || 0, minutes || 0, 0, 0)
+  if (scheduled.getTime() <= startedAt) scheduled.setDate(scheduled.getDate() + 1)
+  return scheduled.getTime()
+}
+
 function deepSettings(raw?: string): AppSettings {
   if (!raw) return structuredClone(defaultSettings)
   const stored = JSON.parse(raw) as Partial<AppSettings>
@@ -241,6 +250,11 @@ export class WorkBuddyDatabase {
       CREATE TABLE IF NOT EXISTS secrets (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS overtime_redemptions (
+        date TEXT PRIMARY KEY,
+        redeemed_at INTEGER NOT NULL
       );
 
       CREATE INDEX IF NOT EXISTS idx_intervals_task ON time_intervals(task_id);
@@ -430,6 +444,41 @@ export class WorkBuddyDatabase {
     })
   }
 
+  getOvertimeOverview(): OvertimeOverview {
+    const settings = this.getSettings()
+    const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE ended_at IS NOT NULL ORDER BY started_at DESC').all() as Array<{ started_at: number; ended_at: number }>
+    const redemptions = new Set((this.db.prepare('SELECT date FROM overtime_redemptions').all() as Array<{ date: string }>).map((row) => row.date))
+    const lunchIntervals = this.db.prepare(
+      `SELECT i.started_at, i.ended_at FROM rest_intervals i
+       JOIN rest_sessions r ON r.id = i.rest_id
+       WHERE r.type = 'lunch' AND i.started_at < ? AND i.ended_at > ?`
+    )
+    const dailyOvertime = new Map<string, number>()
+    for (const workday of workdays) {
+      const lunchMs = (lunchIntervals.all(workday.ended_at, workday.started_at) as Array<{ started_at: number; ended_at: number }>)
+        .reduce((total, interval) => total + Math.max(0, Math.min(interval.ended_at, workday.ended_at) - Math.max(interval.started_at, workday.started_at)), 0)
+      const lunchOverage = Math.max(0, lunchMs - settings.lunch.durationMinutes * 60_000)
+      const overtime = Math.max(0, workday.ended_at - (scheduledEndAt(workday.started_at, settings.workday.endTime) + lunchOverage))
+      if (overtime > 0) {
+        const date = localDateKey(workday.started_at)
+        dailyOvertime.set(date, (dailyOvertime.get(date) ?? 0) + overtime)
+      }
+    }
+    const days = [...dailyOvertime.entries()]
+      .map(([date, overtimeMs]) => ({ date, overtimeMs, redeemed: redemptions.has(date) }))
+      .sort((first, second) => second.date.localeCompare(first.date))
+    return { balanceMs: days.reduce((total, day) => total + (day.redeemed ? 0 : day.overtimeMs), 0), days }
+  }
+
+  setOvertimeRedeemed(date: string, redeemed: boolean): OvertimeOverview {
+    localDateTimestamp(date)
+    const overview = this.getOvertimeOverview()
+    if (!overview.days.some((day) => day.date === date)) throw new Error('This day has no overtime to redeem')
+    if (redeemed) this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET redeemed_at = excluded.redeemed_at').run(date, Date.now())
+    else this.db.prepare('DELETE FROM overtime_redemptions WHERE date = ?').run(date)
+    return this.getOvertimeOverview()
+  }
+
   getDaySnapshot(date: string): AppSnapshot {
     const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, created_at').all() as ProjectRow[]).map(
@@ -499,7 +548,8 @@ export class WorkBuddyDatabase {
         id: interval.id, restId: interval.rest_id, startedAt: interval.started_at, endedAt: interval.ended_at
       }))
     }))
-    return { schemaVersion: 1, exportedAt: Date.now(), settings: backupSettings, projects, plannedTasks, tasks, workdays, rests }
+    const overtimeRedeemedDates = (this.db.prepare('SELECT date FROM overtime_redemptions ORDER BY date').all() as Array<{ date: string }>).map((row) => row.date)
+    return { schemaVersion: 1, exportedAt: Date.now(), settings: backupSettings, projects, plannedTasks, tasks, workdays, rests, overtimeRedeemedDates }
   }
 
   parseBackup(raw: string): BackupData {
@@ -516,7 +566,7 @@ export class WorkBuddyDatabase {
     }
     const collections = [candidate.projects, candidate.plannedTasks, candidate.tasks, candidate.workdays, candidate.rests]
     if (!collections.every(Array.isArray)) throw new Error('The selected backup is incomplete')
-    return candidate as BackupData
+    return { ...candidate, overtimeRedeemedDates: Array.isArray(candidate.overtimeRedeemedDates) ? candidate.overtimeRedeemedDates.filter((date): date is string => typeof date === 'string') : [] } as BackupData
   }
 
   getBackupPreview(backup: BackupData): BackupPreview {
@@ -536,7 +586,7 @@ export class WorkBuddyDatabase {
     const existingSettings = this.getSettings()
     this.transaction(() => {
       if (mode === 'replace') {
-        this.db.exec('DELETE FROM rest_intervals; DELETE FROM time_intervals; DELETE FROM rest_sessions; DELETE FROM tasks; DELETE FROM planned_tasks; DELETE FROM workdays; DELETE FROM projects;')
+        this.db.exec('DELETE FROM rest_intervals; DELETE FROM time_intervals; DELETE FROM rest_sessions; DELETE FROM tasks; DELETE FROM planned_tasks; DELETE FROM workdays; DELETE FROM projects; DELETE FROM overtime_redemptions;')
       }
       const project = this.db.prepare(`INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at`)
@@ -552,6 +602,7 @@ export class WorkBuddyDatabase {
         ON CONFLICT(id) DO UPDATE SET type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = '[]'`)
       const restInterval = this.db.prepare(`INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET rest_id = excluded.rest_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
+      const overtimeRedemption = this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO NOTHING')
 
       for (const item of backup.projects) project.run(item.id, item.name, item.color, Number(item.archived), item.createdAt)
       for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.createdAt)
@@ -564,6 +615,7 @@ export class WorkBuddyDatabase {
         rest.run(item.id, item.type, item.status, item.plannedMinutes, Number(item.alarmMuted ?? false), item.createdAt, item.endedAt)
         for (const itemInterval of item.intervals) restInterval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
       }
+      for (const date of backup.overtimeRedeemedDates ?? []) overtimeRedemption.run(date, Date.now())
       if (mode === 'replace') {
         const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai, googleCalendar: existingSettings.googleCalendar, sanity: existingSettings.sanity }))
         this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(restoredSettings))
@@ -576,21 +628,20 @@ export class WorkBuddyDatabase {
     const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
     const now = Date.now()
     const rows = this.db.prepare(
-      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, t.tags_json, p.name AS project_name
+      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name
        FROM time_intervals i
        JOIN tasks t ON t.id = i.task_id
        LEFT JOIN projects p ON p.id = t.project_id
        WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
        ORDER BY i.started_at`
-    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; title: string; notes: string; tags_json: string; project_name: string | null }>
+    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; title: string; notes: string; project_name: string | null }>
     const taskEvents = rows.flatMap((row) => {
       const startedAt = Math.max(row.started_at, dayStart)
       const endedAt = Math.min(row.ended_at ?? now, dayEnd)
       if (endedAt <= startedAt) return []
-      const tags = JSON.parse(row.tags_json) as string[]
-      const title = row.title || 'Untitled task'
+      const title = row.notes.trim() || row.title.trim() || 'Work Buddy task'
       const summary = row.project_name ? `${row.project_name} · ${title}` : title
-      const details = [row.notes, tags.length ? `Tags: ${tags.join(', ')}` : ''].filter(Boolean).join('\n')
+      const details = row.notes.trim()
       return [
         'BEGIN:VEVENT',
         `UID:work-buddy-${row.id}@local`,
@@ -634,19 +685,19 @@ export class WorkBuddyDatabase {
     const safeDays = Math.min(730, Math.max(1, Math.round(days)))
     const start = Date.now() - safeDays * DAY_MS
     const rows = this.db.prepare(
-      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, t.tags_json, p.name AS project_name
+      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name
        FROM time_intervals i
        JOIN tasks t ON t.id = i.task_id
        LEFT JOIN projects p ON p.id = t.project_id
        WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
        ORDER BY i.started_at`
-    ).all(start) as Array<{ id: string; title: string; notes: string; tags_json: string; project_name: string | null; started_at: number; ended_at: number }>
+    ).all(start) as Array<{ id: string; title: string; notes: string; project_name: string | null; started_at: number; ended_at: number }>
     const taskEvents = rows.map((row) => ({
       id: row.id,
-      title: row.title,
+      title: row.notes.trim() || row.title.trim() || 'Work Buddy task',
       projectName: row.project_name ?? '',
       notes: row.notes,
-      tags: JSON.parse(row.tags_json) as string[],
+      tags: [] as string[],
       startedAt: row.started_at,
       endedAt: row.ended_at
     }))
@@ -956,7 +1007,12 @@ export class WorkBuddyDatabase {
   updateProject(input: ProjectUpdateInput): AppSnapshot {
     const name = input.name.trim()
     if (!name) throw new Error('Project name is required')
-    const result = this.db.prepare('UPDATE projects SET name = ?, color = ? WHERE id = ?').run(name, input.color, input.id)
+    const result = this.db.prepare('UPDATE projects SET name = ?, color = ?, archived = COALESCE(?, archived) WHERE id = ?').run(
+      name,
+      input.color,
+      input.archived === undefined ? null : Number(input.archived),
+      input.id
+    )
     if (!result.changes) throw new Error('Project not found')
     return this.getSnapshot()
   }

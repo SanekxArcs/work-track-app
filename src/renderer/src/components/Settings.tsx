@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { Archive, BellRing, BriefcaseBusiness, CalendarDays, Check, Cloud, Coffee, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, CalendarDays, Check, ChevronDown, ChevronUp, Cloud, Coffee, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
@@ -42,6 +42,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [editingProjectName, setEditingProjectName] = useState('')
   const [editingProjectColor, setEditingProjectColor] = useState('')
   const [projectBusy, setProjectBusy] = useState(false)
+  const [projectsExpanded, setProjectsExpanded] = useState(false)
+  const [showArchivedProjects, setShowArchivedProjects] = useState(false)
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
   const [backupBusy, setBackupBusy] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
@@ -222,6 +224,21 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     }
   }
 
+  const toggleProjectArchive = async (project: Project): Promise<void> => {
+    setProjectBusy(true)
+    try {
+      const result = await window.workBuddy.updateProject({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+        archived: !project.archived
+      })
+      onSnapshot(result)
+    } finally {
+      setProjectBusy(false)
+    }
+  }
+
   const exportBackup = async (): Promise<void> => {
     setBackupBusy(true)
     setBackupStatus('')
@@ -359,9 +376,11 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       </section>
 
       <section className="settings-section projects-settings">
-        <div className="settings-title"><BriefcaseBusiness size={17} /><div><h3>{t('projects')}</h3><p>{t('projectsBody')}</p></div></div>
-        {snapshot.projects.length === 0 ? <p className="empty-copy">{t('noProjectsYet')}</p> : <div className="project-manager-list">
-          {snapshot.projects.map((project) => editingProjectId === project.id ? (
+        <div className="settings-title"><BriefcaseBusiness size={17} /><div><h3>{t('projects')}</h3><p>{t('projectsBody')}</p></div><button className="icon-button icon-button--quiet" onClick={() => setProjectsExpanded((expanded) => !expanded)} title={projectsExpanded ? t('collapseProjects') : t('expandProjects')}>{projectsExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button></div>
+        {projectsExpanded && <>
+          {snapshot.projects.some((project) => project.archived) && <button className={`archived-projects-toggle ${showArchivedProjects ? 'archived-projects-toggle--active' : ''}`} onClick={() => setShowArchivedProjects((show) => !show)}>{showArchivedProjects ? <EyeOff size={13} /> : <Eye size={13} />}{showArchivedProjects ? t('hideArchivedProjects') : t('showArchivedProjects')}</button>}
+          {snapshot.projects.length === 0 ? <p className="empty-copy">{t('noProjectsYet')}</p> : <div className="project-manager-list">
+          {snapshot.projects.filter((project) => showArchivedProjects || !project.archived).map((project) => editingProjectId === project.id ? (
             <div className="project-editor" key={project.id}>
               <input autoFocus value={editingProjectName} onChange={(event) => setEditingProjectName(event.target.value)} aria-label={t('projectName')} />
               <div className="color-dots">
@@ -371,11 +390,13 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
               <button className="icon-button icon-button--quiet" disabled={projectBusy} onClick={() => setEditingProjectId(null)} title={t('cancel')}><X size={15} /></button>
             </div>
           ) : (
-            <div className="project-manager-row" key={project.id}>
-              <span style={{ background: project.color }} /><strong>{project.name}</strong><button className="icon-button icon-button--quiet" onClick={() => beginProjectEdit(project)} title={t('editProject')}><Pencil size={14} /></button>
+            <div className={`project-manager-row ${project.archived ? 'project-manager-row--archived' : ''}`} key={project.id}>
+              <span style={{ background: project.color }} /><strong>{project.name}</strong><button className="icon-button icon-button--quiet" disabled={projectBusy} onClick={() => beginProjectEdit(project)} title={t('editProject')}><Pencil size={14} /></button><button className="icon-button icon-button--quiet project-archive-button" disabled={projectBusy} onClick={() => void toggleProjectArchive(project)} title={project.archived ? t('restoreProject') : t('archiveProject')}>{project.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
             </div>
           ))}
-        </div>}
+          {snapshot.projects.length > 0 && snapshot.projects.filter((project) => showArchivedProjects || !project.archived).length === 0 && <p className="empty-copy">{t('noActiveProjects')}</p>}
+          </div>}
+        </>}
       </section>
 
       <section className="settings-section settings-section--ai">

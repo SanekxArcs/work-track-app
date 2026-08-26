@@ -19,6 +19,8 @@ let reminders: ReminderService
 let gemini: GeminiService
 let googleCalendar: GoogleCalendarService
 let sanity: SanityService
+let sanityPushTimer: NodeJS.Timeout | undefined
+let sanityCommandTimer: NodeJS.Timeout | undefined
 let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
@@ -56,10 +58,10 @@ async function loadLocalEnvironment(): Promise<void> {
 }
 
 function configureSanityFromEnvironment(values: Record<string, string | undefined> = process.env): boolean {
-  const projectId = values.NEXT_PUBLIC_SANITY_PROJECT_ID?.trim() ?? ''
-  const dataset = values.NEXT_PUBLIC_SANITY_DATASET?.trim() ?? ''
-  const apiVersion = values.NEXT_PUBLIC_SANITY_API_VERSION?.trim() ?? ''
-  const token = values.NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL?.trim() ?? ''
+  const projectId = values.SANITY_PROJECT_ID?.trim() || values.NEXT_PUBLIC_SANITY_PROJECT_ID?.trim() || ''
+  const dataset = values.SANITY_DATASET?.trim() || values.NEXT_PUBLIC_SANITY_DATASET?.trim() || ''
+  const apiVersion = values.SANITY_API_VERSION?.trim() || values.NEXT_PUBLIC_SANITY_API_VERSION?.trim() || ''
+  const token = values.SANITY_API_WRITE_TOKEN?.trim() || values.NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL?.trim() || ''
   if (!projectId || !dataset || !token) return false
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
   database.setSecret('sanity_api_token', safeStorage.encryptString(token).toString('base64'))
@@ -233,6 +235,9 @@ function createWindow(): void {
 
 function emitChanged(): void {
   mainWindow?.webContents.send(channels.dataChanged)
+  if (!sanity) return
+  if (sanityPushTimer) clearTimeout(sanityPushTimer)
+  sanityPushTimer = setTimeout(() => void sanity.push().catch(() => undefined), 700)
 }
 
 function registerIpc(): void {
@@ -240,6 +245,12 @@ function registerIpc(): void {
   ipcMain.handle(channels.snapshot, () => database.getSnapshot())
   ipcMain.handle(channels.history, (_, days?: number) => database.getHistory(days))
   ipcMain.handle(channels.daySnapshot, (_, date: string) => database.getDaySnapshot(date))
+  ipcMain.handle(channels.overtimeOverview, () => database.getOvertimeOverview())
+  ipcMain.handle(channels.overtimeRedeemed, (_, date: string, redeemed: boolean) => {
+    const result = database.setOvertimeRedeemed(date, redeemed)
+    emitChanged()
+    return result
+  })
   ipcMain.handle(channels.startWorkday, () => {
     const result = database.startWorkday()
     emitChanged()
@@ -540,6 +551,10 @@ else {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
+    void sanity.push().catch(() => undefined)
+    sanityCommandTimer = setInterval(() => {
+      void sanity.processPendingCommands().then((changed) => { if (changed) emitChanged() }).catch(() => undefined)
+    }, 1_500)
     registerIpc()
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
@@ -559,6 +574,8 @@ else {
 app.on('before-quit', () => {
   isQuitting = true
   reminders?.stop()
+  if (sanityPushTimer) clearTimeout(sanityPushTimer)
+  if (sanityCommandTimer) clearInterval(sanityCommandTimer)
 })
 
 app.on('will-quit', () => globalShortcut.unregisterAll())

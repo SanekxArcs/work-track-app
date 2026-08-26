@@ -3,6 +3,8 @@ export const channels = {
   snapshot: 'app:snapshot',
   history: 'app:history',
   daySnapshot: 'app:day-snapshot',
+  overtimeOverview: 'overtime:overview',
+  overtimeRedeemed: 'overtime:redeemed',
   startWorkday: 'workday:start',
   endWorkday: 'workday:end',
   startTask: 'task:start',

@@ -15,11 +15,10 @@ function parseJson<T>(text: string): T {
   return JSON.parse(clean) as T
 }
 
-function taskMinutes(snapshot: AppSnapshot, now = Date.now()): Array<{ title: string; project: string; minutes: number; tags: string[] }> {
+function taskMinutes(snapshot: AppSnapshot, now = Date.now()): Array<{ description: string; project: string; minutes: number }> {
   return snapshot.tasks.map((task) => ({
-    title: task.title || 'Untitled',
+    description: task.notes || task.title || 'No description',
     project: snapshot.projects.find((project) => project.id === task.projectId)?.name ?? '',
-    tags: task.tags,
     minutes: Math.max(0, Math.round(task.intervals.reduce((sum, interval) => sum + ((interval.endedAt ?? now) - interval.startedAt), 0) / 60_000))
   })).filter((task) => task.minutes > 0)
 }
@@ -62,22 +61,20 @@ export class GeminiService {
     const projects = snapshot.projects.filter((project) => !project.archived).map((project) => project.name)
     const history = taskMinutes(snapshot).slice(0, 20)
     const prompt = `You are a concise assistant inside a personal time tracker. Reply only as JSON.
-Language for title and note: ${locale === 'uk' ? 'Ukrainian' : 'English'}.
-Current task: ${JSON.stringify({ title: task.title, notes: task.notes, tags: task.tags })}
+Language for the description: ${locale === 'uk' ? 'Ukrainian' : 'English'}.
+Current task: ${JSON.stringify({ project: snapshot.projects.find((project) => project.id === task.projectId)?.name ?? '', description: task.notes })}
 Known project names: ${JSON.stringify(projects)}
 Recent work context: ${JSON.stringify(history)}
-Suggest a clear short task title, one existing project name or null, 1-4 short tags, and one friendly sentence explaining the suggestion.
-JSON schema: {"title":"string","projectName":"string|null","tags":["string"],"note":"string"}`
+Improve the task description without inventing facts. Suggest one existing project name or null. Keep the description short and useful.
+JSON schema: {"projectName":"string|null","description":"string"}`
     const raw = await this.generate(snapshot.settings.ai.model, prompt, true)
-    const result = parseJson<{ title?: string; projectName?: string | null; tags?: string[]; note?: string }>(raw)
+    const result = parseJson<{ projectName?: string | null; description?: string }>(raw)
     const matchedProject = result.projectName
       ? snapshot.projects.find((project) => project.name.localeCompare(result.projectName!, undefined, { sensitivity: 'base' }) === 0)
       : undefined
     return {
-      title: result.title?.trim() || task.title,
       projectId: matchedProject?.id ?? task.projectId,
-      tags: Array.isArray(result.tags) ? result.tags.map((tag) => String(tag).trim().replace(/^#/, '')).filter(Boolean).slice(0, 4) : task.tags,
-      note: result.note?.trim() || ''
+      notes: result.description?.trim() || task.notes
     }
   }
 
@@ -104,29 +101,25 @@ Data: ${JSON.stringify(work)}`
     const language = snapshot.settings.locale === 'uk' ? 'Ukrainian' : 'English'
     const projects = snapshot.projects.filter((project) => !project.archived).map((project) => project.name)
     const current = task ? {
-      title: task.title,
       project: snapshot.projects.find((project) => project.id === task.projectId)?.name ?? '',
-      notes: task.notes,
-      tags: task.tags
-    } : { title: '', project: '', notes: '', tags: [] }
+      notes: task.notes
+    } : { project: '', notes: '' }
     const prompt = `You are the voice-command parser for a personal time tracker. Listen to the short voice note and reply only as JSON.
 The user interface language is ${language}. Current task fields: ${JSON.stringify(current)}.
 Known project names: ${JSON.stringify(projects)}.
-Interpret only details actually spoken. For a field the user did not specify, return null. Keep a spoken task title short. Tags must be an array of 1-4 short tags or null. startTime and endTime must be HH:MM in 24-hour format or null. Do not infer planned tasks.
+Interpret only details actually spoken. The tracker has no task name or tags. For a field the user did not specify, return null. startTime and endTime must be HH:MM in 24-hour format or null. Do not infer planned tasks.
 For projectName: return the exact known project name when it clearly matches one. If the user explicitly names a new project, return that name. Otherwise return null.
-JSON schema: {"transcript":"string","title":"string|null","projectName":"string|null","notes":"string|null","tags":["string"]|null,"startTime":"HH:MM|null","endTime":"HH:MM|null"}`
+JSON schema: {"transcript":"string","projectName":"string|null","notes":"string|null","startTime":"HH:MM|null","endTime":"HH:MM|null"}`
     const raw = await this.generate(snapshot.settings.ai.model, prompt, true, voice)
-    const result = parseJson<{ transcript?: string; title?: string | null; projectName?: string | null; notes?: string | null; tags?: unknown; startTime?: string | null; endTime?: string | null }>(raw)
+    const result = parseJson<{ transcript?: string; projectName?: string | null; notes?: string | null; startTime?: string | null; endTime?: string | null }>(raw)
     const projectName = result.projectName?.trim() || null
     const matched = projectName ? snapshot.projects.find((project) => project.name.localeCompare(projectName, undefined, { sensitivity: 'base' }) === 0) : undefined
     const validTime = (value: string | null | undefined): string | null => value && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : null
     return {
       transcript: result.transcript?.trim() || '',
-      title: result.title?.trim() || null,
       projectId: matched?.id ?? null,
       newProjectName: projectName && !matched ? projectName : null,
       notes: result.notes?.trim() || null,
-      tags: Array.isArray(result.tags) ? result.tags.map((tag) => String(tag).trim().replace(/^#/, '')).filter(Boolean).slice(0, 4) : null,
       startTime: validTime(result.startTime),
       endTime: validTime(result.endTime)
     }

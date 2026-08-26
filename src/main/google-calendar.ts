@@ -234,7 +234,6 @@ export class GoogleCalendarService {
       const title = interval.title.trim() || 'Untitled task'
       const description = [
         interval.projectName && `Project: ${interval.projectName}`,
-        interval.tags.length > 0 && `Tags: ${interval.tags.join(', ')}`,
         interval.notes.trim()
       ].filter(Boolean).join('\n')
       const body = {

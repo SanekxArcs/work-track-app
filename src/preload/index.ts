@@ -1,12 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, GoogleSyncResult, HistoryDay, NotificationInput, NotificationSound, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, SanitySyncResult, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
+import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, GoogleSyncResult, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, SanitySyncResult, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
   getSnapshot: () => ipcRenderer.invoke(channels.snapshot),
   getHistory: (days?: number): Promise<HistoryDay[]> => ipcRenderer.invoke(channels.history, days),
   getDaySnapshot: (date: string) => ipcRenderer.invoke(channels.daySnapshot, date),
+  getOvertimeOverview: (): Promise<OvertimeOverview> => ipcRenderer.invoke(channels.overtimeOverview),
+  setOvertimeRedeemed: (date: string, redeemed: boolean): Promise<OvertimeOverview> => ipcRenderer.invoke(channels.overtimeRedeemed, date, redeemed),
   startWorkday: () => ipcRenderer.invoke(channels.startWorkday),
   endWorkday: () => ipcRenderer.invoke(channels.endWorkday),
   startTask: (input: StartTaskInput) => ipcRenderer.invoke(channels.startTask, input),

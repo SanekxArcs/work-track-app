@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
+import { scheduledWorkdayEndAt } from '@shared/workday'
 import { DaySummary } from './components/DaySummary'
 import { SettingsPage } from './components/Settings'
 import { TaskCard } from './components/TaskCard'
@@ -14,15 +15,6 @@ import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib
 import { playNotificationSound } from './lib/sounds'
 
 type Tab = 'focus' | 'day' | 'settings'
-
-function isWorkdayReadyToEnd(startedAt: number | undefined, endTime: string, now: number): boolean {
-  if (!startedAt) return false
-  const [hours, minutes] = endTime.split(':').map(Number)
-  const scheduledEnd = new Date(startedAt)
-  scheduledEnd.setHours(hours || 0, minutes || 0, 0, 0)
-  if (scheduledEnd.getTime() <= startedAt) scheduledEnd.setDate(scheduledEnd.getDate() + 1)
-  return now >= scheduledEnd.getTime()
-}
 
 function taskTouchesWorkday(task: Task, workdayStartedAt: number, now: number): boolean {
   return task.intervals.some((interval) => interval.startedAt <= now && (interval.endedAt ?? now) >= workdayStartedAt)
@@ -36,8 +28,6 @@ export default function App(): React.JSX.Element {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<Task | undefined>()
   const [defaultMode, setDefaultMode] = useState<StartMode>('parallel')
-  const [promptReason, setPromptReason] = useState<'endday' | undefined>()
-  const [reviewQueue, setReviewQueue] = useState<string[]>([])
   const [showPlannedTasks, setShowPlannedTasks] = useState(false)
   const [compactHovered, setCompactHovered] = useState(false)
   const [compactAnchor, setCompactAnchor] = useState<'top' | 'bottom'>('top')
@@ -80,6 +70,7 @@ export default function App(): React.JSX.Element {
   }, [snapshot?.settings])
 
   const t = useMemo(() => translator(snapshot?.settings.locale ?? 'uk'), [snapshot?.settings.locale])
+  const taskLabel = (task: Task): string => task.notes.trim() || task.title.trim()
   const openWorkdayStartedAt = snapshot?.workday?.endedAt === null ? snapshot.workday.startedAt : undefined
   const workdayTasks = snapshot && openWorkdayStartedAt
     ? snapshot.tasks.filter((task) => taskTouchesWorkday(task, openWorkdayStartedAt, now))
@@ -93,7 +84,8 @@ export default function App(): React.JSX.Element {
   const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : 1
   const compactPrimaryTask = activeRest ? null : liveTasks[0] ?? focusTasks[0] ?? null
   const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
-  const showFocusEndDay = snapshot?.workday?.endedAt === null && isWorkdayReadyToEnd(snapshot.workday.startedAt, snapshot.settings.workday.endTime, now)
+  const scheduledEndAt = snapshot ? scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, now) : null
+  const showFocusEndDay = scheduledEndAt !== null && now >= scheduledEndAt
 
   useEffect(() => {
     if (!compact) return
@@ -141,8 +133,6 @@ export default function App(): React.JSX.Element {
       setCompact(false)
       await window.workBuddy.setWindowMode('expanded')
     }
-    setPromptReason(undefined)
-    setReviewQueue([])
     setEditingTask(task)
     setDefaultMode('parallel')
     setEditorOpen(true)
@@ -185,49 +175,21 @@ export default function App(): React.JSX.Element {
     }, 2000)
   }
 
-  const openUnnamedReview = (result: AppSnapshot, ids: string[], reason: 'endday'): void => {
-    const queue = ids.filter((id) => !result.tasks.find((task) => task.id === id)?.title.trim())
-    if (!queue.length) return
-    setPromptReason(reason)
-    setReviewQueue(queue)
-    setEditingTask(result.tasks.find((task) => task.id === queue[0]))
-    setEditorOpen(true)
-  }
-
-  const advanceReview = (result: AppSnapshot): void => {
-    const remaining = reviewQueue.filter((id) => id !== editingTask?.id)
-    setReviewQueue(remaining)
-    if (remaining.length) {
-      setEditingTask(result.tasks.find((task) => task.id === remaining[0]))
-      return
-    }
-    setPromptReason(undefined)
+  const handleEditorSaved = (result: AppSnapshot): void => {
+    setSnapshot(result)
     setEditingTask(undefined)
     setEditorOpen(false)
   }
 
-  const handleEditorSaved = (result: AppSnapshot): void => {
-    setSnapshot(result)
-    if (promptReason) advanceReview(result)
-    else {
-      setEditingTask(undefined)
-      setEditorOpen(false)
-    }
-  }
-
   const handleEditorClose = (): void => {
-    if (promptReason) advanceReview(snapshot)
-    else {
-      setEditingTask(undefined)
-      setEditorOpen(false)
-    }
+    setEditingTask(undefined)
+    setEditorOpen(false)
   }
 
   const endDay = async (): Promise<void> => {
     const result = await window.workBuddy.endWorkday()
     setSnapshot(result)
     setTab('day')
-    openUnnamedReview(result, result.tasks.filter((task) => !task.title.trim() && task.intervals.length > 0).map((task) => task.id), 'endday')
   }
 
   const navItems: Array<{ id: Tab; label: string; icon: typeof Clock3 }> = [
@@ -256,7 +218,7 @@ export default function App(): React.JSX.Element {
               <div className="compact-task-row compact-task-row--extra" key={task.id}>
                 <div className="compact-task-info drag-region">
                   <span className={`status-dot ${task.status === 'running' ? 'status-dot--live' : ''}`} />
-                  <div><strong>{task.title || 'Untitled flow'}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
+                  <div><strong>{taskLabel(task)}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
                 </div>
                 <div className="compact-task-actions no-drag">
                   {task.status === 'running'
@@ -288,7 +250,7 @@ export default function App(): React.JSX.Element {
                 <div className="compact-task-info drag-region">
                   <span className={`status-dot ${compactPrimaryTask?.status === 'running' ? 'status-dot--live' : ''}`} />
                   <div>
-                    <strong>{compactPrimaryTask ? compactPrimaryTask.title || 'Untitled flow' : t('noTimers')}</strong>
+                    <strong>{compactPrimaryTask ? taskLabel(compactPrimaryTask) : t('noTimers')}</strong>
                     <small>{compactPrimaryTask ? formatDuration(taskDuration(compactPrimaryTask, now)) : t('noTimersBody')}</small>
                   </div>
                 </div>
@@ -307,7 +269,7 @@ export default function App(): React.JSX.Element {
               <div className="compact-task-row compact-task-row--extra" key={task.id}>
                 <div className="compact-task-info drag-region">
                   <span className={`status-dot ${task.status === 'running' ? 'status-dot--live' : ''}`} />
-                  <div><strong>{task.title || 'Untitled flow'}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
+                  <div><strong>{taskLabel(task)}</strong><small>{formatDuration(taskDuration(task, now))}</small></div>
                 </div>
                 <div className="compact-task-actions no-drag">
                   {task.status === 'running'
@@ -332,7 +294,7 @@ export default function App(): React.JSX.Element {
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
                   <motion.div ref={focusRef} key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
-                    <RestControl snapshot={snapshot} now={now} workedMs={workedMs} t={t} onSnapshot={setSnapshot} />
+                    <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />
                     <section className="focus-hero">
                       <div>
                         <span className="eyebrow">{liveTasks.length ? `${liveTasks.length} ${t('activeNow')}` : t('today')}</span>
@@ -415,7 +377,6 @@ export default function App(): React.JSX.Element {
         defaultMode={defaultMode}
         snapshot={snapshot}
         t={t}
-        promptReason={promptReason}
         onClose={handleEditorClose}
         onSnapshot={setSnapshot}
         onSaved={handleEditorSaved}
