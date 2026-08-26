@@ -81,6 +81,7 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSn
   const createProject = async (): Promise<void> => {
     if (!newProject.trim()) return
     setBusy(true)
+    setSaveError('')
     try {
       const result = await window.workBuddy.createProject({ name: newProject, color: projectColor })
       const created = result.projects.find((project: Project) => project.name.toLowerCase() === newProject.trim().toLowerCase())
@@ -88,6 +89,8 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSn
       setNewProject('')
       setAddingProject(false)
       onSnapshot(result)
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
     } finally {
       setBusy(false)
     }

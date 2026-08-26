@@ -42,6 +42,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [editingProjectName, setEditingProjectName] = useState('')
   const [editingProjectColor, setEditingProjectColor] = useState('')
   const [projectBusy, setProjectBusy] = useState(false)
+  const [projectError, setProjectError] = useState('')
   const [projectsExpanded, setProjectsExpanded] = useState(false)
   const [showArchivedProjects, setShowArchivedProjects] = useState(false)
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
@@ -210,15 +211,19 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     setEditingProjectId(project.id)
     setEditingProjectName(project.name)
     setEditingProjectColor(project.color)
+    setProjectError('')
   }
 
   const saveProject = async (): Promise<void> => {
     if (!editingProjectId || !editingProjectName.trim()) return
     setProjectBusy(true)
+    setProjectError('')
     try {
       const result = await window.workBuddy.updateProject({ id: editingProjectId, name: editingProjectName, color: editingProjectColor })
       onSnapshot(result)
       setEditingProjectId(null)
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : t('timeUpdateError'))
     } finally {
       setProjectBusy(false)
     }
@@ -396,6 +401,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           ))}
           {snapshot.projects.length > 0 && snapshot.projects.filter((project) => showArchivedProjects || !project.archived).length === 0 && <p className="empty-copy">{t('noActiveProjects')}</p>}
           </div>}
+          {projectError && <p className="form-error">{projectError}</p>}
         </>}
       </section>
 
