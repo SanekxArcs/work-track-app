@@ -1079,6 +1079,7 @@ export class WorkBuddyDatabase {
   createProject(input: ProjectInput): AppSnapshot {
     const name = input.name.trim()
     if (!name) throw new Error('Project name is required')
+    if (this.projectNameExists(name)) throw new Error('A project with this name already exists')
     this.db.prepare('INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, 0, ?)').run(
       randomUUID(),
       name,
@@ -1091,6 +1092,7 @@ export class WorkBuddyDatabase {
   updateProject(input: ProjectUpdateInput): AppSnapshot {
     const name = input.name.trim()
     if (!name) throw new Error('Project name is required')
+    if (this.projectNameExists(name, input.id)) throw new Error('A project with this name already exists')
     const result = this.db.prepare('UPDATE projects SET name = ?, color = ?, archived = COALESCE(?, archived) WHERE id = ?').run(
       name,
       input.color,
@@ -1126,6 +1128,12 @@ export class WorkBuddyDatabase {
 
   private getOpenWorkday(): WorkdayRow | undefined {
     return this.db.prepare('SELECT * FROM workdays WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get() as WorkdayRow | undefined
+  }
+
+  private projectNameExists(name: string, excludedId?: string): boolean {
+    const normalized = name.normalize('NFKC').toLocaleLowerCase()
+    const projects = this.db.prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>
+    return projects.some((project) => project.id !== excludedId && project.name.normalize('NFKC').toLocaleLowerCase() === normalized)
   }
 
   private getRest(id: string): RestRow | undefined {

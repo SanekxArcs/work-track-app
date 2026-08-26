@@ -82,3 +82,10 @@ test('folds long calendar lines without splitting UTF-8 characters', async () =>
     assert.match(calendar, /\r\n /)
   })
 })
+
+test('does not allow ambiguous duplicate project names', async () => {
+  await withDatabase(async (database) => {
+    database.createProject({ name: 'Cupio', color: '#ffffff' })
+    assert.throws(() => database.createProject({ name: ' cupio ', color: '#000000' }), /already exists/i)
+  })
+})
