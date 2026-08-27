@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	activeWorkday,
 	formatDuration,
@@ -31,6 +31,9 @@ const suluColors = {
 	"900": "#2f4d1a",
 	"950": "#162a09",
 } as const;
+
+const WORKSPACE_REFRESH_INTERVAL = 20_000;
+const COMMAND_REFRESH_DELAYS = [2_000, 6_000];
 
 const focusFonts: Record<FocusFont, { label: string; family: string }> = {
 	modern: {
@@ -107,6 +110,18 @@ export function Dashboard({
 	const [focusDrift, setFocusDrift] = useState(true);
 	const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
+	const refreshWorkspace = useCallback(async (): Promise<void> => {
+		try {
+			const response = await fetch("/api/workspace", { cache: "no-store" });
+			const data = (await response
+				.json()
+				.catch(() => null)) as WorkspaceResponse | null;
+			if (response.ok && data) setWorkspace(data.workspace);
+		} catch {
+			// Keep the last known workspace when the connection is temporarily unavailable.
+		}
+	}, []);
+
 	useEffect(() => {
 		const savedMode = window.localStorage.getItem("work-buddy-dashboard-mode");
 		if (savedMode === "focus" || savedMode === "dashboard") setMode(savedMode);
@@ -143,20 +158,47 @@ export function Dashboard({
 		setFocusAmoled(window.localStorage.getItem("work-buddy-focus-amoled") !== "false");
 		setFocusDrift(window.localStorage.getItem("work-buddy-focus-drift") !== "false");
 		const clock = window.setInterval(() => setNow(Date.now()), 1_000);
-		const refresh = async (): Promise<void> => {
-			const response = await fetch("/api/workspace", { cache: "no-store" });
-			const data = (await response
-				.json()
-				.catch(() => null)) as WorkspaceResponse | null;
-			if (response.ok && data) setWorkspace(data.workspace);
-		};
-		void refresh();
-		const sync = window.setInterval(() => void refresh(), 1_500);
 		return () => {
 			window.clearInterval(clock);
-			window.clearInterval(sync);
 		};
 	}, []);
+
+	useEffect(() => {
+		let syncTimer: number | undefined;
+		let refreshing = false;
+		const refresh = async (): Promise<void> => {
+			if (refreshing) return;
+			refreshing = true;
+			try {
+				await refreshWorkspace();
+			} finally {
+				refreshing = false;
+			}
+		};
+		const stopPolling = (): void => {
+			if (syncTimer) window.clearInterval(syncTimer);
+			syncTimer = undefined;
+		};
+		const startPolling = (): void => {
+			if (document.visibilityState !== "visible") return;
+			void refresh();
+			syncTimer = window.setInterval(
+				() => void refresh(),
+				WORKSPACE_REFRESH_INTERVAL,
+			);
+		};
+		const onVisibilityChange = (): void => {
+			stopPolling();
+			startPolling();
+		};
+
+		startPolling();
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		return () => {
+			stopPolling();
+			document.removeEventListener("visibilitychange", onVisibilityChange);
+		};
+	}, [refreshWorkspace]);
 
 	useEffect(() => {
 		const onBeforeInstall = (event: Event): void => {
@@ -290,6 +332,9 @@ export function Dashboard({
 			if (!response.ok)
 				throw new Error(data?.error || "Не вдалося надіслати команду");
 			setCommandStatus("Команда надіслана — Work Buddy підхопить її за мить.");
+			COMMAND_REFRESH_DELAYS.forEach((delay) => {
+				window.setTimeout(() => void refreshWorkspace(), delay);
+			});
 		} catch (error) {
 			setCommandStatus(
 				error instanceof Error ? error.message : "Не вдалося надіслати команду",
