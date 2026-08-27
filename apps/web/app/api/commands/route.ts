@@ -7,7 +7,9 @@ import type { WorkBuddyCommand } from '../../../lib/workspace'
 function isCommand(value: unknown): value is WorkBuddyCommand {
   if (!value || typeof value !== 'object' || !('command' in value)) return false
   const command = value as Record<string, unknown>
-  if (command.command === 'pause-task' || command.command === 'resume-task') return typeof command.taskId === 'string'
+  if (command.command === 'pause-task') return typeof command.taskId === 'string'
+  if (command.command === 'resume-task') return typeof command.taskId === 'string' && (command.mode === 'parallel' || command.mode === 'switch')
+  if (command.command === 'start-task') return command.mode === 'parallel' || command.mode === 'switch'
   if (command.command === 'complete-rest') return typeof command.restId === 'string'
   if (command.command === 'start-rest') return command.restType === 'lunch' || command.restType === 'break'
   return command.command === 'end-workday'

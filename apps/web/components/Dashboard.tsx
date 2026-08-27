@@ -91,6 +91,7 @@ export function Dashboard({
 	const [now, setNow] = useState(Date.now());
 	const [commandStatus, setCommandStatus] = useState("");
 	const [loading, setLoading] = useState(false);
+	const [switcherOpen, setSwitcherOpen] = useState(false);
 	const [mode, setMode] = useState<DashboardMode>("dashboard");
 	const [focusSettingsOpen, setFocusSettingsOpen] = useState(false);
 	const [focusShowSeconds, setFocusShowSeconds] = useState(true);
@@ -298,7 +299,7 @@ export function Dashboard({
 		}
 	};
 
-	const restActions = (): React.JSX.Element =>
+	const dayActions = (): React.JSX.Element =>
 		activeRest ? (
 			<button
 				className="primary-button"
@@ -311,14 +312,6 @@ export function Dashboard({
 			</button>
 		) : (
 			<>
-				<button
-					disabled={loading || !workday}
-					onClick={() =>
-						void send({ command: "start-rest", restType: "break" })
-					}
-				>
-					Взяти перерву
-				</button>
 				<button
 					disabled={loading || !workday}
 					onClick={() =>
@@ -600,7 +593,7 @@ export function Dashboard({
 					</div>
 					<div className={`focus-dock focus-ui ${focusControlsVisible ? "" : "is-hidden"}`}>
 						{activeRest ? (
-							restActions()
+							dayActions()
 						) : primaryTask ? (
 							<button
 								className={
@@ -611,7 +604,7 @@ export function Dashboard({
 									void send(
 										primaryTask.status === "running"
 											? { command: "pause-task", taskId: primaryTask.id }
-											: { command: "resume-task", taskId: primaryTask.id },
+											: { command: "resume-task", taskId: primaryTask.id, mode: "parallel" },
 									)
 								}
 							>
@@ -654,7 +647,8 @@ export function Dashboard({
 				</section>
 			) : (
 				<>
-					<section className="dashboard-grid">
+					<section className="workday-card">
+						<div className="dashboard-grid">
 						<article className="hero-clock">
 							<div className="hero-clock__top">
 								<p>
@@ -710,10 +704,96 @@ export function Dashboard({
 								</span>
 							</div>
 						</aside>
+						</div>
+						<section className="quick-actions" aria-label="Швидкі дії">
+							{activeRest ? (
+								<button
+									className="primary-button"
+									disabled={loading}
+									onClick={() =>
+										void send({ command: "complete-rest", restId: activeRest.id })
+									}
+								>
+									Завершити {activeRest.type === "lunch" ? "обід" : "перерву"}
+								</button>
+							) : (
+								<>
+									<button
+										className="primary-button"
+										disabled={loading}
+										onClick={() =>
+											void send({ command: "start-task", mode: "parallel" })
+										}
+									>
+										＋ Паралельна задача
+									</button>
+									<button
+										disabled={loading}
+										onClick={() => setSwitcherOpen((open) => !open)}
+										aria-expanded={switcherOpen}
+										aria-controls="task-switcher"
+									>
+										⇄ Перемкнутися
+									</button>
+									<button
+										disabled={loading || !workday}
+										onClick={() =>
+											void send({ command: "start-rest", restType: "break" })
+										}
+									>
+										☕ Взяти перерву
+									</button>
+								</>
+							)}
+						</section>
+						{!activeRest && (
+							<section className="day-actions" aria-label="Дії робочого дня">
+								{dayActions()}
+							</section>
+						)}
 					</section>
-					<section className="quick-actions" aria-label="Швидкі дії">
-						{restActions()}
-					</section>
+					{switcherOpen && !activeRest && (
+						<section
+							className="task-switcher"
+							id="task-switcher"
+							aria-label="Перемикання задачі"
+						>
+							<div>
+								<p className="eyebrow">Змінити фокус</p>
+								<h2>На яку задачу перемкнутися?</h2>
+							</div>
+							<div className="task-switcher__choices">
+								<button
+									disabled={loading}
+									onClick={() => {
+										setSwitcherOpen(false);
+										void send({ command: "start-task", mode: "switch" });
+									}}
+								>
+									＋ Нова задача
+								</button>
+								{activeTasks.map((task) => (
+									<button
+										key={task.id}
+										disabled={loading}
+										onClick={() => {
+											setSwitcherOpen(false);
+											void send({
+												command: "resume-task",
+												taskId: task.id,
+												mode: "switch",
+											});
+										}}
+									>
+										<span>{taskLabel(task)}</span>
+										<small>
+											{task.status === "running" ? "зараз активна" : "продовжити"}
+										</small>
+									</button>
+								))}
+							</div>
+						</section>
+					)}
 					{commandStatus && <p className="command-status">{commandStatus}</p>}
 					<section className="tasks-panel">
 						<div className="section-heading">
@@ -757,7 +837,7 @@ export function Dashboard({
 													void send(
 														running
 															? { command: "pause-task", taskId: task.id }
-															: { command: "resume-task", taskId: task.id },
+															: { command: "resume-task", taskId: task.id, mode: "parallel" },
 													)
 												}
 												aria-label={

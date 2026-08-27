@@ -17,3 +17,34 @@ button:hover:not(:disabled) { border-color: rgba(184,233,134,.52); background: #
 @media (min-width: 760px) { .dashboard-shell { padding-top: 38px; }.dashboard-shell--focus { padding: max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); }.dashboard-grid { grid-template-columns: minmax(0,1.65fr) minmax(265px,.75fr); }.day-overview { display: flex; flex-direction: column; gap: 13px; }.overview-head { margin-bottom: 4px; }.overview-stat { display: flex; align-items: baseline; justify-content: space-between; }.day-pulse { margin-top: auto; }.task-list { grid-template-columns: 1fr 1fr; }.quick-actions { max-width: 680px; }.dashboard-shell::after { content: ''; position: fixed; z-index: -1; inset: auto -10vw -22vw auto; width: 60vw; height: 60vw; border-radius: 50%; background: rgba(123,223,242,.07); filter: blur(40px); } }
 @media (max-width: 540px) { .dashboard-header { margin-bottom: 16px; }.header-actions { gap: 5px; }.live-chip { display: none; }.view-switcher span { display: none; }.view-switcher button { min-width: 31px; padding: 0 7px; }.quick-actions { grid-template-columns: 1fr 1fr; }.quick-actions .danger-button { grid-column: span 2; }.hero-clock { min-height: 255px; }.tasks-panel { margin-left: -2px; margin-right: -2px; }.focus-clock { border-radius: 24px; }.focus-content strong { font-size: clamp(52px,min(18vw,22vh),86px); }.focus-orbit--one { width: 118vw; }.focus-orbit--two { width: 82vw; }.focus-task-rail { justify-content: flex-start; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
+
+/* Web command center: keep the day controls in one spacious, screen-filling card. */
+.dashboard-shell--dashboard { width: 100%; max-width: none; padding-right: clamp(16px, 5vw, 88px); padding-left: clamp(16px, 5vw, 88px); }
+.workday-card { min-height: min(690px, calc(100dvh - 118px)); padding: clamp(12px, 1.6vw, 20px); border: 1px solid var(--line); border-radius: 30px; background: rgba(14, 17, 13, .5); box-shadow: 0 26px 70px rgba(0,0,0,.18); }
+.workday-card .dashboard-grid { height: calc(100% - 72px); }
+.workday-card .hero-clock { min-height: 0; height: 100%; }
+.workday-card .day-overview { min-height: 0; }
+.workday-card .quick-actions { max-width: none; margin: 12px 0 0; }
+.quick-actions button { min-height: 52px; }
+.day-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.day-actions button { min-height: 36px; padding: 0 11px; color: var(--muted); background: transparent; font-size: 11px; }
+.day-actions .danger-button { margin-left: auto; }
+.task-switcher { margin-top: 14px; padding: 18px; border: 1px solid color-mix(in srgb, var(--accent), transparent 70%); border-radius: 22px; background: linear-gradient(135deg, rgba(184,233,134,.09), transparent 44%), var(--surface); box-shadow: 0 18px 42px rgba(0,0,0,.18); }
+.task-switcher h2 { margin: 0; font-size: 20px; letter-spacing: -.045em; }
+.task-switcher__choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; margin-top: 14px; }
+.task-switcher__choices button { min-height: 58px; padding: 10px 12px; text-align: left; }
+.task-switcher__choices button span, .task-switcher__choices button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-switcher__choices button small { margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 650; }
+
+@media (min-width: 760px) {
+  .workday-card .dashboard-grid { grid-template-columns: minmax(0, 1.75fr) minmax(285px, .75fr); }
+  .workday-card .quick-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 759px) {
+  .workday-card { min-height: 0; padding: 10px; border-radius: 23px; }
+  .workday-card .dashboard-grid { height: auto; }
+  .workday-card .hero-clock { height: auto; min-height: 260px; }
+  .workday-card .quick-actions { grid-template-columns: 1fr; }
+  .day-actions .danger-button { margin-left: 0; }
+}

@@ -14,7 +14,8 @@ export type WebWorkspace = {
 
 export type WorkBuddyCommand =
   | { command: 'pause-task'; taskId: string }
-  | { command: 'resume-task'; taskId: string }
+  | { command: 'resume-task'; taskId: string; mode: 'parallel' | 'switch' }
+  | { command: 'start-task'; mode: 'parallel' | 'switch' }
   | { command: 'start-rest'; restType: 'lunch' | 'break' }
   | { command: 'complete-rest'; restId: string }
   | { command: 'end-workday' }

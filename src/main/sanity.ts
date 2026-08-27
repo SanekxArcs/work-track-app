@@ -14,6 +14,7 @@ type WorkBuddyCommand = {
   taskId?: string
   restId?: string
   restType?: RestType
+  mode?: StartMode
 }
 
 /** A fresh desktop can restore its cloud workspace without overwriting local work. */
@@ -104,7 +105,11 @@ export class SanityService {
         return
       case 'resume-task':
         if (!command.taskId) throw new Error('Task id is required')
-        this.database.resumeTask(command.taskId, 'parallel' as StartMode)
+        this.database.resumeTask(command.taskId, command.mode ?? 'parallel')
+        return
+      case 'start-task':
+        if (command.mode !== 'parallel' && command.mode !== 'switch') throw new Error('Task mode is required')
+        this.database.startTask({ mode: command.mode })
         return
       case 'start-rest':
         if (command.restType !== 'break' && command.restType !== 'lunch') throw new Error('Rest type is required')
@@ -141,7 +146,7 @@ export class SanityService {
       if (error instanceof Error && error.message === 'Sanity is not configured on this device') return false
       throw error
     }
-    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType}')
+    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType, mode}')
     const response = await this.request<{ result?: WorkBuddyCommand[] }>(`data/query/${encodeURIComponent(config.dataset)}?query=${query}`)
     const commands = response.result ?? []
     let changed = false

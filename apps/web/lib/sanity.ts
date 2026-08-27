@@ -23,7 +23,7 @@ export async function readWorkspace(): Promise<WebWorkspace | null> {
 }
 
 export async function queueCommand(command: WorkBuddyCommand): Promise<void> {
-  const document: { _type: 'workBuddyCommand'; status: 'pending'; createdAt: string; command: WorkBuddyCommand['command']; taskId?: string; restId?: string; restType?: 'lunch' | 'break' } = {
+  const document: { _type: 'workBuddyCommand'; status: 'pending'; createdAt: string; command: WorkBuddyCommand['command']; taskId?: string; restId?: string; restType?: 'lunch' | 'break'; mode?: 'parallel' | 'switch' } = {
     _type: 'workBuddyCommand',
     status: 'pending',
     createdAt: new Date().toISOString(),
