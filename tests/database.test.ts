@@ -216,6 +216,25 @@ test('rejects merging a different active workday from a backup', async () => {
   })
 })
 
+test('merging an older backup keeps local task edits and adds only missing intervals', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Original note' }))
+    const taskId = started.tasks[0].id
+    await atTime(at(26, 11), () => database.pauseTask(taskId))
+    const backup = await atTime(at(26, 12), () => database.exportBackup())
+    backup.tasks[0].notes = 'Older backup note'
+    backup.tasks[0].intervals.push({ id: 'backup-only-interval', taskId, startedAt: at(26, 11), endedAt: at(26, 12) })
+
+    await atTime(at(26, 12), () => database.updateTask({ id: taskId, notes: 'Current local note' }))
+    await atTime(at(26, 12), () => database.importBackup(backup, 'merge'))
+    const restored = database.exportBackup().tasks.find((task) => task.id === taskId)
+
+    assert.equal(restored?.notes, 'Current local note')
+    assert.equal(restored?.intervals.length, 2)
+    assert.ok(restored?.intervals.some((interval) => interval.id === 'backup-only-interval'))
+  })
+})
+
 test('records a workday span in every calendar day it crosses', async () => {
   await withDatabase(async (database) => {
     const settings = database.getSettings()

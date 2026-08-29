@@ -813,20 +813,21 @@ export class WorkBuddyDatabase {
       if (mode === 'replace') {
         this.db.exec('DELETE FROM rest_intervals; DELETE FROM time_intervals; DELETE FROM rest_sessions; DELETE FROM tasks; DELETE FROM planned_tasks; DELETE FROM workdays; DELETE FROM projects; DELETE FROM overtime_redemptions;')
       }
+      const onConflict = (replace: string): string => mode === 'merge' ? 'DO NOTHING' : `DO UPDATE SET ${replace}`
       const project = this.db.prepare(`INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at`)
+        ON CONFLICT(id) ${onConflict('name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at')}`)
       const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, created_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at`)
+        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at')}`)
       const task = this.db.prepare(`INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at`)
+        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at')}`)
       const interval = this.db.prepare(`INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
+        ON CONFLICT(id) ${onConflict('task_id = excluded.task_id, started_at = excluded.started_at, ended_at = excluded.ended_at')}`)
       const workday = this.db.prepare(`INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at`)
+        ON CONFLICT(id) ${onConflict('started_at = excluded.started_at, ended_at = excluded.ended_at')}`)
       const rest = this.db.prepare(`INSERT INTO rest_sessions (id, type, status, planned_minutes, alarm_muted, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = excluded.resume_task_ids_json`)
+        ON CONFLICT(id) ${onConflict('type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = excluded.resume_task_ids_json')}`)
       const restInterval = this.db.prepare(`INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET rest_id = excluded.rest_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
+        ON CONFLICT(id) ${onConflict('rest_id = excluded.rest_id, started_at = excluded.started_at, ended_at = excluded.ended_at')}`)
       const overtimeRedemption = this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO NOTHING')
 
       for (const item of backup.projects) project.run(item.id, item.name, item.color, Number(item.archived), item.createdAt)
