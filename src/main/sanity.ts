@@ -109,6 +109,9 @@ export class SanityService {
         return
       case 'resume-task':
         if (!command.taskId) throw new Error('Task id is required')
+        if (this.database.getSnapshot().tasks.find((task) => task.id === command.taskId)?.status !== 'paused') {
+          throw new Error('Task is no longer paused')
+        }
         this.database.resumeTask(command.taskId, command.mode ?? 'parallel')
         return
       case 'start-task':

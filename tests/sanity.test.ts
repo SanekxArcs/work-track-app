@@ -124,3 +124,32 @@ test('rejects a remote command dated implausibly far in the future', async () =>
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('does not let a delayed remote resume restart a stopped task or pause other work', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  const stopped = database.startTask({ mode: 'parallel', notes: 'Finished task' }).tasks[0]
+  database.stopTask(stopped.id)
+  const running = database.startTask({ mode: 'parallel', notes: 'Current task' }).tasks.find((task) => task.id !== stopped.id)
+  assert.ok(running)
+  const originalFetch = globalThis.fetch
+  const command = { _id: 'stale-resume', createdAt: new Date().toISOString(), command: 'resume-task', taskId: stopped.id, mode: 'switch' }
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('data/query')) return Response.json({ result: [command] })
+    if (url.includes('data/mutate')) return Response.json({ results: [] })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    assert.equal(await sanity.processPendingCommands(), false)
+    assert.equal(database.getSnapshot().tasks.find((task) => task.id === running.id)?.status, 'running')
+    assert.equal(database.getSnapshot().tasks.find((task) => task.id === stopped.id)?.status, 'stopped')
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

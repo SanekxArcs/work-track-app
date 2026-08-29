@@ -976,6 +976,10 @@ export class WorkBuddyDatabase {
     const now = Date.now()
     this.normalizeStaleWorkday(now)
     if (this.getActiveRest()?.status === 'running') throw new Error('Pause the active break before starting a task')
+    if (input.taskId) {
+      const existing = this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(input.taskId) as { status: Task['status'] } | undefined
+      if (!existing) throw new Error('Task not found')
+    }
     const transaction = (): void => this.transaction(() => {
       if (!this.getOpenWorkday()) {
         this.db.prepare('INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, NULL)').run(randomUUID(), now)
@@ -984,8 +988,6 @@ export class WorkBuddyDatabase {
 
       const taskId = input.taskId ?? randomUUID()
       if (input.taskId) {
-        const exists = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)
-        if (!exists) throw new Error('Task not found')
         this.db.prepare("UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ?").run(now, taskId)
       } else {
         this.db
