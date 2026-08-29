@@ -786,6 +786,7 @@ export class WorkBuddyDatabase {
 
   importBackup(backup: BackupData, mode: BackupImportMode): AppSnapshot {
     if (mode !== 'merge' && mode !== 'replace') throw new Error('Invalid import mode')
+    validateBackup(backup)
     const existingSettings = this.getSettings()
     if (mode === 'merge') {
       const localOpenWorkdays = new Set((this.db.prepare('SELECT id FROM workdays WHERE ended_at IS NULL').all() as Array<{ id: string }>).map((workday) => workday.id))

@@ -228,6 +228,7 @@ test('rejects an invalid backup before it can be imported into SQLite', async ()
     backup.tasks[0].status = 'invalid' as 'stopped'
 
     assert.throws(() => database.parseBackup(JSON.stringify(backup)), /invalid tasks/i)
+    assert.throws(() => database.importBackup(backup, 'replace'), /invalid tasks/i)
     assert.equal(database.exportBackup().tasks.length, 1)
   })
 })
