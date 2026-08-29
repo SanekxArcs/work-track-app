@@ -400,3 +400,22 @@ test('restoring an active break keeps the tasks that should resume afterwards', 
     })), /invalid rest sessions/i)
   })
 })
+
+test('backdating a break also removes the overlapping auto-paused task time', async () => {
+  await withDatabase(async (database) => {
+    const initial = await atTime(at(26, 14), () => database.startTask({ mode: 'parallel', notes: 'Before lunch' }))
+    const taskId = initial.tasks[0].id
+    const lunch = await atTime(at(26, 14, 15), () => database.startRest('lunch'))
+    const lunchId = lunch.rests[0].id
+    await atTime(at(26, 15, 15), () => database.completeRest(lunchId))
+    await atTime(at(26, 16), () => database.endWorkday())
+
+    await atTime(at(26, 16), () => database.updateRestStart(lunchId, at(26, 14)))
+    const restored = database.exportBackup()
+    const task = restored.tasks.find((item) => item.id === taskId)
+    const rest = restored.rests.find((item) => item.id === lunchId)
+
+    assert.equal(task?.intervals[0].endedAt, at(26, 14))
+    assert.equal(rest?.intervals[0].startedAt, at(26, 14))
+  })
+})

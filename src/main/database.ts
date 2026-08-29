@@ -1128,7 +1128,32 @@ export class WorkBuddyDatabase {
     const interval = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at LIMIT 1').get(id) as RestIntervalRow | undefined
     if (!interval) throw new Error('Rest start was not found')
     this.validateAdjustedStart(startedAt, interval.started_at, interval.ended_at)
-    this.db.prepare('UPDATE rest_intervals SET started_at = ? WHERE id = ?').run(Math.round(startedAt), interval.id)
+    const correctedStart = Math.round(startedAt)
+    const restEnd = interval.ended_at ?? Date.now()
+    const overlappingRests = this.db.prepare(
+      `SELECT 1 FROM rest_intervals
+       WHERE rest_id != ? AND started_at < ? AND COALESCE(ended_at, ?) > ? LIMIT 1`
+    ).get(id, restEnd, Date.now(), correctedStart)
+    if (overlappingRests) throw new Error('Rest start cannot overlap another break')
+
+    const overlappingTasks = this.db.prepare(
+      `SELECT id, started_at, ended_at FROM time_intervals
+       WHERE started_at < ? AND ended_at IS NOT NULL AND ended_at > ?`
+    ).all(restEnd, correctedStart) as IntervalRow[]
+    const autoTrimmedTaskIds = new Set(overlappingTasks
+      .filter((taskInterval) => taskInterval.ended_at === interval.started_at && taskInterval.started_at <= correctedStart)
+      .map((taskInterval) => taskInterval.id))
+    if (overlappingTasks.some((taskInterval) => !autoTrimmedTaskIds.has(taskInterval.id))) {
+      throw new Error('Rest start conflicts with tracked task time')
+    }
+
+    this.transaction(() => {
+      this.db.prepare('UPDATE rest_intervals SET started_at = ? WHERE id = ?').run(correctedStart, interval.id)
+      if (autoTrimmedTaskIds.size) {
+        const updateTaskEnd = this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?')
+        for (const taskIntervalId of autoTrimmedTaskIds) updateTaskEnd.run(correctedStart, taskIntervalId)
+      }
+    })
     return this.getSnapshot()
   }
 
