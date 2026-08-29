@@ -59,13 +59,16 @@ async function loadLocalEnvironment(): Promise<void> {
   }
 }
 
-function configureSanityFromEnvironment(values: Record<string, string | undefined> = process.env): boolean {
+function configureSanityFromEnvironment(values: Record<string, string | undefined> = process.env, throwOnUnavailable = false): boolean {
   const projectId = values.SANITY_PROJECT_ID?.trim() || values.NEXT_PUBLIC_SANITY_PROJECT_ID?.trim() || ''
   const dataset = values.SANITY_DATASET?.trim() || values.NEXT_PUBLIC_SANITY_DATASET?.trim() || ''
   const apiVersion = values.SANITY_API_VERSION?.trim() || values.NEXT_PUBLIC_SANITY_API_VERSION?.trim() || ''
   const token = values.SANITY_API_WRITE_TOKEN?.trim() || values.NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL?.trim() || ''
   if (!projectId || !dataset || !token) return false
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+  if (!safeStorage.isEncryptionAvailable()) {
+    if (throwOnUnavailable) throw new Error('Secure storage is not available on this device')
+    return false
+  }
   database.setSecret('sanity_api_token', safeStorage.encryptString(token).toString('base64'))
   const settings = database.getSettings()
   database.updateSettings({
@@ -419,7 +422,7 @@ function registerIpc(): void {
     })
     const path = result.filePaths[0]
     if (result.canceled || !path) return null
-    if (!configureSanityFromEnvironment(readEnvironment(await readFile(path, 'utf8')))) throw new Error('The selected file does not contain a complete Sanity configuration')
+    if (!configureSanityFromEnvironment(readEnvironment(await readFile(path, 'utf8')), true)) throw new Error('The selected file does not contain a complete Sanity configuration')
     await sanity.sync()
     const snapshot = database.getSnapshot()
     emitChanged()

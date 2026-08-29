@@ -41,8 +41,8 @@ const copy = {
   }
 }
 
-function todayKey(): string {
-  return new Date().toLocaleDateString('sv-SE')
+function todayKey(timestamp: number): string {
+  return new Date(timestamp).toLocaleDateString('sv-SE')
 }
 
 function minuteOfDay(time: string): number {
@@ -50,8 +50,8 @@ function minuteOfDay(time: string): number {
   return hours * 60 + minutes
 }
 
-function currentMinute(): number {
-  const now = new Date()
+function currentMinute(timestamp: number): number {
+  const now = new Date(timestamp)
   return now.getHours() * 60 + now.getMinutes()
 }
 
@@ -65,6 +65,7 @@ function enabledWellness(settings: AppSettings): WellnessAction | undefined {
 export class ReminderService {
   private timer: NodeJS.Timeout | null = null
   private fired = new Set<string>()
+  private firedDate = ''
   private restAlarm: { restId: string; nextAt: number } | null = null
 
   constructor(
@@ -73,12 +74,14 @@ export class ReminderService {
   ) {}
 
   start(): void {
+    if (this.timer) return
     this.check()
     this.timer = setInterval(() => this.check(), CHECK_INTERVAL)
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer)
+    this.timer = null
   }
 
   private show(title: string, body: string): void {
@@ -87,15 +90,18 @@ export class ReminderService {
     if (sound !== 'system') this.onSound?.(sound, this.database.getSettings().notifications.volume)
   }
 
-  private once(key: string, callback: () => void): void {
-    const datedKey = `${todayKey()}:${key}`
-    if (this.fired.has(datedKey)) return
-    this.fired.add(datedKey)
+  private once(now: number, key: string, callback: () => void): void {
+    const date = todayKey(now)
+    if (this.firedDate !== date) {
+      this.firedDate = date
+      this.fired.clear()
+    }
+    if (this.fired.has(key)) return
+    this.fired.add(key)
     callback()
   }
 
-  private repeatRestAlarm(restId: string, settings: AppSettings): void {
-    const now = Date.now()
+  private repeatRestAlarm(restId: string, settings: AppSettings, now: number): void {
     if (!this.restAlarm || this.restAlarm.restId !== restId) {
       this.restAlarm = { restId, nextAt: now + REST_ALARM_INTERVAL }
       return
@@ -107,24 +113,25 @@ export class ReminderService {
 
   private check(): void {
     const snapshot = this.database.getSnapshot()
+    const now = snapshot.now
     const settings = snapshot.settings
     const locale: Locale = settings.locale
     const text = copy[locale]
-    const nowMinute = currentMinute()
+    const nowMinute = currentMinute(now)
     const activeTasks = snapshot.tasks.filter((task) => task.status === 'running')
     const openWorkday = snapshot.workday && snapshot.workday.endedAt === null
 
     if (!openWorkday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
-      this.once('start', () => this.show(text.startTitle, text.startBody))
+      this.once(now, 'start', () => this.show(text.startTitle, text.startBody))
     }
-    const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests)
-    if (openWorkday && settings.workday.endReminder && scheduledEndAt !== null && Date.now() >= scheduledEndAt) {
-      this.once('end', () => this.show(text.endTitle, text.endBody))
+    const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests, now)
+    if (openWorkday && settings.workday.endReminder && scheduledEndAt !== null && now >= scheduledEndAt) {
+      this.once(now, 'end', () => this.show(text.endTitle, text.endBody))
     }
-    const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, snapshot.tasks)
+    const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
     if (due.includes('break')) {
-      const streakStart = snapshot.workday ? breakStreakStartedAt(snapshot.workday, snapshot.rests) : Date.now()
-      this.once(`break-due:${streakStart}`, () => {
+      const streakStart = snapshot.workday ? breakStreakStartedAt(snapshot.workday, snapshot.rests) : now
+      this.once(now, `break-due:${streakStart}`, () => {
         const wellness = enabledWellness(settings)
         const extra = wellness ? ` ${text.wellness(locale === 'uk' ? wellness.labelUk : wellness.labelEn)}` : ''
         this.show(text.breakTitle, `${text.breakBody(settings.breaks.durationMinutes)}${extra}`)
@@ -132,18 +139,18 @@ export class ReminderService {
     }
     if (due.includes('lunch')) {
       const reminderBucket = Math.floor(nowMinute / 20)
-      this.once(`lunch-due:${reminderBucket}`, () => this.show(text.lunchTitle, text.lunchBody(settings.lunch.durationMinutes)))
+      this.once(now, `lunch-due:${reminderBucket}`, () => this.show(text.lunchTitle, text.lunchBody(settings.lunch.durationMinutes)))
     }
     const runningRest = snapshot.rests.find((rest) => rest.status === 'running')
-    if (runningRest && restRemaining(runningRest) === 0 && !runningRest.alarmMuted) {
-      this.once(`rest-done:${runningRest.id}`, () => this.show(text.restDoneTitle, text.restDoneBody))
-      this.repeatRestAlarm(runningRest.id, settings)
+    if (runningRest && restRemaining(runningRest, now) === 0 && !runningRest.alarmMuted) {
+      this.once(now, `rest-done:${runningRest.id}`, () => this.show(text.restDoneTitle, text.restDoneBody))
+      this.repeatRestAlarm(runningRest.id, settings, now)
     } else this.restAlarm = null
     if (activeTasks.length && settings.idle.enabled) {
       const idleMinutes = Math.floor(powerMonitor.getSystemIdleTime() / 60)
       if (idleMinutes >= settings.idle.thresholdMinutes) {
         const bucket = Math.floor(idleMinutes / settings.idle.thresholdMinutes)
-        this.once(`idle:${bucket}`, () => this.show(text.idleTitle, text.idleBody(idleMinutes)))
+        this.once(now, `idle:${bucket}`, () => this.show(text.idleTitle, text.idleBody(idleMinutes)))
       }
     }
   }
