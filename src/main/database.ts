@@ -933,9 +933,12 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
-  endWorkday(): AppSnapshot {
+  endWorkday(expectedWorkdayId?: string): AppSnapshot {
     const now = Date.now()
     this.normalizeStaleWorkday(now)
+    if (expectedWorkdayId && this.getOpenWorkday()?.id !== expectedWorkdayId) {
+      throw new Error('This workday is no longer active')
+    }
     const transaction = (): void => this.transaction(() => {
       this.finishOpenWorkday(now)
     })

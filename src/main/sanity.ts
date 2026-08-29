@@ -13,6 +13,7 @@ type WorkBuddyCommand = {
   command?: string
   taskId?: string
   restId?: string
+  workdayId?: string
   restType?: RestType
   mode?: StartMode
 }
@@ -120,7 +121,8 @@ export class SanityService {
         this.database.completeRest(command.restId)
         return
       case 'end-workday':
-        this.database.endWorkday()
+        if (!command.workdayId) throw new Error('Workday id is required')
+        this.database.endWorkday(command.workdayId)
         return
       default:
         throw new Error('Unsupported Work Buddy command')
@@ -146,7 +148,7 @@ export class SanityService {
       if (error instanceof Error && error.message === 'Sanity is not configured on this device') return false
       throw error
     }
-    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType, mode}')
+    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType, workdayId, mode}')
     const response = await this.request<{ result?: WorkBuddyCommand[] }>(`data/query/${encodeURIComponent(config.dataset)}?query=${query}`)
     const commands = response.result ?? []
     let changed = false

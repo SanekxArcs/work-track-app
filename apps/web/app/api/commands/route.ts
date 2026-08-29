@@ -12,7 +12,7 @@ function isCommand(value: unknown): value is WorkBuddyCommand {
   if (command.command === 'start-task') return command.mode === 'parallel' || command.mode === 'switch'
   if (command.command === 'complete-rest') return typeof command.restId === 'string'
   if (command.command === 'start-rest') return command.restType === 'lunch' || command.restType === 'break'
-  return command.command === 'end-workday'
+  return command.command === 'end-workday' && typeof command.workdayId === 'string'
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {

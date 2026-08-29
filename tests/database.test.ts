@@ -129,6 +129,19 @@ test('pausing an old timer closes it at midnight instead of counting the night',
   })
 })
 
+test('does not let a delayed end-day command close a newer workday', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 10), () => database.startWorkday())
+    const firstId = first.workday?.id
+    assert.ok(firstId)
+    await atTime(at(26, 16), () => database.endWorkday())
+    const next = await atTime(at(27, 9), () => database.startWorkday())
+
+    await atTime(at(27, 10), () => assert.throws(() => database.endWorkday(firstId), /no longer active/i))
+    assert.equal((await atTime(at(27, 10), () => database.getSnapshot())).workday?.id, next.workday?.id)
+  })
+})
+
 test('keeps breaks from before midnight in an overnight workday snapshot', async () => {
   await withDatabase(async (database) => {
     const settings = database.getSettings()

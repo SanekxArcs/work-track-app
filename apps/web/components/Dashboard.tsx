@@ -372,7 +372,7 @@ export function Dashboard({
 				<button
 					className="danger-button"
 					disabled={loading || !workday}
-					onClick={() => void send({ command: "end-workday" })}
+					onClick={() => workday && void send({ command: "end-workday", workdayId: workday.id })}
 				>
 					Завершити день
 				</button>

@@ -18,7 +18,7 @@ export type WorkBuddyCommand =
   | { command: 'start-task'; mode: 'parallel' | 'switch' }
   | { command: 'start-rest'; restType: 'lunch' | 'break' }
   | { command: 'complete-rest'; restId: string }
-  | { command: 'end-workday' }
+  | { command: 'end-workday'; workdayId: string }
 
 export function activeWorkday(workspace: WebWorkspace): WebWorkday | undefined {
   return workspace.workdays.find((day) => day.endedAt === null)
