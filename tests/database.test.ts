@@ -79,6 +79,24 @@ test('uses one timestamp while creating a Focus snapshot at midnight', async () 
   })
 })
 
+test('starts a break with one timestamp even when the clock crosses midnight', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 23), () => database.startTask({ mode: 'parallel', notes: 'Late work' }))
+    const original = Date.now
+    let calls = 0
+    Date.now = () => calls++ === 0 ? at(26, 23, 59) : at(27, 0)
+    try {
+      database.startRest('break')
+      Date.now = () => at(26, 23, 59)
+      const rest = database.exportBackup().rests[0]
+      assert.equal(rest?.createdAt, at(26, 23, 59))
+      assert.equal(rest?.intervals[0]?.startedAt, at(26, 23, 59))
+    } finally {
+      Date.now = original
+    }
+  })
+})
+
 test('ending a day during an open break does not add the break to overtime', async () => {
   await withDatabase(async (database) => {
     await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Morning work' }))

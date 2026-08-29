@@ -1060,11 +1060,11 @@ export class WorkBuddyDatabase {
   }
 
   startRest(type: RestType): AppSnapshot {
-    this.normalizeStaleWorkday(Date.now())
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
     if (!this.getOpenWorkday()) throw new Error('Start the workday first')
     const active = this.getActiveRest()
     if (active) throw new Error('Another break is already active')
-    const now = Date.now()
     const settings = this.getSettings()
     const plannedMinutes = type === 'lunch' ? settings.lunch.durationMinutes : settings.breaks.durationMinutes
     this.transaction(() => {
@@ -1122,10 +1122,10 @@ export class WorkBuddyDatabase {
   }
 
   skipRest(type: RestType): AppSnapshot {
-    this.normalizeStaleWorkday(Date.now())
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
     if (!this.getOpenWorkday()) throw new Error('Start the workday first')
     if (this.getActiveRest()) throw new Error('Finish the active break first')
-    const now = Date.now()
     const [dayStart, dayEnd] = localDayBounds(now)
     const alreadySkipped = this.db.prepare('SELECT 1 FROM rest_sessions WHERE type = ? AND planned_minutes = 0 AND created_at >= ? AND created_at < ?').get(type, dayStart, dayEnd)
     if (!alreadySkipped) {
