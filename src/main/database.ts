@@ -573,6 +573,8 @@ export class WorkBuddyDatabase {
   }
 
   getHistory(days = 182): HistoryDay[] {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const safeDays = Math.min(730, Math.max(14, Math.round(days)))
     const [todayStart, rangeEnd] = localDayBounds()
     const rangeStart = localDaysBefore(todayStart, safeDays - 1)
@@ -588,7 +590,6 @@ export class WorkBuddyDatabase {
        FROM time_intervals i JOIN tasks t ON t.id = i.task_id
        WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)`
     ).all(rangeEnd, rangeStart) as Array<{ started_at: number; ended_at: number | null; task_id: string; project_id: string | null }>
-    const now = Date.now()
     for (const interval of intervals) {
       const intervalEnd = Math.min(interval.ended_at ?? now, rangeEnd)
       for (let dayStart = Math.max(rangeStart, localDayBounds(interval.started_at)[0]); dayStart < intervalEnd; dayStart = localDayBounds(dayStart)[1]) {
@@ -635,6 +636,7 @@ export class WorkBuddyDatabase {
   }
 
   getOvertimeOverview(): OvertimeOverview {
+    this.normalizeStaleWorkday(Date.now())
     const settings = this.getSettings()
     const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE ended_at IS NOT NULL ORDER BY started_at DESC').all() as Array<{ started_at: number; ended_at: number }>
     const redemptions = new Set((this.db.prepare('SELECT date FROM overtime_redemptions').all() as Array<{ date: string }>).map((row) => row.date))
@@ -678,6 +680,7 @@ export class WorkBuddyDatabase {
   }
 
   getDaySnapshot(date: string): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, created_at').all() as ProjectRow[]).map(
       (row): Project => ({ id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at })
@@ -849,6 +852,7 @@ export class WorkBuddyDatabase {
   createDayCalendarIcs(date: string): string {
     const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const rows = this.db.prepare(
       `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name
        FROM time_intervals i
@@ -1302,6 +1306,7 @@ export class WorkBuddyDatabase {
   }
 
   getWorkedCoverageToday(now = Date.now()): number {
+    this.normalizeStaleWorkday(now)
     const [dayStart, dayEnd] = localDayBounds(now)
     const rows = this.db
       .prepare('SELECT started_at, ended_at FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at')

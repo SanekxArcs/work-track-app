@@ -124,6 +124,16 @@ test('exporting a backup closes a stale workday before it can be synced', async 
   })
 })
 
+test('opening history directly never counts a stale timer into the next day', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+
+    const history = await atTime(at(27, 9), () => database.getHistory(14))
+    assert.equal(history.find((day) => day.date === '2026-08-27')?.workedMs, 0)
+    assert.equal(database.exportBackup().workdays[0].endedAt, at(27, 0))
+  })
+})
+
 test('rejects an edited interval that would end in the future', async () => {
   await withDatabase(async (database) => {
     const snapshot = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Later' }))
