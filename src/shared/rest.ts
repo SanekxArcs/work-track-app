@@ -23,7 +23,7 @@ export function restRemaining(rest: RestSession, now = Date.now()): number {
 function unionDuration(intervals: TimeInterval[], startAt: number, now: number): number {
   const ranges = intervals
     .map((interval) => [Math.max(startAt, interval.startedAt), Math.min(interval.endedAt ?? now, now)] as const)
-    .filter(([, end]) => end > startAt)
+    .filter(([start, end]) => end > start)
     .sort((first, second) => first[0] - second[0])
   if (!ranges.length) return 0
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { WorkBuddyDatabase } from '../src/main/database.ts'
+import { scheduledWorkdayEndAt } from '../src/shared/workday.ts'
 
 function at(day: number, hours: number, minutes = 0): number {
   return new Date(2026, 7, day, hours, minutes, 0, 0).getTime()
@@ -32,6 +33,8 @@ async function atTime<T>(timestamp: number, run: () => T | Promise<T>): Promise<
 
 test('daily coverage and history split an interval that crosses midnight', async () => {
   await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
     await atTime(at(26, 23, 50), () => database.startTask({ mode: 'parallel', notes: 'Late task' }))
     await atTime(at(27, 0, 10), () => database.pauseAllTasks())
 
@@ -78,6 +81,60 @@ test('starting work on the next calendar day closes a stale normal workday at mi
     const backup = database.exportBackup()
     assert.equal(snapshot.workday?.startedAt, at(27, 9))
     assert.equal(backup.workdays.find((day) => day.startedAt === at(26, 16))?.endedAt, at(27, 0))
+  })
+})
+
+test('opening Focus on a new day closes a stale normal workday before rendering tasks', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+
+    const snapshot = await atTime(at(27, 9), () => database.getSnapshot())
+    const backup = database.exportBackup()
+    assert.equal(snapshot.workday, null)
+    assert.equal(snapshot.tasks.length, 0)
+    assert.equal(backup.workdays.find((day) => day.startedAt === at(26, 16))?.endedAt, at(27, 0))
+  })
+})
+
+test('rejects an edited interval that would end in the future', async () => {
+  await withDatabase(async (database) => {
+    const snapshot = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Later' }))
+    const taskId = snapshot.tasks[0].id
+    await atTime(at(26, 12), () => database.pauseTask(taskId))
+    await atTime(at(26, 10), () => assert.throws(() => database.updateTask({ id: taskId, startedAt: at(26, 11), endedAt: at(26, 12) }), /future/i))
+
+    assert.equal(await atTime(at(26, 10), () => database.getWorkedCoverageToday()), 0)
+  })
+})
+
+test('pausing an old timer closes it at midnight instead of counting the night', async () => {
+  await withDatabase(async (database) => {
+    const initial = await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+    await atTime(at(27, 9), () => database.pauseTask(initial.tasks[0].id))
+
+    const task = database.exportBackup().tasks.find((item) => item.id === initial.tasks[0].id)
+    assert.equal(task?.intervals[0].endedAt, at(27, 0))
+    assert.equal(await atTime(at(27, 9), () => database.getWorkedCoverageToday()), 0)
+  })
+})
+
+test('keeps breaks from before midnight in an overnight workday snapshot', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({
+      ...settings,
+      workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' },
+      lunch: { ...settings.lunch, durationMinutes: 20 }
+    })
+    await atTime(at(26, 23), () => database.startTask({ mode: 'parallel', notes: 'Night shift' }))
+    const duringLunch = await atTime(at(26, 23, 30), () => database.startRest('lunch'))
+    const lunchId = duringLunch.rests[0].id
+    await atTime(at(27, 0), () => database.completeRest(lunchId))
+
+    const snapshot = await atTime(at(27, 0, 10), () => database.getSnapshot())
+    assert.equal(snapshot.rests.length, 1)
+    assert.equal(snapshot.rests[0].type, 'lunch')
+    assert.equal(scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, at(27, 0, 10)), at(27, 6, 10))
   })
 })
 
@@ -131,6 +188,17 @@ test('rejects an invalid backup before it can be imported into SQLite', async ()
 
     assert.throws(() => database.parseBackup(JSON.stringify(backup)), /invalid tasks/i)
     assert.equal(database.exportBackup().tasks.length, 1)
+  })
+})
+
+test('rejects a backup with an impossible active timer state', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Safe task' }))
+    const backup = database.exportBackup()
+    backup.tasks[0].status = 'paused'
+
+    assert.throws(() => database.parseBackup(JSON.stringify(backup)), /inconsistent task timer/i)
+    assert.equal(database.exportBackup().tasks[0].status, 'running')
   })
 })
 

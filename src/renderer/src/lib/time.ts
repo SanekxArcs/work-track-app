@@ -1,7 +1,7 @@
 import type { Task, TimeInterval } from '@shared/types'
 
 export function intervalDuration(interval: TimeInterval, now = Date.now()): number {
-  return Math.max(0, (interval.endedAt ?? now) - interval.startedAt)
+  return Math.max(0, Math.min(interval.endedAt ?? now, now) - interval.startedAt)
 }
 
 export function taskDuration(task: Task, now = Date.now()): number {
@@ -27,7 +27,8 @@ export function formatClock(timestamp: number, locale: string): string {
 
 export function unionDuration(intervals: TimeInterval[], now = Date.now()): number {
   const ranges = intervals
-    .map((item) => [item.startedAt, item.endedAt ?? now] as const)
+    .map((item) => [item.startedAt, Math.min(item.endedAt ?? now, now)] as const)
+    .filter(([start, end]) => end > start)
     .sort((a, b) => a[0] - b[0])
   if (!ranges.length) return 0
   let total = 0
@@ -44,10 +45,12 @@ export function unionDuration(intervals: TimeInterval[], now = Date.now()): numb
 }
 
 export function overlapDuration(intervals: TimeInterval[], now = Date.now()): number {
-  const events = intervals.flatMap((interval) => [
-    { at: interval.startedAt, delta: 1 },
-    { at: interval.endedAt ?? now, delta: -1 }
-  ]).sort((a, b) => a.at - b.at || a.delta - b.delta)
+  const events = intervals.flatMap((interval) => {
+    const endedAt = Math.min(interval.endedAt ?? now, now)
+    return endedAt > interval.startedAt
+      ? [{ at: interval.startedAt, delta: 1 }, { at: endedAt, delta: -1 }]
+      : []
+  }).sort((a, b) => a.at - b.at || a.delta - b.delta)
   let active = 0
   let previous = events[0]?.at ?? now
   let overlap = 0
@@ -68,7 +71,7 @@ export function dayIntervals(tasks: Task[], dayTimestamp = Date.now()): TimeInte
   const dayEnd = end.getTime()
   return tasks.flatMap((task) => task.intervals.flatMap((interval) => {
     const startedAt = Math.max(interval.startedAt, dayStart)
-    const endedAt = Math.min(interval.endedAt ?? dayTimestamp, dayEnd)
+    const endedAt = Math.min(interval.endedAt ?? dayTimestamp, dayTimestamp, dayEnd)
     if (endedAt <= startedAt) return []
     return [{ ...interval, startedAt, endedAt }]
   }))

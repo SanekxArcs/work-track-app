@@ -191,6 +191,22 @@ function validateBackup(backup: BackupData): void {
   intervalIds.push(...backup.rests.flatMap((item) => item.intervals.map((interval) => interval.id)))
   if (new Set(intervalIds).size !== intervalIds.length) throw new Error('The selected backup has duplicate interval IDs')
   if (backup.rests.filter((item) => item.status !== 'completed').length > 1) throw new Error('The selected backup has more than one active break')
+  const hasOpenWorkday = backup.workdays.some((item) => item.endedAt === null)
+  for (const task of backup.tasks) {
+    const openIntervals = task.intervals.filter((interval) => interval.endedAt === null).length
+    if ((task.status === 'running' && openIntervals !== 1) || (task.status !== 'running' && openIntervals !== 0)) {
+      throw new Error('The selected backup has inconsistent task timer states')
+    }
+    if (task.status === 'running' && !hasOpenWorkday) throw new Error('The selected backup has an active task without an active workday')
+  }
+  for (const rest of backup.rests) {
+    const openIntervals = rest.intervals.filter((interval) => interval.endedAt === null).length
+    const isActive = rest.status !== 'completed'
+    if ((rest.status === 'running' && openIntervals !== 1) || (rest.status !== 'running' && openIntervals !== 0) || (isActive !== (rest.endedAt === null))) {
+      throw new Error('The selected backup has inconsistent break timer states')
+    }
+    if (isActive && !hasOpenWorkday) throw new Error('The selected backup has an active break without an active workday')
+  }
   for (const date of backup.overtimeRedeemedDates ?? []) localDateTimestamp(date)
 }
 
@@ -333,6 +349,13 @@ export class WorkBuddyDatabase {
         redeemed_at INTEGER NOT NULL
       );
 
+      -- Web commands are eventually delivered by Sanity. Keep their ids locally so
+      -- a retry after the command was already applied cannot create a duplicate task.
+      CREATE TABLE IF NOT EXISTS processed_remote_commands (
+        id TEXT PRIMARY KEY,
+        processed_at INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_intervals_task ON time_intervals(task_id);
       CREATE INDEX IF NOT EXISTS idx_intervals_start ON time_intervals(started_at);
       CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
@@ -385,6 +408,9 @@ export class WorkBuddyDatabase {
   }
 
   getSnapshot(): AppSnapshot {
+    // Opening the app on a new calendar day must not leave yesterday's live
+    // task in Focus until the user presses another button.
+    this.normalizeStaleWorkday(Date.now())
     const [dayStart, dayEnd] = localDayBounds()
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, created_at').all() as ProjectRow[]).map(
       (row): Project => ({
@@ -440,9 +466,12 @@ export class WorkBuddyDatabase {
       ? { id: workdayRow.id, startedAt: workdayRow.started_at, endedAt: workdayRow.ended_at }
       : null
 
+    // An overnight workday can begin before midnight. Its earlier breaks and
+    // lunch still affect the current reminder cadence and planned finish.
+    const activeWorkdayStartedAt = workday?.endedAt === null ? workday.startedAt : null
     const restRows = this.db
-      .prepare("SELECT * FROM rest_sessions WHERE (created_at < ? AND (ended_at IS NULL OR ended_at > ?)) OR status IN ('running', 'paused') ORDER BY created_at")
-      .all(dayEnd, dayStart) as RestRow[]
+      .prepare("SELECT * FROM rest_sessions WHERE (created_at < ? AND (ended_at IS NULL OR ended_at > ?)) OR status IN ('running', 'paused') OR (? IS NOT NULL AND created_at >= ?) ORDER BY created_at")
+      .all(dayEnd, dayStart, activeWorkdayStartedAt, activeWorkdayStartedAt) as RestRow[]
     const restIntervalStatement = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
     const rests = restRows.map((row): RestSession => ({
       id: row.id,
@@ -883,6 +912,7 @@ export class WorkBuddyDatabase {
 
   pauseTask(id: string): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const transaction = (): void => this.transaction(() => {
       this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE task_id = ? AND ended_at IS NULL').run(now, id)
       this.db.prepare("UPDATE tasks SET status = 'paused', updated_at = ? WHERE id = ? AND status != 'stopped'").run(now, id)
@@ -897,6 +927,7 @@ export class WorkBuddyDatabase {
 
   stopTask(id: string): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const transaction = (): void => this.transaction(() => {
       this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE task_id = ? AND ended_at IS NULL').run(now, id)
       this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE id = ?").run(now, id)
@@ -907,12 +938,14 @@ export class WorkBuddyDatabase {
 
   pauseAllTasks(): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     this.transaction(() => this.pauseAll(now))
     return this.getSnapshot()
   }
 
   stopAllTasks(): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     this.transaction(() => {
       this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE ended_at IS NULL').run(now)
       this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status != 'stopped'").run(now)
@@ -942,6 +975,7 @@ export class WorkBuddyDatabase {
 
   pauseRest(id: string): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     this.transaction(() => {
       const rest = this.getRest(id)
       if (!rest || rest.status !== 'running') throw new Error('Active break not found')
@@ -954,6 +988,7 @@ export class WorkBuddyDatabase {
 
   resumeRest(id: string): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     this.transaction(() => {
       const rest = this.getRest(id)
       if (!rest || rest.status !== 'paused') throw new Error('Paused break not found')
@@ -969,6 +1004,7 @@ export class WorkBuddyDatabase {
 
   completeRest(id: string): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     this.transaction(() => {
       const rest = this.getRest(id)
       if (!rest || rest.status === 'completed') throw new Error('Active break not found')
@@ -994,6 +1030,7 @@ export class WorkBuddyDatabase {
   }
 
   updateRestStart(id: string, startedAt: number): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     const interval = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at LIMIT 1').get(id) as RestIntervalRow | undefined
     if (!interval) throw new Error('Rest start was not found')
     this.validateAdjustedStart(startedAt, interval.started_at, interval.ended_at)
@@ -1002,12 +1039,14 @@ export class WorkBuddyDatabase {
   }
 
   setRestAlarmMuted(id: string, muted: boolean): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     const result = this.db.prepare("UPDATE rest_sessions SET alarm_muted = ? WHERE id = ? AND status != 'completed'").run(Number(muted), id)
     if (!result.changes) throw new Error('Active break not found')
     return this.getSnapshot()
   }
 
   updateTask(input: TaskUpdateInput): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
     const selectedInterval = input.intervalId === undefined
@@ -1139,8 +1178,8 @@ export class WorkBuddyDatabase {
       .prepare('SELECT started_at, ended_at FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at')
       .all(dayEnd, dayStart) as Array<{ started_at: number; ended_at: number | null }>
     const ranges = rows
-      .map((row) => [Math.max(row.started_at, dayStart), Math.min(row.ended_at ?? now, dayEnd)] as const)
-      .filter(([, end]) => end > dayStart)
+      .map((row) => [Math.max(row.started_at, dayStart), Math.min(row.ended_at ?? now, now, dayEnd)] as const)
+      .filter(([start, end]) => end > start)
       .sort((a, b) => a[0] - b[0])
     if (!ranges.length) return 0
     let total = 0
@@ -1158,6 +1197,14 @@ export class WorkBuddyDatabase {
 
   private getOpenWorkday(): WorkdayRow | undefined {
     return this.db.prepare('SELECT * FROM workdays WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get() as WorkdayRow | undefined
+  }
+
+  hasProcessedRemoteCommand(id: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM processed_remote_commands WHERE id = ?').get(id))
+  }
+
+  markRemoteCommandProcessed(id: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO processed_remote_commands (id, processed_at) VALUES (?, ?)').run(id, Date.now())
   }
 
   private normalizeStaleWorkday(now: number): void {
@@ -1222,6 +1269,7 @@ export class WorkBuddyDatabase {
 
   private validateAdjustedEnd(endedAt: number, startedAt: number, originalEnd: number): void {
     if (!Number.isFinite(endedAt)) throw new Error('Invalid end time')
+    if (endedAt > Date.now()) throw new Error('End time cannot be in the future')
     const [dayStart, dayEnd] = localDayBounds(originalEnd)
     if (endedAt < dayStart || endedAt >= dayEnd) throw new Error('End time must stay on the same day')
     if (endedAt < startedAt) throw new Error('End time cannot be before the interval start')

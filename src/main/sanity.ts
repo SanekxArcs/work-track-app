@@ -152,14 +152,27 @@ export class SanityService {
     let changed = false
     for (const command of commands) {
       try {
-        this.applyCommand(command)
-        await this.writeCommandStatus(command._id, 'applied')
-        changed = true
+        // A command can remain pending if the status write times out after the
+        // local action succeeds. Do not run it again on the next poll.
+        if (!this.database.hasProcessedRemoteCommand(command._id)) {
+          this.applyCommand(command)
+          this.database.markRemoteCommandProcessed(command._id)
+          changed = true
+        }
       } catch (error) {
         await this.writeCommandStatus(command._id, 'failed', error instanceof Error ? error.message : 'Could not apply command')
+        continue
+      }
+      try {
+        await this.writeCommandStatus(command._id, 'applied')
+      } catch {
+        // The action is safely recorded locally. Leave the command pending so
+        // a later poll can confirm it as applied instead of reporting a false failure.
       }
     }
-    if (changed) await this.push()
+    // The UI still needs to refresh when an action succeeded locally but the
+    // immediate cloud push is temporarily unavailable.
+    if (changed) await this.push().catch(() => undefined)
     return changed
   }
 

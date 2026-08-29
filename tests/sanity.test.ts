@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { shouldRestoreCloudBackup } from '../src/main/sanity.ts'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { WorkBuddyDatabase } from '../src/main/database.ts'
+import { SanityService, shouldRestoreCloudBackup } from '../src/main/sanity.ts'
 import type { BackupData } from '../src/shared/types.ts'
 
 function emptyBackup(): BackupData {
@@ -25,4 +29,40 @@ test('restores cloud history only into a genuinely fresh local workspace', () =>
   assert.equal(shouldRestoreCloudBackup(backup), true)
   backup.projects.push({ id: 'project', name: 'Local project', color: '#ffffff', archived: false, createdAt: Date.now() })
   assert.equal(shouldRestoreCloudBackup(backup), false)
+})
+
+test('does not run a pending web command twice when its first status update fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  const originalFetch = globalThis.fetch
+  let statusCalls = 0
+  const mutationBodies: Array<{ mutations?: Array<{ patch?: { set?: { status?: string } } }> }> = []
+  const command = { _id: 'command-start-task', command: 'start-task', mode: 'parallel' }
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('data/query')) return Response.json({ result: [command] })
+    if (url.includes('data/mutate')) {
+      mutationBodies.push(JSON.parse(String(init?.body ?? '{}')))
+      statusCalls += 1
+      if (statusCalls === 1) return Response.json({ error: { message: 'Temporary failure' } }, { status: 500 })
+      return Response.json({ results: [] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    await sanity.processPendingCommands()
+    assert.equal(database.getSnapshot().tasks.length, 1)
+    assert.equal(mutationBodies.some((body) => body.mutations?.some((mutation) => mutation.patch?.set?.status === 'failed')), false)
+
+    await sanity.processPendingCommands()
+    assert.equal(database.getSnapshot().tasks.length, 1)
+    assert.equal(database.hasProcessedRemoteCommand(command._id), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
 })
