@@ -260,3 +260,60 @@ test('does not allow ambiguous duplicate project names', async () => {
     assert.throws(() => database.createProject({ name: ' cupio ', color: '#000000' }), /already exists/i)
   })
 })
+
+test('merging a Day task keeps the source task history outside the selected date', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+
+    const source = await atTime(at(26, 23, 30), () => database.startTask({ mode: 'parallel', notes: 'Before midnight' }))
+    const sourceId = source.tasks[0].id
+    await atTime(at(27, 0, 30), () => database.pauseTask(sourceId))
+    await atTime(at(27, 0, 30), () => database.endWorkday())
+
+    const target = await atTime(at(27, 0, 40), () => database.startTask({ mode: 'parallel', notes: 'After midnight' }))
+    const targetId = target.tasks.find((task) => task.id !== sourceId)?.id
+    assert.ok(targetId)
+    await atTime(at(27, 1), () => database.endWorkday())
+
+    await atTime(at(27, 1), () => database.mergeTasks({ date: '2026-08-27', targetId, sourceIds: [sourceId] }))
+    const backup = database.exportBackup()
+    const sourceIntervals = backup.tasks.find((task) => task.id === sourceId)?.intervals ?? []
+    const targetIntervals = backup.tasks.find((task) => task.id === targetId)?.intervals ?? []
+
+    assert.deepEqual(sourceIntervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(26, 23, 30), at(27, 0)]])
+    assert.ok(targetIntervals.some((interval) => interval.startedAt === at(27, 0) && interval.endedAt === at(27, 0, 30)))
+    assert.ok(targetIntervals.some((interval) => interval.startedAt === at(27, 0, 40) && interval.endedAt === at(27, 1)))
+  })
+})
+
+test('rejects task interval edits that would double-count the same task', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const taskId = first.tasks[0].id
+    await atTime(at(26, 11), () => database.pauseTask(taskId))
+    await atTime(at(26, 12), () => database.resumeTask(taskId, 'parallel'))
+    const second = await atTime(at(26, 13), () => database.pauseTask(taskId))
+    const secondIntervalId = second.tasks[0].intervals.find((interval) => interval.startedAt === at(26, 12))?.id
+    assert.ok(secondIntervalId)
+
+    await atTime(at(26, 13), () => assert.throws(
+      () => database.updateTask({ id: taskId, intervalId: secondIntervalId, startedAt: at(26, 10, 30), endedAt: at(26, 13) }),
+      /cannot overlap/i
+    ))
+  })
+})
+
+test('rejects an imported backup with overlapping intervals for one task', async () => {
+  await withDatabase(async (database) => {
+    const initial = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const taskId = initial.tasks[0].id
+    await atTime(at(26, 11), () => database.pauseTask(taskId))
+    await atTime(at(26, 12), () => database.resumeTask(taskId, 'parallel'))
+    await atTime(at(26, 13), () => database.pauseTask(taskId))
+    const backup = database.exportBackup()
+    backup.tasks[0].intervals[1].startedAt = at(26, 10, 30)
+
+    assert.throws(() => database.parseBackup(JSON.stringify(backup)), /invalid tasks/i)
+  })
+})

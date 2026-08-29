@@ -138,15 +138,26 @@ function hasUniqueIds(items: unknown[]): boolean {
   return ids.every(isId) && new Set(ids).size === ids.length
 }
 
+function hasOverlappingIntervals(intervals: Array<{ startedAt: number; endedAt: number | null }>): boolean {
+  const ranges = intervals
+    .filter((interval) => (interval.endedAt ?? Number.POSITIVE_INFINITY) > interval.startedAt)
+    .sort((first, second) => first.startedAt - second.startedAt)
+  let latestEnd = Number.NEGATIVE_INFINITY
+  for (const interval of ranges) {
+    if (interval.startedAt < latestEnd) return true
+    latestEnd = Math.max(latestEnd, interval.endedAt ?? Number.POSITIVE_INFINITY)
+  }
+  return false
+}
+
 function validIntervals(value: unknown, ownerId: string): boolean {
   if (!Array.isArray(value) || !hasUniqueIds(value)) return false
-  return value.every((item) => {
-    if (!isRecord(item) || !isId(item.id)) return false
-    return item.taskId === ownerId || item.restId === ownerId
-  }) && value.every((item) => {
+  if (!value.every((item) => isRecord(item) && isId(item.id) && (item.taskId === ownerId || item.restId === ownerId))) return false
+  if (!value.every((item) => {
     if (!isRecord(item) || !isTimestamp(item.startedAt)) return false
     return item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.startedAt)
-  })
+  })) return false
+  return !hasOverlappingIntervals(value as Array<{ startedAt: number; endedAt: number | null }>)
 }
 
 function validateBackup(backup: BackupData): void {
@@ -1138,6 +1149,14 @@ export class WorkBuddyDatabase {
       const firstStart = firstInterval?.id === finalInterval.id ? input.startedAt ?? finalInterval.started_at : finalInterval.started_at
       this.validateAdjustedEnd(input.endedAt, firstStart, finalInterval.ended_at)
     }
+    if (input.startedAt !== undefined || input.endedAt !== undefined) {
+      const intervals = (this.db.prepare('SELECT id, started_at, ended_at FROM time_intervals WHERE task_id = ?').all(input.id) as IntervalRow[])
+        .map((interval) => ({
+          startedAt: interval.id === firstInterval?.id && input.startedAt !== undefined ? input.startedAt : interval.started_at,
+          endedAt: interval.id === finalInterval?.id && input.endedAt !== undefined ? input.endedAt : interval.ended_at
+        }))
+      if (hasOverlappingIntervals(intervals)) throw new Error('Task intervals cannot overlap')
+    }
     this.db
       .prepare('UPDATE tasks SET title = ?, project_id = ?, planned_task_id = ?, notes = ?, tags_json = ?, updated_at = ? WHERE id = ?')
       .run(
@@ -1170,11 +1189,29 @@ export class WorkBuddyDatabase {
     if (tasks.some((task) => task.status !== 'stopped')) throw new Error('Finish the workday before merging tasks')
 
     this.transaction(() => {
-      const moveIntervals = this.db.prepare('UPDATE time_intervals SET task_id = ? WHERE task_id = ? AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)')
+      const overlappingIntervals = this.db.prepare(
+        'SELECT id, task_id, started_at, ended_at FROM time_intervals WHERE task_id = ? AND started_at < ? AND ended_at > ? ORDER BY started_at'
+      )
+      const moveInterval = this.db.prepare('UPDATE time_intervals SET task_id = ?, started_at = ?, ended_at = ? WHERE id = ?')
+      const addInterval = this.db.prepare('INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)')
       const countIntervals = this.db.prepare('SELECT COUNT(*) AS count FROM time_intervals WHERE task_id = ?')
       const removeTask = this.db.prepare('DELETE FROM tasks WHERE id = ?')
       for (const sourceId of sourceIds) {
-        moveIntervals.run(input.targetId, sourceId, dayEnd, dayStart)
+        const intervals = overlappingIntervals.all(sourceId, dayEnd, dayStart) as IntervalRow[]
+        for (const interval of intervals) {
+          // A Day merge must only affect the selected calendar date. Split a
+          // cross-midnight interval around that date instead of moving all of
+          // its history to the target task.
+          const movedStart = Math.max(interval.started_at, dayStart)
+          const movedEnd = Math.min(interval.ended_at as number, dayEnd)
+          if (interval.started_at < movedStart) {
+            addInterval.run(randomUUID(), sourceId, interval.started_at, movedStart)
+          }
+          if ((interval.ended_at as number) > movedEnd) {
+            addInterval.run(randomUUID(), sourceId, movedEnd, interval.ended_at)
+          }
+          moveInterval.run(input.targetId, movedStart, movedEnd, interval.id)
+        }
         const remaining = countIntervals.get(sourceId) as { count: number }
         if (!remaining.count) removeTask.run(sourceId)
       }
