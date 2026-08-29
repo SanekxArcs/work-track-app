@@ -34,6 +34,7 @@ const suluColors = {
 
 const WORKSPACE_REFRESH_INTERVAL = 20_000;
 const COMMAND_REFRESH_DELAYS = [2_000, 6_000];
+const DESKTOP_ONLINE_WINDOW = 45_000;
 
 const focusFonts: Record<FocusFont, { label: string; family: string }> = {
 	modern: {
@@ -284,6 +285,9 @@ export function Dashboard({
 		? projectById.get(primaryTask.projectId)
 		: undefined;
 	const workday = workspace ? activeWorkday(workspace) : undefined;
+	const desktopOnline = Boolean(
+		workspace?.exportedAt && now - workspace.exportedAt <= DESKTOP_ONLINE_WINDOW,
+	);
 	const heroDuration = activeRest
 		? restElapsed(activeRest, now)
 		: primaryTask
@@ -454,9 +458,9 @@ export function Dashboard({
 						<p className="today-label">{formatDate(now)}</p>
 					</div>
 					<div className="header-actions">
-						<span className="live-chip">
+						<span className={`live-chip ${desktopOnline ? "" : "is-offline"}`}>
 							<i />
-							онлайн
+							{desktopOnline ? "desktop онлайн" : "desktop офлайн"}
 						</span>
 						<div className="view-switcher" aria-label="Режим дашборду">
 							<button
