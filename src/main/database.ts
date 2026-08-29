@@ -1190,10 +1190,15 @@ export class WorkBuddyDatabase {
     const tasks = this.db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...taskIds) as Array<{ id: string; status: Task['status'] }>
     if (tasks.length !== taskIds.length) throw new Error('One of the selected tasks was not found')
     if (tasks.some((task) => task.status !== 'stopped')) throw new Error('Finish the workday before merging tasks')
-    const ranges = (this.db.prepare(
-      `SELECT started_at, ended_at FROM time_intervals
+    const dayIntervals = this.db.prepare(
+      `SELECT task_id, started_at, ended_at FROM time_intervals
        WHERE task_id IN (${placeholders}) AND started_at < ? AND ended_at > ?`
-    ).all(...taskIds, dayEnd, dayStart) as Array<{ started_at: number; ended_at: number }>).map((interval) => ({
+    ).all(...taskIds, dayEnd, dayStart) as Array<{ task_id: string; started_at: number; ended_at: number }>
+    const taskIdsOnDate = new Set(dayIntervals.map((interval) => interval.task_id))
+    if (!taskIdsOnDate.has(input.targetId) || sourceIds.some((id) => !taskIdsOnDate.has(id))) {
+      throw new Error('Every merged task must have time on the selected day')
+    }
+    const ranges = dayIntervals.map((interval) => ({
       startedAt: Math.max(interval.started_at, dayStart),
       endedAt: Math.min(interval.ended_at, dayEnd)
     }))

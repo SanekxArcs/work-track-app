@@ -321,6 +321,24 @@ test('does not merge parallel task intervals into a double-counted task', async 
   })
 })
 
+test('does not merge a task that has no time on the selected Day', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const firstId = first.tasks[0].id
+    await atTime(at(26, 11), () => database.endWorkday())
+    const second = await atTime(at(27, 10), () => database.startTask({ mode: 'parallel' }))
+    const secondId = second.tasks.find((task) => task.id !== firstId)?.id
+    assert.ok(secondId)
+    await atTime(at(27, 11), () => database.endWorkday())
+
+    await atTime(at(27, 11), () => assert.throws(
+      () => database.mergeTasks({ date: '2026-08-27', targetId: secondId, sourceIds: [firstId] }),
+      /selected day/i
+    ))
+    assert.equal(database.exportBackup().tasks.length, 2)
+  })
+})
+
 test('rejects task interval edits that would double-count the same task', async () => {
   await withDatabase(async (database) => {
     const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
