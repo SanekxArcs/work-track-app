@@ -43,10 +43,10 @@ test('sync merges cloud-only history into an existing local workspace before pub
   let published: BackupData | undefined
   globalThis.fetch = async (input, init) => {
     const url = String(input)
-    if (url.includes('data/query')) return Response.json({ result: { payload: remote } })
+    if (url.includes('data/query')) return Response.json({ result: { payload: remote, _rev: 'remote-revision' } })
     if (url.includes('data/mutate')) {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { mutations?: Array<{ createOrReplace?: { payload?: BackupData } }> }
-      published = body.mutations?.[0]?.createOrReplace?.payload
+      const body = JSON.parse(String(init?.body ?? '{}')) as { mutations?: Array<{ patch?: { set?: { payload?: BackupData } } }> }
+      published = body.mutations?.[0]?.patch?.set?.payload
       return Response.json({ results: [] })
     }
     throw new Error(`Unexpected request: ${url}`)
@@ -57,6 +57,48 @@ test('sync merges cloud-only history into an existing local workspace before pub
     assert.equal(result.merged, true)
     assert.deepEqual(database.exportBackup().projects.map((project) => project.name).sort(), ['Local project', 'Remote project'])
     assert.deepEqual(published?.projects.map((project) => project.name).sort(), ['Local project', 'Remote project'])
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('sync retries after a cloud revision conflict without losing either desktop addition', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  database.createProject({ name: 'Local project', color: '#ffffff' })
+  const firstRemote = emptyBackup()
+  firstRemote.projects.push({ id: 'first-remote-project', name: 'First remote project', color: '#000000', archived: false, createdAt: Date.now() - 2 })
+  const secondRemote = structuredClone(firstRemote)
+  secondRemote.projects.push({ id: 'second-remote-project', name: 'Second remote project', color: '#123456', archived: false, createdAt: Date.now() - 1 })
+  const originalFetch = globalThis.fetch
+  let reads = 0
+  let writes = 0
+  let published: BackupData | undefined
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('data/query')) {
+      reads += 1
+      return Response.json({ result: { payload: reads === 1 ? firstRemote : secondRemote, _rev: reads === 1 ? 'first-revision' : 'second-revision' } })
+    }
+    if (url.includes('data/mutate')) {
+      writes += 1
+      if (writes === 1) return Response.json({ error: { message: 'Revision mismatch' } }, { status: 409 })
+      const body = JSON.parse(String(init?.body ?? '{}')) as { mutations?: Array<{ patch?: { set?: { payload?: BackupData } } }> }
+      published = body.mutations?.[0]?.patch?.set?.payload
+      return Response.json({ results: [] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    await sanity.sync()
+    assert.equal(reads, 2)
+    assert.equal(writes, 2)
+    assert.deepEqual(published?.projects.map((project) => project.name).sort(), ['First remote project', 'Local project', 'Second remote project'])
   } finally {
     globalThis.fetch = originalFetch
     database.close()

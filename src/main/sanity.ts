@@ -8,6 +8,18 @@ const COMMAND_MAX_FUTURE_SKEW_MS = 2 * 60_000
 
 type SanityDocument = {
   payload?: unknown
+  _rev?: string
+}
+
+type CloudBackup = {
+  backup: BackupData
+  revision: string
+}
+
+class SanityRevisionConflict extends Error {
+  constructor() {
+    super('The cloud workspace changed during sync')
+  }
 }
 
 type WorkBuddyCommand = {
@@ -41,6 +53,8 @@ function readError(body: unknown): string {
 }
 
 export class SanityService {
+  private syncInFlight: Promise<SanitySyncResult> | null = null
+
   constructor(private readonly database: WorkBuddyDatabase, private readonly token: () => string) {}
 
   private config(): { projectId: string; dataset: string; apiVersion: string; token: string } {
@@ -61,32 +75,35 @@ export class SanityService {
       }
     })
     const body = await response.json().catch(() => ({})) as T
-    if (!response.ok) throw new Error(readError(body))
+    if (!response.ok) {
+      if (response.status === 409) throw new SanityRevisionConflict()
+      throw new Error(readError(body))
+    }
     return body
   }
 
-  private async readCloudBackup(): Promise<BackupData | null> {
+  private async readCloudBackup(): Promise<CloudBackup | null> {
     const config = this.config()
-    const query = encodeURIComponent(`*[_id == "${DOCUMENT_ID}"][0]{payload}`)
+    const query = encodeURIComponent(`*[_id == "${DOCUMENT_ID}"][0]{payload, _rev}`)
     const response = await this.request<{ result?: SanityDocument }>(`data/query/${encodeURIComponent(config.dataset)}?query=${query}`)
     if (!response.result?.payload) return null
-    return this.database.parseBackup(JSON.stringify(response.result.payload))
+    if (!response.result._rev) throw new Error('Cloud workspace revision is missing')
+    return { backup: this.database.parseBackup(JSON.stringify(response.result.payload)), revision: response.result._rev }
   }
 
-  private async writeCloudBackup(backup: BackupData): Promise<void> {
+  private async writeCloudBackup(backup: BackupData, revision?: string): Promise<void> {
     const config = this.config()
+    const payload = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      payload: backup
+    }
     await this.request(`data/mutate/${encodeURIComponent(config.dataset)}?returnIds=true`, {
       method: 'POST',
       body: JSON.stringify({
-        mutations: [{
-          createOrReplace: {
-            _id: DOCUMENT_ID,
-            _type: DOCUMENT_TYPE,
-            schemaVersion: 1,
-            updatedAt: new Date().toISOString(),
-            payload: backup
-          }
-        }]
+        mutations: revision
+          ? [{ patch: { id: DOCUMENT_ID, ifRevisionID: revision, set: payload } }]
+          : [{ create: { _id: DOCUMENT_ID, _type: DOCUMENT_TYPE, ...payload } }]
       })
     })
   }
@@ -145,9 +162,7 @@ export class SanityService {
 
   async push(): Promise<void> {
     try {
-      await this.writeCloudBackup(this.database.exportBackup())
-      const settings = this.database.getSettings()
-      this.database.updateSettings({ ...settings, sanity: { ...settings.sanity, lastSyncedAt: Date.now() } })
+      await this.sync()
     } catch (error) {
       if (error instanceof Error && error.message === 'Sanity is not configured on this device') return
       throw error
@@ -194,17 +209,37 @@ export class SanityService {
   }
 
   async sync(): Promise<SanitySyncResult> {
-    const local = this.database.exportBackup()
-    const remote = await this.readCloudBackup()
-    // A cloud workspace can have additions from another desktop even when this
-    // device already has history. Merge by immutable record ids before pushing
-    // so a normal sync never discards those additions. Existing local records
-    // remain authoritative when the same id was edited on both devices.
-    const merged = Boolean(remote)
-    if (remote) this.database.importBackup(remote, shouldRestoreCloudBackup(local) ? 'replace' : 'merge')
-    await this.push()
-    const syncedAt = this.database.getSettings().sanity.lastSyncedAt ?? Date.now()
-    const settings = this.database.getSettings()
-    return { merged, projectId: settings.sanity.projectId, dataset: settings.sanity.dataset, syncedAt }
+    if (this.syncInFlight) return this.syncInFlight
+    this.syncInFlight = this.syncWorkspace()
+    try {
+      return await this.syncInFlight
+    } finally {
+      this.syncInFlight = null
+    }
+  }
+
+  private async syncWorkspace(): Promise<SanitySyncResult> {
+    // A conditional patch turns the cloud document revision into an optimistic
+    // lock. If another desktop writes in between, read again, merge again, and
+    // retry rather than letting the last writer silently erase its data.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const local = this.database.exportBackup()
+      const remote = await this.readCloudBackup()
+      const merged = Boolean(remote)
+      if (remote) {
+        this.database.importBackup(remote.backup, shouldRestoreCloudBackup(local) ? 'replace' : 'merge')
+      }
+      try {
+        await this.writeCloudBackup(this.database.exportBackup(), remote?.revision)
+      } catch (error) {
+        if (error instanceof SanityRevisionConflict && attempt < 2) continue
+        throw error
+      }
+      const settings = this.database.getSettings()
+      const syncedAt = Date.now()
+      this.database.updateSettings({ ...settings, sanity: { ...settings.sanity, lastSyncedAt: syncedAt } })
+      return { merged, projectId: settings.sanity.projectId, dataset: settings.sanity.dataset, syncedAt }
+    }
+    throw new Error('Could not synchronize the cloud workspace')
   }
 }
