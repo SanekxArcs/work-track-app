@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	activeWorkday,
 	formatDuration,
@@ -110,6 +110,7 @@ export function Dashboard({
 	const [focusAmoled, setFocusAmoled] = useState(true);
 	const [focusDrift, setFocusDrift] = useState(true);
 	const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+	const commandInFlight = useRef(false);
 
 	const refreshWorkspace = useCallback(async (): Promise<void> => {
 		try {
@@ -322,6 +323,8 @@ export function Dashboard({
 		: "Робочий день завершено";
 
 	const send = async (command: WorkBuddyCommand): Promise<void> => {
+		if (commandInFlight.current) return;
+		commandInFlight.current = true;
 		setLoading(true);
 		setCommandStatus("");
 		try {
@@ -344,6 +347,7 @@ export function Dashboard({
 				error instanceof Error ? error.message : "Не вдалося надіслати команду",
 			);
 		} finally {
+			commandInFlight.current = false;
 			setLoading(false);
 		}
 	};
