@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { safeStorage, shell } from 'electron'
 import type { AppSnapshot, GoogleSyncResult } from '../shared/types'
+import { googleCalendarColorId } from '../shared/google-calendar-color'
 import { WorkBuddyDatabase } from './database'
 
 const AUTHORIZATION_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
@@ -240,6 +241,7 @@ export class GoogleCalendarService {
         id: eventId(interval.id),
         summary: interval.projectName ? `${interval.projectName} · ${title}` : title,
         description,
+        colorId: googleCalendarColorId(interval.projectColor),
         start: { dateTime: new Date(interval.startedAt).toISOString(), timeZone },
         end: { dateTime: new Date(interval.endedAt).toISOString(), timeZone },
         extendedProperties: { private: { workBuddyIntervalId: interval.id } }

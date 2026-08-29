@@ -132,7 +132,7 @@ Voice input is push-to-record: Work Buddy asks for microphone permission only af
 
 ### Google Calendar
 
-Google Calendar sync is optional. Create a Google OAuth client of type **Desktop app**, enable the Calendar API, paste the client ID under **Settings → Google Calendar**, and connect your account. Work Buddy creates and writes only to its own separate calendar.
+Google Calendar sync is optional. Create a Google OAuth client of type **Desktop app**, enable the Calendar API, paste the client ID under **Settings → Google Calendar**, and connect your account. Work Buddy creates and writes only to its own separate calendar. Project events use the closest available native Google Calendar colour; lunch and breaks have their own stable colours.
 
 For a one-off daily export without connecting Google, open **Day**, select a day from history, and choose **Export `.ics`**. Import that file manually in Google Calendar.
 

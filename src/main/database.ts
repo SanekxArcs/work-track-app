@@ -896,21 +896,22 @@ export class WorkBuddyDatabase {
     return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Work Buddy//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...events, 'END:VCALENDAR', ''].map(foldIcsLine).join('\r\n')
   }
 
-  getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {
+  getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; projectColor: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {
     const safeDays = Math.min(730, Math.max(1, Math.round(days)))
     const start = localDaysBefore(Date.now(), safeDays)
     const rows = this.db.prepare(
-      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name
+      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name, p.color AS project_color
        FROM time_intervals i
        JOIN tasks t ON t.id = i.task_id
        LEFT JOIN projects p ON p.id = t.project_id
        WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
        ORDER BY i.started_at`
-    ).all(start) as Array<{ id: string; title: string; notes: string; project_name: string | null; started_at: number; ended_at: number }>
+    ).all(start) as Array<{ id: string; title: string; notes: string; project_name: string | null; project_color: string | null; started_at: number; ended_at: number }>
     const taskEvents = rows.map((row) => ({
       id: row.id,
       title: row.notes.trim() || row.title.trim() || 'Work Buddy task',
       projectName: row.project_name ?? '',
+      projectColor: row.project_color ?? '',
       notes: row.notes,
       tags: [] as string[],
       startedAt: row.started_at,
@@ -927,6 +928,7 @@ export class WorkBuddyDatabase {
       id: `rest-${row.id}`,
       title: row.type === 'lunch' ? 'Lunch' : 'Break',
       projectName: '',
+      projectColor: row.type === 'lunch' ? '#f6bf26' : '#039be5',
       notes: row.type === 'lunch' ? 'Tracked lunch in Work Buddy' : 'Tracked break in Work Buddy',
       tags: [] as string[],
       startedAt: row.started_at,
