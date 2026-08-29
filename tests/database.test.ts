@@ -96,6 +96,17 @@ test('opening Focus on a new day closes a stale normal workday before rendering 
   })
 })
 
+test('exporting a backup closes a stale workday before it can be synced', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+
+    const backup = await atTime(at(27, 9), () => database.exportBackup())
+    assert.equal(backup.workdays[0].endedAt, at(27, 0))
+    assert.equal(backup.tasks[0].status, 'stopped')
+    assert.equal(backup.tasks[0].intervals[0].endedAt, at(27, 0))
+  })
+})
+
 test('rejects an edited interval that would end in the future', async () => {
   await withDatabase(async (database) => {
     const snapshot = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Later' }))
@@ -194,11 +205,11 @@ test('rejects an invalid backup before it can be imported into SQLite', async ()
 test('rejects a backup with an impossible active timer state', async () => {
   await withDatabase(async (database) => {
     await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Safe task' }))
-    const backup = database.exportBackup()
+    const backup = await atTime(at(26, 10), () => database.exportBackup())
     backup.tasks[0].status = 'paused'
 
     assert.throws(() => database.parseBackup(JSON.stringify(backup)), /inconsistent task timer/i)
-    assert.equal(database.exportBackup().tasks[0].status, 'running')
+    assert.equal((await atTime(at(26, 10), () => database.exportBackup())).tasks[0].status, 'running')
   })
 })
 

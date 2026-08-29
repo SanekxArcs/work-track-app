@@ -690,6 +690,9 @@ export class WorkBuddyDatabase {
   }
 
   exportBackup(): BackupData {
+    // Startup sync and manual backups must never publish yesterday's stale
+    // active timers before the renderer has had a chance to request a snapshot.
+    this.normalizeStaleWorkday(Date.now())
     const settings = this.getSettings()
     const { ai: _ai, googleCalendar: _googleCalendar, sanity: _sanity, ...backupSettings } = settings
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map((row): Project => ({
