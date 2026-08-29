@@ -202,6 +202,22 @@ test('rejects a backup with an impossible active timer state', async () => {
   })
 })
 
+test('normalizes malformed persisted settings instead of breaking timer logic', async () => {
+  await withDatabase(async (database) => {
+    const malformed = database.exportBackup()
+    malformed.settings = {
+      ...malformed.settings,
+      workday: { ...malformed.settings.workday, startTime: 'not-a-time' },
+      breaks: { ...malformed.settings.breaks, everyMinutes: -4 }
+    }
+    database.importBackup(malformed, 'replace')
+
+    const settings = database.getSettings()
+    assert.equal(settings.workday.startTime, '09:00')
+    assert.equal(settings.breaks.everyMinutes, 55)
+  })
+})
+
 test('folds long calendar lines without splitting UTF-8 characters', async () => {
   await withDatabase(async (database) => {
     const notes = 'Робота над дуже довгим описом для календаря, який має лишатися валідним після експорту. '.repeat(3)

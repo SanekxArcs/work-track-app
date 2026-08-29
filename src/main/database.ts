@@ -210,22 +210,85 @@ function validateBackup(backup: BackupData): void {
   for (const date of backup.overtimeRedeemedDates ?? []) localDateTimestamp(date)
 }
 
+function isClockTime(value: unknown): value is string {
+  return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+}
+
+function positiveInteger(value: unknown, fallback: number, maximum = 24 * 60): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= maximum
+    ? Math.round(value)
+    : fallback
+}
+
+function unitNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback
+}
+
 function deepSettings(raw?: string): AppSettings {
   if (!raw) return structuredClone(defaultSettings)
-  const stored = JSON.parse(raw) as Partial<AppSettings>
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return structuredClone(defaultSettings)
+  }
+  const stored = isRecord(parsed) ? parsed as Partial<AppSettings> : {}
+  const storedWorkday: Record<string, unknown> = isRecord(stored.workday) ? stored.workday : {}
+  const storedBreaks: Record<string, unknown> = isRecord(stored.breaks) ? stored.breaks : {}
+  const storedLunch: Record<string, unknown> = isRecord(stored.lunch) ? stored.lunch : {}
+  const storedIdle: Record<string, unknown> = isRecord(stored.idle) ? stored.idle : {}
+  const storedNotifications: Record<string, unknown> = isRecord(stored.notifications) ? stored.notifications : {}
+  const storedAi: Record<string, unknown> = isRecord(stored.ai) ? stored.ai : {}
+  const storedGoogle: Record<string, unknown> = isRecord(stored.googleCalendar) ? stored.googleCalendar : {}
+  const storedSanity: Record<string, unknown> = isRecord(stored.sanity) ? stored.sanity : {}
+  const sounds = ['system', 'soft', 'bell', 'pop', 'custom'] as const
+  const models = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const
+  const colors = Array.isArray(stored.projectColors)
+    ? stored.projectColors.filter((color): color is string => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)).slice(0, 24)
+    : []
+  const wellnessActions = Array.isArray(stored.wellnessActions)
+    ? stored.wellnessActions.filter((action): action is AppSettings['wellnessActions'][number] => isRecord(action)
+      && isId(action.id) && typeof action.labelUk === 'string' && typeof action.labelEn === 'string' && typeof action.enabled === 'boolean').slice(0, 50)
+    : []
   return {
     ...structuredClone(defaultSettings),
     ...stored,
-    workday: { ...defaultSettings.workday, ...stored.workday },
-    breaks: { ...defaultSettings.breaks, ...stored.breaks },
-    lunch: { ...defaultSettings.lunch, ...stored.lunch },
-    idle: { ...defaultSettings.idle, ...stored.idle },
-    notifications: { ...defaultSettings.notifications, ...stored.notifications },
-    ai: { ...defaultSettings.ai, ...stored.ai },
-    googleCalendar: { ...defaultSettings.googleCalendar, ...stored.googleCalendar },
-    sanity: { ...defaultSettings.sanity, ...stored.sanity },
-    projectColors: stored.projectColors?.length ? stored.projectColors : [...defaultSettings.projectColors],
-    wellnessActions: stored.wellnessActions ?? structuredClone(defaultSettings.wellnessActions)
+    locale: stored.locale === 'en' ? 'en' : 'uk',
+    theme: stored.theme === 'light' || stored.theme === 'system' ? stored.theme : 'dark',
+    alwaysOnTop: typeof stored.alwaysOnTop === 'boolean' ? stored.alwaysOnTop : defaultSettings.alwaysOnTop,
+    autoStart: typeof stored.autoStart === 'boolean' ? stored.autoStart : defaultSettings.autoStart,
+    workday: {
+      startReminder: typeof storedWorkday.startReminder === 'boolean' ? storedWorkday.startReminder : defaultSettings.workday.startReminder,
+      startTime: isClockTime(storedWorkday.startTime) ? storedWorkday.startTime : defaultSettings.workday.startTime,
+      endReminder: typeof storedWorkday.endReminder === 'boolean' ? storedWorkday.endReminder : defaultSettings.workday.endReminder,
+      endTime: isClockTime(storedWorkday.endTime) ? storedWorkday.endTime : defaultSettings.workday.endTime
+    },
+    breaks: {
+      enabled: typeof storedBreaks.enabled === 'boolean' ? storedBreaks.enabled : defaultSettings.breaks.enabled,
+      everyMinutes: positiveInteger(storedBreaks.everyMinutes, defaultSettings.breaks.everyMinutes),
+      durationMinutes: positiveInteger(storedBreaks.durationMinutes, defaultSettings.breaks.durationMinutes)
+    },
+    lunch: {
+      enabled: typeof storedLunch.enabled === 'boolean' ? storedLunch.enabled : defaultSettings.lunch.enabled,
+      mode: storedLunch.mode === 'clock' ? 'clock' : 'worked',
+      time: isClockTime(storedLunch.time) ? storedLunch.time : defaultSettings.lunch.time,
+      afterMinutes: positiveInteger(storedLunch.afterMinutes, defaultSettings.lunch.afterMinutes),
+      durationMinutes: positiveInteger(storedLunch.durationMinutes, defaultSettings.lunch.durationMinutes),
+      includedInWorkHours: typeof storedLunch.includedInWorkHours === 'boolean' ? storedLunch.includedInWorkHours : defaultSettings.lunch.includedInWorkHours
+    },
+    idle: { enabled: typeof storedIdle.enabled === 'boolean' ? storedIdle.enabled : defaultSettings.idle.enabled, thresholdMinutes: positiveInteger(storedIdle.thresholdMinutes, defaultSettings.idle.thresholdMinutes) },
+    notifications: {
+      sound: sounds.includes(storedNotifications.sound as AppSettings['notifications']['sound']) ? storedNotifications.sound as AppSettings['notifications']['sound'] : defaultSettings.notifications.sound,
+      volume: unitNumber(storedNotifications.volume, defaultSettings.notifications.volume),
+      customSoundPath: typeof storedNotifications.customSoundPath === 'string' ? storedNotifications.customSoundPath : '',
+      customSoundName: typeof storedNotifications.customSoundName === 'string' ? storedNotifications.customSoundName : ''
+    },
+    wellnessEnabled: typeof stored.wellnessEnabled === 'boolean' ? stored.wellnessEnabled : defaultSettings.wellnessEnabled,
+    projectColors: colors.length ? colors : [...defaultSettings.projectColors],
+    wellnessActions: wellnessActions.length ? wellnessActions : structuredClone(defaultSettings.wellnessActions),
+    ai: { enabled: typeof storedAi.enabled === 'boolean' ? storedAi.enabled : defaultSettings.ai.enabled, model: models.includes(storedAi.model as AppSettings['ai']['model']) ? storedAi.model as AppSettings['ai']['model'] : defaultSettings.ai.model, hasApiKey: typeof storedAi.hasApiKey === 'boolean' ? storedAi.hasApiKey : false },
+    googleCalendar: { clientId: typeof storedGoogle.clientId === 'string' ? storedGoogle.clientId : '', calendarId: typeof storedGoogle.calendarId === 'string' ? storedGoogle.calendarId : '', calendarName: typeof storedGoogle.calendarName === 'string' ? storedGoogle.calendarName : '', hasConnection: typeof storedGoogle.hasConnection === 'boolean' ? storedGoogle.hasConnection : false, syncOnDayEnd: typeof storedGoogle.syncOnDayEnd === 'boolean' ? storedGoogle.syncOnDayEnd : defaultSettings.googleCalendar.syncOnDayEnd },
+    sanity: { projectId: typeof storedSanity.projectId === 'string' ? storedSanity.projectId : '', dataset: typeof storedSanity.dataset === 'string' ? storedSanity.dataset : '', apiVersion: typeof storedSanity.apiVersion === 'string' ? storedSanity.apiVersion : defaultSettings.sanity.apiVersion, hasToken: typeof storedSanity.hasToken === 'boolean' ? storedSanity.hasToken : false, lastSyncedAt: isTimestamp(storedSanity.lastSyncedAt) ? storedSanity.lastSyncedAt : null }
   }
 }
 
