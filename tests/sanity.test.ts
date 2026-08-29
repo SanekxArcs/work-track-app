@@ -95,3 +95,32 @@ test('rejects a stale remote command instead of starting a new timer later', asy
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('rejects a remote command dated implausibly far in the future', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  const originalFetch = globalThis.fetch
+  const mutationBodies: Array<{ mutations?: Array<{ patch?: { set?: { status?: string; error?: string } } }> }> = []
+  const command = { _id: 'future-start-task', createdAt: new Date(Date.now() + 3 * 60_000).toISOString(), command: 'start-task', mode: 'parallel' }
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('data/query')) return Response.json({ result: [command] })
+    if (url.includes('data/mutate')) {
+      mutationBodies.push(JSON.parse(String(init?.body ?? '{}')))
+      return Response.json({ results: [] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    assert.equal(await sanity.processPendingCommands(), false)
+    assert.equal(database.getSnapshot().tasks.length, 0)
+    assert.equal(mutationBodies.some((body) => body.mutations?.some((mutation) => mutation.patch?.set?.status === 'failed' && /expired/i.test(mutation.patch?.set?.error ?? ''))), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

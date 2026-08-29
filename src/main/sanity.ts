@@ -4,6 +4,7 @@ import { WorkBuddyDatabase } from './database'
 const DOCUMENT_ID = 'workBuddySync.v1'
 const DOCUMENT_TYPE = 'workBuddySync'
 const COMMAND_MAX_AGE_MS = 10 * 60_000
+const COMMAND_MAX_FUTURE_SKEW_MS = 2 * 60_000
 
 type SanityDocument = {
   payload?: unknown
@@ -133,7 +134,8 @@ export class SanityService {
 
   private assertCommandIsFresh(command: WorkBuddyCommand): void {
     const createdAt = typeof command.createdAt === 'string' ? Date.parse(command.createdAt) : Number.NaN
-    if (!Number.isFinite(createdAt) || Date.now() - createdAt > COMMAND_MAX_AGE_MS) {
+    const age = Date.now() - createdAt
+    if (!Number.isFinite(createdAt) || age > COMMAND_MAX_AGE_MS || age < -COMMAND_MAX_FUTURE_SKEW_MS) {
       throw new Error('This remote command expired before the desktop received it')
     }
   }
