@@ -122,6 +122,9 @@ export class SanityService {
     switch (command.command) {
       case 'pause-task':
         if (!command.taskId) throw new Error('Task id is required')
+        if (this.database.getSnapshot().tasks.find((task) => task.id === command.taskId)?.status !== 'running') {
+          throw new Error('Task is no longer running')
+        }
         this.database.pauseTask(command.taskId)
         return
       case 'resume-task':

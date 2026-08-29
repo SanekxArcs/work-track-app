@@ -228,3 +228,39 @@ test('does not let a delayed remote resume restart a stopped task or pause other
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('does not mark a delayed remote pause as applied when the task already changed state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  const paused = database.startTask({ mode: 'parallel', notes: 'Already paused' }).tasks[0]
+  database.pauseTask(paused.id)
+  const running = database.startTask({ mode: 'parallel', notes: 'Current task' }).tasks.find((task) => task.id !== paused.id)
+  assert.ok(running)
+  const originalFetch = globalThis.fetch
+  const statuses: string[] = []
+  const command = { _id: 'stale-pause', createdAt: new Date().toISOString(), command: 'pause-task', taskId: paused.id }
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('data/query')) return Response.json({ result: [command] })
+    if (url.includes('data/mutate')) {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { mutations?: Array<{ patch?: { set?: { status?: string } } }> }
+      const status = body.mutations?.[0]?.patch?.set?.status
+      if (status) statuses.push(status)
+      return Response.json({ results: [] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    assert.equal(await sanity.processPendingCommands(), false)
+    assert.equal(database.getSnapshot().tasks.find((task) => task.id === paused.id)?.status, 'paused')
+    assert.equal(database.getSnapshot().tasks.find((task) => task.id === running.id)?.status, 'running')
+    assert.ok(statuses.includes('failed'))
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
