@@ -9,4 +9,6 @@ test('desktop window keeps the renderer sandboxed and rejects untrusted navigati
   assert.match(source, /sandbox: true/)
   assert.match(source, /setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\)/)
   assert.match(source, /webContents\.on\('will-navigate', \(event\) => event\.preventDefault\(\)\)/)
+  assert.match(source, /app\.whenReady\(\)\.then\(async \(\) => \{/)
+  assert.match(source, /\.catch\(\(error: unknown\) => \{[\s\S]*dialog\.showErrorBox\('Work Buddy could not start'/)
 })

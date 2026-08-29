@@ -545,7 +545,7 @@ else {
     mainWindow?.focus()
   })
 
-  app.whenReady().then(async () => {
+  void app.whenReady().then(async () => {
     await loadLocalEnvironment()
     database = new WorkBuddyDatabase(join(app.getPath('userData'), 'work-buddy.sqlite'))
     configureSanityFromEnvironment()
@@ -582,6 +582,10 @@ else {
       else mainWindow?.webContents.send(channels.playSound, sound, volume)
     })
     reminders.start()
+  }).catch((error: unknown) => {
+    const details = error instanceof Error ? error.message : 'Unexpected startup error'
+    dialog.showErrorBox('Work Buddy could not start', details)
+    app.quit()
   })
 }
 
