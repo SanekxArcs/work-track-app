@@ -172,7 +172,7 @@ For Vercel, import the repository and set the project Root Directory to `apps/we
 https://your-domain.com/api/auth/callback/google
 ```
 
-The current PWA controls Play/Pause, lunch, breaks, finishing a rest, and ending the workday while the desktop tracker is online. Its dashboard refreshes automatically as the desktop publishes updates.
+The current PWA controls Play/Pause, lunch, breaks, finishing a rest, and ending the workday while the desktop tracker is online. Its dashboard refreshes automatically as the desktop publishes updates. Remote control commands expire after 10 minutes, so an old tap cannot unexpectedly start a timer or break when the desktop comes back online much later.
 
 ### Backups
 

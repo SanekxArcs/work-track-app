@@ -3,6 +3,7 @@ import { WorkBuddyDatabase } from './database'
 
 const DOCUMENT_ID = 'workBuddySync.v1'
 const DOCUMENT_TYPE = 'workBuddySync'
+const COMMAND_MAX_AGE_MS = 10 * 60_000
 
 type SanityDocument = {
   payload?: unknown
@@ -10,6 +11,7 @@ type SanityDocument = {
 
 type WorkBuddyCommand = {
   _id: string
+  createdAt?: string
   command?: string
   taskId?: string
   restId?: string
@@ -129,6 +131,13 @@ export class SanityService {
     }
   }
 
+  private assertCommandIsFresh(command: WorkBuddyCommand): void {
+    const createdAt = typeof command.createdAt === 'string' ? Date.parse(command.createdAt) : Number.NaN
+    if (!Number.isFinite(createdAt) || Date.now() - createdAt > COMMAND_MAX_AGE_MS) {
+      throw new Error('This remote command expired before the desktop received it')
+    }
+  }
+
   async push(): Promise<void> {
     try {
       await this.writeCloudBackup(this.database.exportBackup())
@@ -148,7 +157,7 @@ export class SanityService {
       if (error instanceof Error && error.message === 'Sanity is not configured on this device') return false
       throw error
     }
-    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, command, taskId, restId, restType, workdayId, mode}')
+    const query = encodeURIComponent('*[_type == "workBuddyCommand" && status == "pending"] | order(createdAt asc)[0...20]{_id, createdAt, command, taskId, restId, restType, workdayId, mode}')
     const response = await this.request<{ result?: WorkBuddyCommand[] }>(`data/query/${encodeURIComponent(config.dataset)}?query=${query}`)
     const commands = response.result ?? []
     let changed = false
@@ -157,6 +166,7 @@ export class SanityService {
         // A command can remain pending if the status write times out after the
         // local action succeeds. Do not run it again on the next poll.
         if (!this.database.hasProcessedRemoteCommand(command._id)) {
+          this.assertCommandIsFresh(command)
           this.applyCommand(command)
           this.database.markRemoteCommandProcessed(command._id)
           changed = true
