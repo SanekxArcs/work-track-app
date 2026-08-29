@@ -212,6 +212,11 @@ function createWindow(): void {
 
   if (database.getSettings().alwaysOnTop) mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
 
+  // The renderer exposes a deliberately small IPC bridge. Never let an
+  // accidental link or popup replace it with untrusted web content.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.on('move', scheduleSnap)
   mainWindow.on('resize', () => {
