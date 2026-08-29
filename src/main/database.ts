@@ -1187,6 +1187,14 @@ export class WorkBuddyDatabase {
     const tasks = this.db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...taskIds) as Array<{ id: string; status: Task['status'] }>
     if (tasks.length !== taskIds.length) throw new Error('One of the selected tasks was not found')
     if (tasks.some((task) => task.status !== 'stopped')) throw new Error('Finish the workday before merging tasks')
+    const ranges = (this.db.prepare(
+      `SELECT started_at, ended_at FROM time_intervals
+       WHERE task_id IN (${placeholders}) AND started_at < ? AND ended_at > ?`
+    ).all(...taskIds, dayEnd, dayStart) as Array<{ started_at: number; ended_at: number }>).map((interval) => ({
+      startedAt: Math.max(interval.started_at, dayStart),
+      endedAt: Math.min(interval.ended_at, dayEnd)
+    }))
+    if (hasOverlappingIntervals(ranges)) throw new Error('Tasks with overlapping time cannot be merged')
 
     this.transaction(() => {
       const overlappingIntervals = this.db.prepare(

@@ -287,6 +287,23 @@ test('merging a Day task keeps the source task history outside the selected date
   })
 })
 
+test('does not merge parallel task intervals into a double-counted task', async () => {
+  await withDatabase(async (database) => {
+    const source = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const sourceId = source.tasks[0].id
+    const target = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const targetId = target.tasks.find((task) => task.id !== sourceId)?.id
+    assert.ok(targetId)
+    await atTime(at(26, 11), () => database.endWorkday())
+
+    await atTime(at(26, 11), () => assert.throws(
+      () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }),
+      /overlapping time/i
+    ))
+    assert.equal(database.exportBackup().tasks.length, 2)
+  })
+})
+
 test('rejects task interval edits that would double-count the same task', async () => {
   await withDatabase(async (database) => {
     const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
