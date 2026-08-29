@@ -1,6 +1,6 @@
 {
   "name": "work-buddy",
-  "version": "0.9.1",
+  "version": "0.9.3",
   "description": "A friendly always-on-top time tracker for desktop",
   "main": "./out/main/index.js",
   "author": "Work Buddy",
@@ -10,7 +10,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "node scripts/run-tests.cjs",
     "preview": "electron-vite preview",
     "generate:icons": "node scripts/generate-icon.mjs",
     "dist:win": "npm run build && electron-builder --win nsis",
@@ -45,7 +45,7 @@
       "cache": ".electron-cache"
     },
     "directories": {
-      "output": "release-v0.9.1"
+      "output": "release-v0.9.3"
     },
     "files": [
       "out/**/*",

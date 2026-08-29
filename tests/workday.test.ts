@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { AppSettings, RestSession, Workday } from '../src/shared/types.ts'
+import type { AppSettings, RestSession, TimeInterval, Workday } from '../src/shared/types.ts'
 import { localDateKey, localDateTimestamp, localDayBounds } from '../src/shared/local-date.ts'
 import { scheduledWorkdayEndAt, workdayOvertimeMs } from '../src/shared/workday.ts'
 
@@ -38,16 +38,20 @@ function lunch(startedAt: number, endedAt: number): RestSession {
   }
 }
 
+function worked(startedAt: number, endedAt: number): TimeInterval {
+  return { id: `${startedAt}-${endedAt}`, taskId: 'task', startedAt, endedAt }
+}
+
 test('counts only the actual late session when a new day starts after the planned finish', () => {
   const start = at(22, 55)
   const end = at(22, 59)
-  assert.equal(workdayOvertimeMs(settings(), workday(start, end), [], end), 4 * MINUTE)
+  assert.equal(workdayOvertimeMs(settings(), workday(start, end), [], end, [worked(start, end)]), 4 * MINUTE)
 })
 
 test('counts overtime after a regular planned finish', () => {
   const start = at(8)
   const end = at(17)
-  assert.equal(workdayOvertimeMs(settings(), workday(start, end), [], end), 60 * MINUTE)
+  assert.equal(workdayOvertimeMs(settings(), workday(start, end), [], end, [worked(start, end)]), 60 * MINUTE)
 })
 
 test('extends the planned finish only by lunch time above its configured duration', () => {
@@ -57,14 +61,35 @@ test('extends the planned finish only by lunch time above its configured duratio
   const end = at(17, 15)
   const rests = [lunch(lunchStart, lunchEnd)]
   assert.equal(scheduledWorkdayEndAt(settings(), workday(start, null), rests, end), end)
-  assert.equal(workdayOvertimeMs(settings(), workday(start, end), rests, end), 0)
+  assert.equal(workdayOvertimeMs(settings(), workday(start, end), rests, end, [worked(start, end)]), 0)
 })
 
 test('does not extend a day with lunch time before the day actually started', () => {
   const start = at(14)
   const end = at(16, 30)
   const rests = [lunch(at(12), at(13, 45))]
-  assert.equal(workdayOvertimeMs(settings(), workday(start, end), rests, end), 30 * MINUTE)
+  assert.equal(workdayOvertimeMs(settings(), workday(start, end), rests, end, [worked(start, end)]), 30 * MINUTE)
+})
+
+test('does not count an end-of-day break as overtime', () => {
+  const start = at(8)
+  const breakStart = at(16)
+  const end = at(19)
+  assert.equal(workdayOvertimeMs(settings(), workday(start, end), [], end, [worked(start, breakStart)]), 0)
+})
+
+test('uses the next calendar day for an overnight work schedule', () => {
+  const nightSettings = settings('06:00')
+  nightSettings.workday.startTime = '22:00'
+  const start = at(22)
+  const end = at(6, 0, 1)
+  assert.equal(scheduledWorkdayEndAt(nightSettings, workday(start, null), [], end), end)
+  assert.equal(workdayOvertimeMs(nightSettings, workday(start, end), [], end, [worked(start, end)]), 0)
+})
+
+test('does not move a normal schedule into tomorrow when work starts late', () => {
+  const start = at(22, 55)
+  assert.equal(scheduledWorkdayEndAt(settings(), workday(start, null), [], start), at(16))
 })
 
 test('uses local calendar boundaries instead of a fixed 24-hour range', () => {

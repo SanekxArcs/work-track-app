@@ -22,6 +22,7 @@ let googleCalendar: GoogleCalendarService
 let sanity: SanityService
 let sanityPushTimer: NodeJS.Timeout | undefined
 let sanityCommandTimer: NodeJS.Timeout | undefined
+let sanityHeartbeatTimer: NodeJS.Timeout | undefined
 let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
@@ -557,6 +558,9 @@ else {
     sanityCommandTimer = setInterval(() => {
       void sanity.processPendingCommands().then((changed) => { if (changed) emitChanged() }).catch(() => undefined)
     }, 1_500)
+    sanityHeartbeatTimer = setInterval(() => {
+      void sanity.push().catch(() => undefined)
+    }, 30_000)
     registerIpc()
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
@@ -578,6 +582,7 @@ app.on('before-quit', () => {
   reminders?.stop()
   if (sanityPushTimer) clearTimeout(sanityPushTimer)
   if (sanityCommandTimer) clearInterval(sanityCommandTimer)
+  if (sanityHeartbeatTimer) clearInterval(sanityHeartbeatTimer)
   database?.close()
 })
 

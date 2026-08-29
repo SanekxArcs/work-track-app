@@ -110,6 +110,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .focus-actions__primary, .focus-actions__tools { display: grid; gap: 7px; }
 .focus-actions__primary { grid-template-columns: minmax(0, 1fr) auto; }
 .focus-actions__tools { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.focus-actions__tools--planned-only { grid-template-columns: minmax(0, 1fr); }
 .focus-actions__tools .secondary-button { min-width: 0; padding: 0 9px; font-size: 10px; }
 .focus-actions .planned-toggle.active { color: var(--accent-ink); border-color: transparent; background: var(--accent); }
 .primary-button, .secondary-button, .end-day-button { min-height: 40px; padding: 0 15px; border: 0; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-size: 11.5px; font-weight: 750; cursor: pointer; transition: transform .18s ease, filter .18s ease; }

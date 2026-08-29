@@ -494,10 +494,16 @@ export class WorkBuddyDatabase {
 
     const workdays = this.db.prepare('SELECT started_at, ended_at FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?)').all(rangeEnd, rangeStart) as Array<{ started_at: number; ended_at: number | null }>
     for (const workday of workdays) {
-      const bucket = buckets.get(localDateKey(Math.max(workday.started_at, rangeStart)))
-      if (!bucket) continue
-      bucket.startedAt = bucket.startedAt === null ? workday.started_at : Math.min(bucket.startedAt, workday.started_at)
-      if (workday.ended_at !== null) bucket.endedAt = bucket.endedAt === null ? workday.ended_at : Math.max(bucket.endedAt, workday.ended_at)
+      const workdayEnd = Math.min(workday.ended_at ?? now, rangeEnd)
+      for (let dayStart = Math.max(rangeStart, localDayBounds(workday.started_at)[0]); dayStart < workdayEnd; dayStart = localDayBounds(dayStart)[1]) {
+        const bucket = buckets.get(localDateKey(dayStart))
+        if (!bucket) continue
+        const [, dayEnd] = localDayBounds(dayStart)
+        const startedAt = Math.max(workday.started_at, dayStart)
+        const endedAt = Math.min(workdayEnd, dayEnd)
+        bucket.startedAt = bucket.startedAt === null ? startedAt : Math.min(bucket.startedAt, startedAt)
+        bucket.endedAt = bucket.endedAt === null ? endedAt : Math.max(bucket.endedAt, endedAt)
+      }
     }
 
     return [...buckets.values()].map((bucket) => {
@@ -528,6 +534,9 @@ export class WorkBuddyDatabase {
        FROM rest_sessions r JOIN rest_intervals i ON i.rest_id = r.id
        WHERE r.type = 'lunch' AND i.started_at < ? AND i.ended_at > ?`
     )
+    const taskIntervals = this.db.prepare(
+      'SELECT id, task_id, started_at, ended_at FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?)'
+    )
     const dailyOvertime = new Map<string, number>()
     for (const workday of workdays) {
       const rests = (lunchSessions.all(workday.ended_at, workday.started_at) as Array<RestRow & { interval_id: string; interval_started_at: number; interval_ended_at: number }>)
@@ -535,7 +544,10 @@ export class WorkBuddyDatabase {
           id: row.id, type: 'lunch', status: row.status, plannedMinutes: row.planned_minutes, alarmMuted: Boolean(row.alarm_muted), createdAt: row.created_at, endedAt: row.ended_at,
           intervals: [{ id: row.interval_id, restId: row.id, startedAt: row.interval_started_at, endedAt: row.interval_ended_at }]
         }))
-      const overtime = workdayOvertimeMs(settings, { id: '', startedAt: workday.started_at, endedAt: workday.ended_at }, rests, workday.ended_at)
+      const workedIntervals = (taskIntervals.all(workday.ended_at, workday.started_at) as IntervalRow[]).map((interval): TimeInterval => ({
+        id: interval.id, taskId: interval.task_id, startedAt: interval.started_at, endedAt: interval.ended_at
+      }))
+      const overtime = workdayOvertimeMs(settings, { id: '', startedAt: workday.started_at, endedAt: workday.ended_at }, rests, workday.ended_at, workedIntervals)
       if (overtime > 0) {
         const date = localDateKey(workday.started_at)
         dailyOvertime.set(date, (dailyOvertime.get(date) ?? 0) + overtime)
@@ -668,6 +680,18 @@ export class WorkBuddyDatabase {
   importBackup(backup: BackupData, mode: BackupImportMode): AppSnapshot {
     if (mode !== 'merge' && mode !== 'replace') throw new Error('Invalid import mode')
     const existingSettings = this.getSettings()
+    if (mode === 'merge') {
+      const localOpenWorkdays = new Set((this.db.prepare('SELECT id FROM workdays WHERE ended_at IS NULL').all() as Array<{ id: string }>).map((workday) => workday.id))
+      const localActiveRests = new Set((this.db.prepare("SELECT id FROM rest_sessions WHERE status IN ('running', 'paused')").all() as Array<{ id: string }>).map((rest) => rest.id))
+      const importedOpenWorkdays = backup.workdays.filter((workday) => workday.endedAt === null && !localOpenWorkdays.has(workday.id))
+      const importedActiveRests = backup.rests.filter((rest) => rest.status !== 'completed' && !localActiveRests.has(rest.id))
+      if (localOpenWorkdays.size + importedOpenWorkdays.length > 1) {
+        throw new Error('Finish the active workday before merging a backup with an active workday')
+      }
+      if (localActiveRests.size + importedActiveRests.length > 1) {
+        throw new Error('Finish the active break before merging a backup with an active break')
+      }
+    }
     this.transaction(() => {
       if (mode === 'replace') {
         this.db.exec('DELETE FROM rest_intervals; DELETE FROM time_intervals; DELETE FROM rest_sessions; DELETE FROM tasks; DELETE FROM planned_tasks; DELETE FROM workdays; DELETE FROM projects; DELETE FROM overtime_redemptions;')
@@ -805,21 +829,20 @@ export class WorkBuddyDatabase {
   }
 
   startWorkday(): AppSnapshot {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const current = this.getOpenWorkday()
     if (!current) {
-      this.db.prepare('INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, NULL)').run(randomUUID(), Date.now())
+      this.db.prepare('INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, NULL)').run(randomUUID(), now)
     }
     return this.getSnapshot()
   }
 
   endWorkday(): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const transaction = (): void => this.transaction(() => {
-      this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE ended_at IS NULL').run(now)
-      this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status != 'stopped'").run(now)
-      this.db.prepare('UPDATE workdays SET ended_at = ? WHERE ended_at IS NULL').run(now)
-      this.db.prepare('UPDATE rest_intervals SET ended_at = ? WHERE ended_at IS NULL').run(now)
-      this.db.prepare("UPDATE rest_sessions SET status = 'completed', ended_at = ?, resume_task_ids_json = '[]' WHERE status IN ('running', 'paused')").run(now)
+      this.finishOpenWorkday(now)
     })
     transaction()
     return this.getSnapshot()
@@ -827,6 +850,7 @@ export class WorkBuddyDatabase {
 
   startTask(input: StartTaskInput): AppSnapshot {
     const now = Date.now()
+    this.normalizeStaleWorkday(now)
     if (this.getActiveRest()?.status === 'running') throw new Error('Pause the active break before starting a task')
     const transaction = (): void => this.transaction(() => {
       if (!this.getOpenWorkday()) {
@@ -897,6 +921,7 @@ export class WorkBuddyDatabase {
   }
 
   startRest(type: RestType): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     if (!this.getOpenWorkday()) throw new Error('Start the workday first')
     const active = this.getActiveRest()
     if (active) throw new Error('Another break is already active')
@@ -955,6 +980,7 @@ export class WorkBuddyDatabase {
   }
 
   skipRest(type: RestType): AppSnapshot {
+    this.normalizeStaleWorkday(Date.now())
     if (!this.getOpenWorkday()) throw new Error('Start the workday first')
     if (this.getActiveRest()) throw new Error('Finish the active break first')
     const now = Date.now()
@@ -984,12 +1010,16 @@ export class WorkBuddyDatabase {
   updateTask(input: TaskUpdateInput): AppSnapshot {
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
+    const selectedInterval = input.intervalId === undefined
+      ? undefined
+      : this.db.prepare('SELECT * FROM time_intervals WHERE id = ? AND task_id = ?').get(input.intervalId, input.id) as IntervalRow | undefined
+    if (input.intervalId !== undefined && !selectedInterval) throw new Error('Task interval not found')
     const firstInterval = input.startedAt === undefined
       ? undefined
-      : this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at LIMIT 1').get(input.id) as IntervalRow | undefined
+      : selectedInterval ?? this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at LIMIT 1').get(input.id) as IntervalRow | undefined
     const finalInterval = input.endedAt === undefined
       ? undefined
-      : this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at DESC LIMIT 1').get(input.id) as IntervalRow | undefined
+      : selectedInterval ?? this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at DESC LIMIT 1').get(input.id) as IntervalRow | undefined
     if (input.startedAt !== undefined) {
       if (!firstInterval) throw new Error('Task start was not found')
       const finalEnd = firstInterval.id === finalInterval?.id ? input.endedAt ?? firstInterval.ended_at : firstInterval.ended_at
@@ -1128,6 +1158,30 @@ export class WorkBuddyDatabase {
 
   private getOpenWorkday(): WorkdayRow | undefined {
     return this.db.prepare('SELECT * FROM workdays WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get() as WorkdayRow | undefined
+  }
+
+  private normalizeStaleWorkday(now: number): void {
+    const current = this.getOpenWorkday()
+    if (!current) return
+    const [todayStart] = localDayBounds(now)
+    if (current.started_at >= todayStart) return
+
+    const settings = this.getSettings()
+    const [startHours, startMinutes] = settings.workday.startTime.split(':').map(Number)
+    const [endHours, endMinutes] = settings.workday.endTime.split(':').map(Number)
+    const scheduleCrossesMidnight = (endHours || 0) * 60 + (endMinutes || 0) <= (startHours || 0) * 60 + (startMinutes || 0)
+    const [previousDayStart] = localDayBounds(todayStart - 1)
+    if (scheduleCrossesMidnight && current.started_at >= previousDayStart) return
+
+    this.transaction(() => this.finishOpenWorkday(todayStart))
+  }
+
+  private finishOpenWorkday(endedAt: number): void {
+    this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
+    this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status != 'stopped'").run(endedAt)
+    this.db.prepare('UPDATE workdays SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
+    this.db.prepare('UPDATE rest_intervals SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
+    this.db.prepare("UPDATE rest_sessions SET status = 'completed', ended_at = ?, resume_task_ids_json = '[]' WHERE status IN ('running', 'paused')").run(endedAt)
   }
 
   private projectNameExists(name: string, excludedId?: string): boolean {

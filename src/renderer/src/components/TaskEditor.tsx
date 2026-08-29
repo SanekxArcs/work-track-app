@@ -10,6 +10,7 @@ import { VoiceButton } from './VoiceButton'
 interface TaskEditorProps {
   open: boolean
   task?: Task
+  intervalId?: string
   defaultMode: StartMode
   snapshot: AppSnapshot
   t: Translator
@@ -18,9 +19,16 @@ interface TaskEditorProps {
   onSaved: (snapshot: AppSnapshot) => void
 }
 
-export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
+function editableInterval(task: Task | undefined, intervalId: string | undefined): Task['intervals'][number] | undefined {
+  if (!task) return undefined
+  return (intervalId ? task.intervals.find((interval) => interval.id === intervalId) : undefined)
+    ?? task.intervals.slice().sort((first, second) => second.startedAt - first.startedAt)[0]
+}
+
+export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
+  const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
   const [newProject, setNewProject] = useState('')
   const [projectColor, setProjectColor] = useState(snapshot.settings.projectColors[0])
@@ -36,40 +44,39 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSn
     if (!open) return
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
+    setTitle(task?.title ?? '')
     setNotes(task?.notes ?? '')
     setAddingProject(false)
     setAiMessage('')
     setProjectColor(snapshot.settings.projectColors[0])
-    const firstStart = task?.intervals.slice().sort((a, b) => a.startedAt - b.startedAt)[0]?.startedAt
-    const finalEnd = task?.intervals.slice().sort((a, b) => b.startedAt - a.startedAt)[0]?.endedAt
-    setStartTime(firstStart ? `${String(new Date(firstStart).getHours()).padStart(2, '0')}:${String(new Date(firstStart).getMinutes()).padStart(2, '0')}` : '')
-    setEndTime(finalEnd ? `${String(new Date(finalEnd).getHours()).padStart(2, '0')}:${String(new Date(finalEnd).getMinutes()).padStart(2, '0')}` : '')
+    const interval = editableInterval(task, intervalId)
+    setStartTime(interval ? `${String(new Date(interval.startedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.startedAt).getMinutes()).padStart(2, '0')}` : '')
+    setEndTime(interval?.endedAt ? `${String(new Date(interval.endedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.endedAt).getMinutes()).padStart(2, '0')}` : '')
     setSaveError('')
-  }, [open, task])
+  }, [open, task, intervalId])
 
   const saveTask = async (mode: StartMode): Promise<void> => {
     setBusy(true)
     setSaveError('')
     try {
-      const firstStart = task?.intervals.slice().sort((a, b) => a.startedAt - b.startedAt)[0]?.startedAt
-      const finalEnd = task?.intervals.slice().sort((a, b) => b.startedAt - a.startedAt)[0]?.endedAt
-      let adjustedStart = firstStart
-      let adjustedEnd = finalEnd
-      if (firstStart && startTime) {
+      const interval = editableInterval(task, intervalId)
+      let adjustedStart = interval?.startedAt
+      let adjustedEnd = interval?.endedAt
+      if (interval && startTime) {
         const [hours, minutes] = startTime.split(':').map(Number)
-        const date = new Date(firstStart)
+        const date = new Date(interval.startedAt)
         date.setHours(hours, minutes, 0, 0)
         adjustedStart = date.getTime()
       }
-      if (finalEnd && endTime) {
+      if (interval?.endedAt && endTime) {
         const [hours, minutes] = endTime.split(':').map(Number)
-        const date = new Date(finalEnd)
+        const date = new Date(interval.endedAt)
         date.setHours(hours, minutes, 0, 0)
         adjustedEnd = date.getTime()
       }
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, title: '', projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
-        : await window.workBuddy.startTask({ title: '', projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
+        : await window.workBuddy.startTask({ title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
@@ -100,6 +107,7 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSn
     setPlannedTaskId(id)
     const planned = snapshot.plannedTasks.find((item) => item.id === id)
     if (!planned) return
+    if (!title.trim()) setTitle(planned.title)
     if (!projectId && planned.projectId) setProjectId(planned.projectId)
     if (!notes.trim() && planned.notes) setNotes(planned.notes)
   }
@@ -171,6 +179,11 @@ export function TaskEditor({ open, task, defaultMode, snapshot, t, onClose, onSn
               </div>
               <button className="icon-button" onClick={onClose}><X size={18} /></button>
             </div>
+
+            <label className="field">
+              <span>{t('taskName')}</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('taskName')} />
+            </label>
 
             <label className="field">
               <span>{t('project')}</span>

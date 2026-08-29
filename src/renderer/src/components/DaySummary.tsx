@@ -14,7 +14,7 @@ interface DaySummaryProps {
   t: Translator
   onStartDay: () => void
   onEndDay: () => void
-  onEdit: (task: Task) => void
+  onEdit: (task: Task, intervalId?: string) => void
   onSnapshot: (snapshot: AppSnapshot) => void
 }
 
@@ -24,6 +24,22 @@ function getProject(projects: Project[], task: Task): Project | undefined {
 
 function taskLabel(task: Task, t: Translator): string {
   return task.notes.trim() || task.title.trim() || t('noDescription')
+}
+
+function timelineLabel(task: Task, project: Project | undefined, t: Translator): string {
+  return `${project?.name ?? t('noProject')} · ${taskLabel(task, t)}`
+}
+
+function visibleTimelineIntervals(task: Task, dayStart: number, dayEnd: number, now: number): Array<{ id: string; startedAt: number; endedAt: number }> {
+  return task.intervals.flatMap((interval) => {
+    const startedAt = Math.max(interval.startedAt, dayStart)
+    const endedAt = Math.min(interval.endedAt ?? now, dayEnd)
+    return endedAt > startedAt ? [{ id: interval.id, startedAt, endedAt }] : []
+  })
+}
+
+function visibleTimelineDuration(task: Task, dayStart: number, dayEnd: number, now: number): number {
+  return visibleTimelineIntervals(task, dayStart, dayEnd, now).reduce((total, interval) => total + interval.endedAt - interval.startedAt, 0)
 }
 
 type ScheduleSegment = { type: 'work' | 'break' | 'lunch'; start: number; end: number }
@@ -114,6 +130,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     .reduce((total, interval) => total + Math.max(0, Math.min(interval.endedAt ?? reportNow, todayEnd) - Math.max(interval.startedAt, todayStart)), 0)
   const breakTime = restTime('break')
   const lunchTime = restTime('lunch')
+  const hasDayDetails = Boolean(reportSnapshot.workday) || tasks.length > 0 || breakTime > 0 || lunchTime > 0
   const baseSchedule = scheduleSegments(reportSnapshot, reportNow)
   const lunchOverage = Math.max(0, lunchTime - reportSnapshot.settings.lunch.durationMinutes * 60_000)
   const schedule = scheduleSegments(reportSnapshot, reportNow, lunchOverage)
@@ -123,9 +140,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
   const overtimeDay = overtimeOverview.days.find((day) => day.date === selectedDate)
   const overtime = hasOpenDay
-    ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow)
+    ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
     : overtimeDay?.overtimeMs ?? 0
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
+  const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
 
   const toggleMergeTask = (id: string): void => {
     setMergeTaskIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
@@ -198,7 +216,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
       <section className="overtime-balance-card">
         <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
       </section>
-      <section className="day-hero">
+      {hasDayDetails && <section className="day-hero">
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
@@ -208,10 +226,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
           {tasks.length > 0 && <button className="day-calendar-button" disabled={calendarExporting} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>}
           <div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div>
         </div>
-      </section>
+      </section>}
       {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
 
-      <section className="panel schedule-panel">
+      {hasDayDetails && <section className="panel schedule-panel">
         <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong>{Math.round(scheduleProgress)}%</strong></div>
         <div className="schedule-progress">
           <span className="schedule-progress__elapsed" style={{ width: `${scheduleProgress}%` }} />
@@ -223,7 +241,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         <div className="schedule-times"><span>{reportSnapshot.settings.workday.startTime}</span><span>{formatClock(schedule.end, reportSnapshot.settings.locale)}</span></div>
         <div className="schedule-legend"><span><i className="work" />{t('workSegment')}</span><span><i className="break" />{t('breakTaken')}</span><span><i className="lunch" />{t('lunchTaken')}</span></div>
         <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
-      </section>
+      </section>}
 
       {overtime > 0 && (
         <motion.section className="overtime-card" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
@@ -231,7 +249,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         </motion.section>
       )}
 
-      <div className="metrics-grid">
+      {hasDayDetails && <div className="metrics-grid">
         {metrics.map(({ label, value, icon: Icon, tone }, index) => (
           <motion.div className={`metric-card metric-card--${tone}`} key={label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }}>
             <Icon size={16} />
@@ -239,25 +257,25 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
             <span>{label}</span>
           </motion.div>
         ))}
-      </div>
+      </div>}
 
-      <section className="panel timeline-panel">
+      {tasks.length > 0 && <section className="panel timeline-panel">
         <div className="section-heading">
           <div><span className="eyebrow">Timeline</span><h3>{t('timeline')}</h3></div>
           <div className="timeline-heading-actions"><button className={`timeline-layout-toggle ${timelineLayout === 'overlay' ? 'is-overlay' : ''}`} onClick={() => setTimelineLayout((current) => current === 'lanes' ? 'overlay' : 'lanes')} title={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')} aria-label={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')}><RedoDot size={15} /></button>{startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}</div>
         </div>
-        {tasks.length === 0 ? <p className="empty-copy">{t('noHistory')}</p> : (
-          timelineLayout === 'lanes' ? <div className="timeline">
+        {timelineLayout === 'lanes' ? <div className="timeline">
             {tasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
               const color = project?.color ?? '#b8e986'
+              const label = timelineLabel(task, project, t)
               return (
                 <div className="timeline-row" key={task.id}>
-                  <div className="timeline-label"><strong>{taskLabel(task, t)}</strong><span>{formatDuration(taskDuration(task, reportNow), true)}</span></div>
+                  <div className="timeline-label"><strong title={label}>{label}</strong><span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></div>
                   <div className="timeline-track">
-                    {task.intervals.filter((interval) => intervals.includes(interval)).map((interval) => {
+                    {visibleTimelineIntervals(task, todayStart, todayEnd, reportNow).map((interval) => {
                       const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
-                      const width = (((interval.endedAt ?? reportNow) - interval.startedAt) / timelineSpan) * 100
+                      const width = ((interval.endedAt - interval.startedAt) / timelineSpan) * 100
                       return <motion.span key={interval.id} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
                     })}
                   </div>
@@ -269,39 +287,42 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
               {tasks.flatMap((task) => {
                 const project = getProject(reportSnapshot.projects, task)
                 const color = project?.color ?? '#b8e986'
-                return task.intervals.filter((interval) => intervals.includes(interval)).map((interval) => {
+                const label = timelineLabel(task, project, t)
+                return visibleTimelineIntervals(task, todayStart, todayEnd, reportNow).map((interval) => {
                   const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
-                  const width = (((interval.endedAt ?? reportNow) - interval.startedAt) / timelineSpan) * 100
-                  return <motion.span key={interval.id} title={`${taskLabel(task, t)} · ${formatDuration(intervalDuration(interval, reportNow), true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
+                  const width = ((interval.endedAt - interval.startedAt) / timelineSpan) * 100
+                  return <motion.span key={interval.id} title={`${label} · ${formatDuration(interval.endedAt - interval.startedAt, true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
                 })
               })}
             </div>
             <div className="timeline-overlay-legend">{tasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
-              return <span key={task.id}><i style={{ background: project?.color ?? '#b8e986' }} />{taskLabel(task, t)}</span>
+              const label = timelineLabel(task, project, t)
+              return <span key={task.id} title={label}><i style={{ background: project?.color ?? '#b8e986' }} />{label}</span>
             })}</div>
           </div>
-        )}
-      </section>
+        }
+      </section>}
 
-      <section className="panel day-tasks-panel">
+      {tasks.length > 0 && <section className="panel day-tasks-panel">
         <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
         {mergeMode && <div className="day-merge-controls"><p>{t('mergeTasksHint')}</p>{mergeError && <small>{mergeError}</small>}<div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div>}
-        {tasks.length === 0 ? <p className="empty-copy">{t('noHistory')}</p> : <div className="day-task-list">
+        <div className="day-task-list">
           {tasks.map((task) => {
             const project = getProject(reportSnapshot.projects, task)
             const selected = mergeTaskIds.includes(task.id)
+            const taskIntervals = visibleTimelineIntervals(task, todayStart, todayEnd, reportNow)
             const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
               <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
-              <span>{formatDuration(taskDuration(task, reportNow), true)}</span></>
-            return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task)} title={t('editTaskHint')}>
+              <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></>
+            return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task, taskIntervals[taskIntervals.length - 1]?.id)} title={t('editTaskHint')}>
               {taskRow}
             </button>
           })}
-        </div>}
-      </section>
+        </div>
+      </section>}
 
-      {!isHistorical && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey && (
+      {canShowAiSummary && (
         <section className="panel ai-summary-panel">
           <div className="section-heading"><div><span className="eyebrow">Gemini</span><h3>{t('aiDaySummary')}</h3></div><Sparkles size={16} /></div>
           {aiSummary ? <div className="ai-summary-copy">{aiSummary}</div> : <p>{t('aiDaySummaryBody')}</p>}

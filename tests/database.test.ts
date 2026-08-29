@@ -59,6 +59,69 @@ test('a finished workday does not leak yesterday’s stopped task into a new Foc
   })
 })
 
+test('ending a day during an open break does not add the break to overtime', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Morning work' }))
+    await atTime(at(26, 16), () => database.startRest('break'))
+    await atTime(at(26, 19), () => database.endWorkday())
+
+    assert.equal(database.getOvertimeOverview().balanceMs, 0)
+  })
+})
+
+test('starting work on the next calendar day closes a stale normal workday at midnight', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+    await atTime(at(27, 9), () => database.startTask({ mode: 'parallel', notes: 'Today' }))
+
+    const snapshot = await atTime(at(27, 9), () => database.getSnapshot())
+    const backup = database.exportBackup()
+    assert.equal(snapshot.workday?.startedAt, at(27, 9))
+    assert.equal(backup.workdays.find((day) => day.startedAt === at(26, 16))?.endedAt, at(27, 0))
+  })
+})
+
+test('keeps an explicit task interval edit within that interval', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Recurring task' }))
+    const id = first.tasks[0].id
+    await atTime(at(26, 11), () => database.pauseTask(id))
+    await atTime(at(27, 10), () => database.resumeTask(id, 'parallel'))
+    const second = await atTime(at(27, 11), () => database.pauseTask(id))
+    const secondIntervalId = second.tasks[0].intervals.find((interval) => interval.startedAt === at(27, 10))?.id
+    assert.ok(secondIntervalId)
+
+    await atTime(at(27, 11), () => database.updateTask({ id, intervalId: secondIntervalId, startedAt: at(27, 9), endedAt: at(27, 11) }))
+    const intervals = database.exportBackup().tasks.find((task) => task.id === id)?.intervals ?? []
+    assert.equal(intervals.find((interval) => interval.startedAt === at(26, 10))?.endedAt, at(26, 11))
+    assert.equal(intervals.find((interval) => interval.id === secondIntervalId)?.startedAt, at(27, 9))
+  })
+})
+
+test('rejects merging a different active workday from a backup', async () => {
+  await withDatabase(async (database) => {
+    const backup = database.exportBackup()
+    backup.workdays.push({ id: 'remote-open-day', startedAt: at(26, 9), endedAt: null })
+    await atTime(at(26, 10), () => database.startWorkday())
+
+    assert.throws(() => database.importBackup(backup, 'merge'), /active workday/i)
+  })
+})
+
+test('records a workday span in every calendar day it crosses', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+    await atTime(at(26, 23), () => database.startWorkday())
+    await atTime(at(27, 1), () => database.endWorkday())
+
+    const history = await atTime(at(27, 1), () => database.getHistory(14))
+    const secondDay = history.find((day) => day.date === '2026-08-27')
+    assert.equal(secondDay?.startedAt, at(27, 0))
+    assert.equal(secondDay?.endedAt, at(27, 1))
+  })
+})
+
 test('rejects an invalid backup before it can be imported into SQLite', async () => {
   await withDatabase(async (database) => {
     await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Safe task' }))

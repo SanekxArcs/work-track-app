@@ -178,6 +178,7 @@ export interface StartTaskInput {
 
 export interface TaskUpdateInput {
   id: string
+  intervalId?: string
   title?: string
   projectId?: string | null
   plannedTaskId?: string | null

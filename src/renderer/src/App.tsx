@@ -27,6 +27,7 @@ export default function App(): React.JSX.Element {
   const [compact, setCompact] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<Task | undefined>()
+  const [editingIntervalId, setEditingIntervalId] = useState<string | undefined>()
   const [defaultMode, setDefaultMode] = useState<StartMode>('parallel')
   const [showPlannedTasks, setShowPlannedTasks] = useState(false)
   const [compactHovered, setCompactHovered] = useState(false)
@@ -128,12 +129,13 @@ export default function App(): React.JSX.Element {
     setSnapshot(await window.workBuddy.startTask({ mode: 'parallel' }))
   }
 
-  const openEdit = async (task: Task): Promise<void> => {
+  const openEdit = async (task: Task, intervalId?: string): Promise<void> => {
     if (compact) {
       setCompact(false)
       await window.workBuddy.setWindowMode('expanded')
     }
     setEditingTask(task)
+    setEditingIntervalId(intervalId)
     setDefaultMode('parallel')
     setEditorOpen(true)
   }
@@ -178,11 +180,13 @@ export default function App(): React.JSX.Element {
   const handleEditorSaved = (result: AppSnapshot): void => {
     setSnapshot(result)
     setEditingTask(undefined)
+    setEditingIntervalId(undefined)
     setEditorOpen(false)
   }
 
   const handleEditorClose = (): void => {
     setEditingTask(undefined)
+    setEditingIntervalId(undefined)
     setEditorOpen(false)
   }
 
@@ -295,7 +299,7 @@ export default function App(): React.JSX.Element {
                 {tab === 'focus' && (
                   <motion.div ref={focusRef} key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
                     <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />
-                    <section className="focus-hero">
+                    {openWorkdayStartedAt && <section className="focus-hero">
                       <div>
                         <span className="eyebrow">{liveTasks.length ? `${liveTasks.length} ${t('activeNow')}` : t('today')}</span>
                         <strong>{formatDuration(liveTotal)}</strong>
@@ -303,20 +307,20 @@ export default function App(): React.JSX.Element {
                       <div className="focus-hero__actions no-drag">
                         <button disabled={!liveTasks.length} onClick={() => mutate(window.workBuddy.pauseAllTasks())}><Pause size={17} fill="currentColor" /><span>{t('pauseAll')}</span></button>
                       </div>
-                    </section>
+                    </section>}
 
                     <div className="focus-actions">
                       <div className="focus-actions__primary">
                         <button className="primary-button" disabled={restRunning} onClick={() => snapshot.workday?.endedAt === null ? startInstant('parallel') : startDayWithTask()}><Plus size={17} />{snapshot.workday?.endedAt === null ? (liveTasks.length ? t('addParallel') : t('startTask')) : t('startDay')}</button>
                         {liveTasks.length > 0 && <button className="secondary-button" disabled={restRunning} onClick={() => startInstant('switch')}>{t('switchTask')}</button>}
                       </div>
-                      <div className="focus-actions__tools">
+                      <div className={`focus-actions__tools ${openWorkdayStartedAt ? '' : 'focus-actions__tools--planned-only'}`}>
                         {snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
                         <button className={`secondary-button planned-toggle ${showPlannedTasks ? 'active' : ''}`} onClick={() => setShowPlannedTasks((current) => !current)}><ListTodo size={15} />{t('plannedTasks')}</button>
                       </div>
                     </div>
 
-                    {showFocusEndDay && <button className="end-day-button focus-end-day" disabled={restRunning} onClick={endDay}><Square size={15} fill="currentColor" />{t('endDay')}</button>}
+                    {showFocusEndDay && <button className="end-day-button focus-end-day" onClick={endDay}><Square size={15} fill="currentColor" />{t('endDay')}</button>}
 
                     {showPlannedTasks && <PlannedTasksPanel snapshot={snapshot} t={t} onSnapshot={setSnapshot} />}
 
@@ -374,6 +378,7 @@ export default function App(): React.JSX.Element {
       <TaskEditor
         open={editorOpen}
         task={editingTask}
+        intervalId={editingIntervalId}
         defaultMode={defaultMode}
         snapshot={snapshot}
         t={t}
