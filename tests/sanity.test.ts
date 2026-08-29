@@ -31,6 +31,39 @@ test('restores cloud history only into a genuinely fresh local workspace', () =>
   assert.equal(shouldRestoreCloudBackup(backup), false)
 })
 
+test('sync merges cloud-only history into an existing local workspace before publishing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
+  const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))
+  const settings = database.getSettings()
+  database.updateSettings({ ...settings, sanity: { ...settings.sanity, projectId: 'project', dataset: 'dataset' } })
+  database.createProject({ name: 'Local project', color: '#ffffff' })
+  const remote = emptyBackup()
+  remote.projects.push({ id: 'remote-project', name: 'Remote project', color: '#000000', archived: false, createdAt: Date.now() - 1 })
+  const originalFetch = globalThis.fetch
+  let published: BackupData | undefined
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('data/query')) return Response.json({ result: { payload: remote } })
+    if (url.includes('data/mutate')) {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { mutations?: Array<{ createOrReplace?: { payload?: BackupData } }> }
+      published = body.mutations?.[0]?.createOrReplace?.payload
+      return Response.json({ results: [] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  try {
+    const sanity = new SanityService(database, () => 'token')
+    const result = await sanity.sync()
+    assert.equal(result.merged, true)
+    assert.deepEqual(database.exportBackup().projects.map((project) => project.name).sort(), ['Local project', 'Remote project'])
+    assert.deepEqual(published?.projects.map((project) => project.name).sort(), ['Local project', 'Remote project'])
+  } finally {
+    globalThis.fetch = originalFetch
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('does not run a pending web command twice when its first status update fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'work-buddy-sanity-test-'))
   const database = new WorkBuddyDatabase(join(directory, 'work-buddy.sqlite'))

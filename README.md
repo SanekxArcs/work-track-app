@@ -138,7 +138,7 @@ For a one-off daily export without connecting Google, open **Day**, select a day
 
 ### Sanity Cloud Sync
 
-Sanity sync is optional and keeps one cloud snapshot of tracker data. On a fresh desktop with no local history, **Settings → Sanity Cloud Sync → Sync with Sanity** restores the cloud snapshot. Once there is local history, the desktop safely publishes its local data instead of silently overwriting it with an older cloud snapshot. Use the portable backup **Merge** flow when you intentionally need to combine two histories. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
+Sanity sync is optional and keeps one cloud snapshot of tracker data. On a fresh desktop with no local history, **Settings → Sanity Cloud Sync → Sync with Sanity** restores the cloud snapshot. When both the desktop and cloud already contain history, Work Buddy safely merges additions from the cloud before publishing the combined result. If the same record was edited on both devices, the local version remains authoritative; finish active workdays and breaks before syncing two simultaneously active desktops. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
 
 For development, place these values in a local `.env` file (it is gitignored):
 

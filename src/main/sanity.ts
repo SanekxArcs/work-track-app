@@ -196,8 +196,12 @@ export class SanityService {
   async sync(): Promise<SanitySyncResult> {
     const local = this.database.exportBackup()
     const remote = await this.readCloudBackup()
-    const merged = Boolean(remote && shouldRestoreCloudBackup(local))
-    if (remote && merged) this.database.importBackup(remote, 'replace')
+    // A cloud workspace can have additions from another desktop even when this
+    // device already has history. Merge by immutable record ids before pushing
+    // so a normal sync never discards those additions. Existing local records
+    // remain authoritative when the same id was edited on both devices.
+    const merged = Boolean(remote)
+    if (remote) this.database.importBackup(remote, shouldRestoreCloudBackup(local) ? 'replace' : 'merge')
     await this.push()
     const syncedAt = this.database.getSettings().sanity.lastSyncedAt ?? Date.now()
     const settings = this.database.getSettings()
