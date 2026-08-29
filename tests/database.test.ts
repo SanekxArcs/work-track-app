@@ -262,6 +262,15 @@ test('rejects an invalid backup before it can be imported into SQLite', async ()
   })
 })
 
+test('rejects an incompatible backup at the import boundary', async () => {
+  await withDatabase(async (database) => {
+    const backup = database.exportBackup()
+    const incompatible = { ...backup, schemaVersion: 2 } as unknown as typeof backup
+
+    assert.throws(() => database.importBackup(incompatible, 'replace'), /compatible/i)
+  })
+})
+
 test('rejects a backup with an impossible active timer state', async () => {
   await withDatabase(async (database) => {
     await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Safe task' }))

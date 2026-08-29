@@ -161,6 +161,15 @@ function validIntervals(value: unknown, ownerId: string): boolean {
 }
 
 function validateBackup(backup: BackupData): void {
+  if (!backup || typeof backup !== 'object' || backup.schemaVersion !== 1 || !isTimestamp(backup.exportedAt)) {
+    throw new Error('The selected backup is not a compatible Work Buddy backup')
+  }
+  if (!Array.isArray(backup.projects) || !Array.isArray(backup.plannedTasks) || !Array.isArray(backup.tasks) || !Array.isArray(backup.workdays) || !Array.isArray(backup.rests)) {
+    throw new Error('The selected backup is incomplete')
+  }
+  if (backup.overtimeRedeemedDates !== undefined && (!Array.isArray(backup.overtimeRedeemedDates) || !backup.overtimeRedeemedDates.every((date) => typeof date === 'string'))) {
+    throw new Error('The selected backup has invalid overtime redemptions')
+  }
   if (!isRecord(backup.settings)) throw new Error('The selected backup has invalid settings')
   if (!hasUniqueIds(backup.projects) || !backup.projects.every((item) => isId(item.name) && isId(item.color) && typeof item.archived === 'boolean' && isTimestamp(item.createdAt))) {
     throw new Error('The selected backup has invalid projects')
