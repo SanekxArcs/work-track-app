@@ -62,6 +62,23 @@ test('a finished workday does not leak yesterday’s stopped task into a new Foc
   })
 })
 
+test('uses one timestamp while creating a Focus snapshot at midnight', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 16), () => database.startTask({ mode: 'parallel', notes: 'Near midnight' }))
+    const original = Date.now
+    let calls = 0
+    Date.now = () => calls++ === 0 ? at(26, 23, 59) : at(27, 0)
+    try {
+      const snapshot = database.getSnapshot()
+      assert.equal(snapshot.now, at(26, 23, 59))
+      assert.equal(snapshot.workday?.startedAt, at(26, 16))
+      assert.equal(snapshot.tasks.length, 1)
+    } finally {
+      Date.now = original
+    }
+  })
+})
+
 test('ending a day during an open break does not add the break to overtime', async () => {
   await withDatabase(async (database) => {
     await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Morning work' }))

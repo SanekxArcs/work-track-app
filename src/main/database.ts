@@ -484,8 +484,9 @@ export class WorkBuddyDatabase {
   getSnapshot(): AppSnapshot {
     // Opening the app on a new calendar day must not leave yesterday's live
     // task in Focus until the user presses another button.
-    this.normalizeStaleWorkday(Date.now())
-    const [dayStart, dayEnd] = localDayBounds()
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
+    const [dayStart, dayEnd] = localDayBounds(now)
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, created_at').all() as ProjectRow[]).map(
       (row): Project => ({
         id: row.id,
@@ -563,7 +564,7 @@ export class WorkBuddyDatabase {
       }))
     }))
 
-    return { projects, plannedTasks, tasks, workday, rests, settings: this.getSettings(), now: Date.now() }
+    return { projects, plannedTasks, tasks, workday, rests, settings: this.getSettings(), now }
   }
 
   getHistory(days = 182): HistoryDay[] {
