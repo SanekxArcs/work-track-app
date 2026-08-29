@@ -66,6 +66,8 @@ export interface RestSession {
   status: RestStatus
   plannedMinutes: number
   alarmMuted: boolean
+  /** Tasks paused automatically when this running rest began. */
+  resumeTaskIds?: string[]
   createdAt: number
   endedAt: number | null
   intervals: RestInterval[]

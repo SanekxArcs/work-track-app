@@ -95,7 +95,7 @@ test('starting work on the next calendar day closes a stale normal workday at mi
     await atTime(at(27, 9), () => database.startTask({ mode: 'parallel', notes: 'Today' }))
 
     const snapshot = await atTime(at(27, 9), () => database.getSnapshot())
-    const backup = database.exportBackup()
+    const backup = await atTime(at(26, 11), () => database.exportBackup())
     assert.equal(snapshot.workday?.startedAt, at(27, 9))
     assert.equal(backup.workdays.find((day) => day.startedAt === at(26, 16))?.endedAt, at(27, 0))
   })
@@ -368,5 +368,25 @@ test('rejects an imported backup with overlapping intervals for one task', async
     backup.tasks[0].intervals[1].startedAt = at(26, 10, 30)
 
     assert.throws(() => database.parseBackup(JSON.stringify(backup)), /invalid tasks/i)
+  })
+})
+
+test('restoring an active break keeps the tasks that should resume afterwards', async () => {
+  await withDatabase(async (database) => {
+    const initial = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Resume after break' }))
+    const taskId = initial.tasks[0].id
+    const resting = await atTime(at(26, 11), () => database.startRest('break'))
+    const restId = resting.rests[0].id
+    const backup = await atTime(at(26, 11), () => database.exportBackup())
+
+    assert.deepEqual(backup.rests[0].resumeTaskIds, [taskId])
+    await atTime(at(26, 11), () => database.importBackup(backup, 'replace'))
+    const completed = await atTime(at(26, 12), () => database.completeRest(restId))
+
+    assert.equal(completed.tasks.find((task) => task.id === taskId)?.status, 'running')
+    assert.throws(() => database.parseBackup(JSON.stringify({
+      ...backup,
+      rests: [{ ...backup.rests[0], resumeTaskIds: ['unknown-task'] }]
+    })), /invalid rest sessions/i)
   })
 })

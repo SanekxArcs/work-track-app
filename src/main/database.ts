@@ -184,6 +184,7 @@ function validateBackup(backup: BackupData): void {
     && (item.plannedTaskId === null || plannedTaskIds.has(item.plannedTaskId))
     && validIntervals(item.intervals, item.id)
   )) throw new Error('The selected backup has invalid tasks')
+  const taskIds = new Set(backup.tasks.map((item) => item.id))
   const intervalIds = backup.tasks.flatMap((item) => item.intervals.map((interval) => interval.id))
   if (!hasUniqueIds(backup.workdays) || !backup.workdays.every((item) => isTimestamp(item.startedAt) && (item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.startedAt)))) {
     throw new Error('The selected backup has invalid workdays')
@@ -195,6 +196,7 @@ function validateBackup(backup: BackupData): void {
     && Number.isFinite(item.plannedMinutes)
     && item.plannedMinutes >= 0
     && typeof item.alarmMuted === 'boolean'
+    && (item.resumeTaskIds === undefined || (Array.isArray(item.resumeTaskIds) && item.resumeTaskIds.every((id) => isId(id) && taskIds.has(id)) && new Set(item.resumeTaskIds).size === item.resumeTaskIds.length))
     && isTimestamp(item.createdAt)
     && (item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.createdAt))
     && validIntervals(item.intervals, item.id)
@@ -217,6 +219,9 @@ function validateBackup(backup: BackupData): void {
       throw new Error('The selected backup has inconsistent break timer states')
     }
     if (isActive && !hasOpenWorkday) throw new Error('The selected backup has an active break without an active workday')
+    if (rest.status !== 'running' && (rest.resumeTaskIds?.length ?? 0) > 0) {
+      throw new Error('The selected backup has inconsistent break resume tasks')
+    }
   }
   for (const date of backup.overtimeRedeemedDates ?? []) localDateTimestamp(date)
 }
@@ -738,6 +743,7 @@ export class WorkBuddyDatabase {
       status: row.status,
       plannedMinutes: row.planned_minutes,
       alarmMuted: Boolean(row.alarm_muted),
+      resumeTaskIds: JSON.parse(row.resume_task_ids_json) as string[],
       createdAt: row.created_at,
       endedAt: row.ended_at,
       intervals: (restIntervals.all(row.id) as RestIntervalRow[]).map((interval): RestInterval => ({
@@ -814,8 +820,8 @@ export class WorkBuddyDatabase {
         ON CONFLICT(id) DO UPDATE SET task_id = excluded.task_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
       const workday = this.db.prepare(`INSERT INTO workdays (id, started_at, ended_at) VALUES (?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at`)
-      const rest = this.db.prepare(`INSERT INTO rest_sessions (id, type, status, planned_minutes, alarm_muted, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, '[]')
-        ON CONFLICT(id) DO UPDATE SET type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = '[]'`)
+      const rest = this.db.prepare(`INSERT INTO rest_sessions (id, type, status, planned_minutes, alarm_muted, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = excluded.resume_task_ids_json`)
       const restInterval = this.db.prepare(`INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET rest_id = excluded.rest_id, started_at = excluded.started_at, ended_at = excluded.ended_at`)
       const overtimeRedemption = this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO NOTHING')
@@ -828,7 +834,7 @@ export class WorkBuddyDatabase {
       }
       for (const item of backup.workdays) workday.run(item.id, item.startedAt, item.endedAt)
       for (const item of backup.rests) {
-        rest.run(item.id, item.type, item.status, item.plannedMinutes, Number(item.alarmMuted ?? false), item.createdAt, item.endedAt)
+        rest.run(item.id, item.type, item.status, item.plannedMinutes, Number(item.alarmMuted ?? false), item.createdAt, item.endedAt, JSON.stringify(item.resumeTaskIds ?? []))
         for (const itemInterval of item.intervals) restInterval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
       }
       for (const date of backup.overtimeRedeemedDates ?? []) overtimeRedemption.run(date, Date.now())
