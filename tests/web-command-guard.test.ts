@@ -8,4 +8,6 @@ test('web command dispatch has a synchronous in-flight guard', async () => {
   assert.match(source, /if \(commandInFlight\.current\) return;/)
   assert.match(source, /commandInFlight\.current = true;/)
   assert.match(source, /commandInFlight\.current = false;/)
+  assert.match(source, /const controlsDisabled = loading \|\| !desktopOnline;/)
+  assert.match(source, /if \(!desktopOnline\) \{\s*setCommandStatus\("Десктоп зараз офлайн — команда не була надіслана\."\);/)
 })

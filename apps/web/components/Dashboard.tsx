@@ -289,6 +289,7 @@ export function Dashboard({
 	const desktopOnline = Boolean(
 		workspace?.exportedAt && now - workspace.exportedAt <= DESKTOP_ONLINE_WINDOW,
 	);
+	const controlsDisabled = loading || !desktopOnline;
 	const heroDuration = activeRest
 		? restElapsed(activeRest, now)
 		: primaryTask
@@ -323,6 +324,10 @@ export function Dashboard({
 		: "Робочий день завершено";
 
 	const send = async (command: WorkBuddyCommand): Promise<void> => {
+		if (!desktopOnline) {
+			setCommandStatus("Десктоп зараз офлайн — команда не була надіслана.");
+			return;
+		}
 		if (commandInFlight.current) return;
 		commandInFlight.current = true;
 		setLoading(true);
@@ -356,7 +361,7 @@ export function Dashboard({
 		activeRest ? (
 			<button
 				className="primary-button"
-				disabled={loading}
+				disabled={controlsDisabled}
 				onClick={() =>
 					void send({ command: "complete-rest", restId: activeRest.id })
 				}
@@ -366,7 +371,7 @@ export function Dashboard({
 		) : (
 			<>
 				<button
-					disabled={loading || !workday}
+					disabled={controlsDisabled || !workday}
 					onClick={() =>
 						void send({ command: "start-rest", restType: "lunch" })
 					}
@@ -375,7 +380,7 @@ export function Dashboard({
 				</button>
 				<button
 					className="danger-button"
-					disabled={loading || !workday}
+					disabled={controlsDisabled || !workday}
 					onClick={() => workday && void send({ command: "end-workday", workdayId: workday.id })}
 				>
 					Завершити день
@@ -652,7 +657,7 @@ export function Dashboard({
 								className={
 									primaryTask.status === "running" ? "primary-button" : ""
 								}
-								disabled={loading}
+								disabled={controlsDisabled}
 								onClick={() =>
 									void send(
 										primaryTask.status === "running"
@@ -666,7 +671,7 @@ export function Dashboard({
 						) : null}
 						{!activeRest && workday && (
 							<button
-								disabled={loading}
+								disabled={controlsDisabled}
 								onClick={() =>
 									void send({ command: "start-rest", restType: "break" })
 								}
@@ -762,7 +767,7 @@ export function Dashboard({
 							{activeRest ? (
 								<button
 									className="primary-button"
-									disabled={loading}
+									disabled={controlsDisabled}
 									onClick={() =>
 										void send({ command: "complete-rest", restId: activeRest.id })
 									}
@@ -773,7 +778,7 @@ export function Dashboard({
 								<>
 									<button
 										className="primary-button"
-										disabled={loading}
+										disabled={controlsDisabled}
 										onClick={() =>
 											void send({ command: "start-task", mode: "parallel" })
 										}
@@ -781,7 +786,7 @@ export function Dashboard({
 										＋ Паралельна задача
 									</button>
 									<button
-										disabled={loading}
+										disabled={controlsDisabled}
 										onClick={() => setSwitcherOpen((open) => !open)}
 										aria-expanded={switcherOpen}
 										aria-controls="task-switcher"
@@ -789,7 +794,7 @@ export function Dashboard({
 										⇄ Перемкнутися
 									</button>
 									<button
-										disabled={loading || !workday}
+										disabled={controlsDisabled || !workday}
 										onClick={() =>
 											void send({ command: "start-rest", restType: "break" })
 										}
@@ -817,7 +822,7 @@ export function Dashboard({
 							</div>
 							<div className="task-switcher__choices">
 								<button
-									disabled={loading}
+									disabled={controlsDisabled}
 									onClick={() => {
 										setSwitcherOpen(false);
 										void send({ command: "start-task", mode: "switch" });
@@ -828,7 +833,7 @@ export function Dashboard({
 								{activeTasks.map((task) => (
 									<button
 										key={task.id}
-										disabled={loading}
+										disabled={controlsDisabled}
 										onClick={() => {
 											setSwitcherOpen(false);
 											void send({
@@ -885,7 +890,7 @@ export function Dashboard({
 											</div>
 											<button
 												className={running ? "pause-button" : "play-button"}
-												disabled={loading}
+												disabled={controlsDisabled}
 												onClick={() =>
 													void send(
 														running
