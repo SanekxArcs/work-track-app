@@ -4,7 +4,7 @@ import { PwaRegistration } from '../components/PwaRegistration'
 
 export const metadata: Metadata = {
   title: 'Work Buddy',
-  description: 'Your live Work Buddy dashboard',
+  description: 'Work Buddy web companion — temporarily inactive',
   applicationName: 'Work Buddy',
   appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Work Buddy' }
 }
