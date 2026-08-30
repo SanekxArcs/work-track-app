@@ -316,7 +316,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-section--ai { background: linear-gradient(135deg, rgba(205, 180, 219, .10), transparent 54%), var(--surface-raised); }
 .settings-section--sound { background: linear-gradient(135deg, rgba(123,223,242,.09), transparent 54%), var(--surface-raised); }
 .settings-section--backup { background: linear-gradient(135deg, rgba(123,223,242,.07), transparent 54%), var(--surface-raised); }
-.settings-section--sanity { background: linear-gradient(135deg, rgba(205,180,219,.08), transparent 54%), var(--surface-raised); }
 .settings-title { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; }
 .settings-title > svg { color: var(--accent); }
 .settings-section--lunch .settings-title > svg { color: var(--warm); }

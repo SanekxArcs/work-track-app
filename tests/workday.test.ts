@@ -21,8 +21,7 @@ function settings(endTime = '16:00', lunchMinutes = 30): AppSettings {
     notifications: { sound: 'soft', volume: 0.7, customSoundPath: '', customSoundName: '' },
     wellnessEnabled: true, wellnessActions: [], projectColors: [],
     ai: { enabled: false, model: 'gemini-3.5-flash-lite', hasApiKey: false },
-    googleCalendar: { clientId: '', calendarId: '', calendarName: '', hasConnection: false, syncOnDayEnd: false },
-    sanity: { projectId: '', dataset: '', apiVersion: '2026-08-21', hasToken: false, lastSyncedAt: null }
+    googleCalendar: { clientId: '', calendarId: '', calendarName: '', hasConnection: false, syncOnDayEnd: false }
   }
 }
 

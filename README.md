@@ -81,6 +81,16 @@ npm ci
 npm run dist:win
 ```
 
+For a numbered release that automatically increments the patch version and removes
+all previous `release-vX.Y.Z` folders before building, run:
+
+```powershell
+npm run release:win
+```
+
+Use `npm run release:win -- minor`, `major`, or an explicit version such as
+`npm run release:win -- 1.0.0` when needed. This command does not create a Git commit.
+
 The installer will be similar to:
 
 ```text
@@ -136,43 +146,11 @@ Google Calendar sync is optional. Create a Google OAuth client of type **Desktop
 
 For a one-off daily export without connecting Google, open **Day**, select a day from history, and choose **Export `.ics`**. Import that file manually in Google Calendar.
 
-### Sanity Cloud Sync
+### Web companion
 
-Sanity sync is optional and keeps one cloud snapshot of tracker data. On a fresh desktop with no local history, **Settings → Sanity Cloud Sync → Sync with Sanity** restores the cloud snapshot. When both the desktop and cloud already contain history, Work Buddy safely merges additions from the cloud before publishing the combined result. If the same record was edited on both devices, the local version remains authoritative; finish active workdays and breaks before syncing two simultaneously active desktops. Gemini, Google OAuth, and Sanity credentials are excluded from both cloud data and portable backups.
-
-For development, place these values in a local `.env` file (it is gitignored):
-
-```text
-NEXT_PUBLIC_SANITY_PROJECT_ID=...
-NEXT_PUBLIC_SANITY_DATASET=...
-NEXT_PUBLIC_SANITY_API_VERSION=2026-08-21
-SANITY_API_WRITE_TOKEN=...
-```
-
-The older `NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL` name remains supported for existing desktop installations, but must never be used on Vercel or in browser code. Prefer `SANITY_PROJECT_ID`, `SANITY_DATASET`, `SANITY_API_VERSION`, and the server-only `SANITY_API_WRITE_TOKEN` names shown above.
-
-For an installed build, use **Choose Sanity .env** once in Settings. The token is then encrypted through the operating system’s secure storage and the `.env` file is not copied into the app. Use a dedicated Sanity robot token with Content Lake read/write access only; do not use a personal or full-control token.
-
-### Web PWA
-
-The phone/tablet companion lives in `apps/web`. It is a Next.js PWA that shows the same active workday and sends remote commands to the desktop tracker through Sanity. The desktop app automatically publishes local changes and checks for remote commands roughly every 1.5 seconds while it is running.
-
-```powershell
-cd apps/web
-npm install
-Copy-Item .env.example .env.local
-npm run dev
-```
-
-Fill `apps/web/.env.local` with the Sanity project settings and server-only `SANITY_API_WRITE_TOKEN`. Do not use a `NEXT_PUBLIC_` prefix for the token. Google OAuth is optional: the personal dashboard opens directly by default, even if OAuth credentials exist. To require it, set `WORK_BUDDY_REQUIRE_GOOGLE_LOGIN=true`; then only `WORK_BUDDY_ALLOWED_EMAIL` may access the dashboard. Without that protection, anyone who can open the deployment URL can view the dashboard and queue its remote controls, so only use public mode for a deliberately private deployment URL.
-
-For Vercel, import the repository and set the project Root Directory to `apps/web`. Add the values from `.env.example` in Vercel's Environment Variables, keeping `SANITY_API_WRITE_TOKEN`, `GOOGLE_CLIENT_SECRET`, and `NEXTAUTH_SECRET` server-only. Configure the Google OAuth redirect URL as:
-
-```text
-https://your-domain.com/api/auth/callback/google
-```
-
-The current PWA controls Play/Pause, lunch, breaks, finishing a rest, and ending the workday while the desktop tracker is online. Its dashboard refreshes automatically as the desktop publishes updates. Remote control commands expire after 10 minutes, so an old tap cannot unexpectedly start a timer or break when the desktop comes back online much later.
+The web companion is temporarily deprecated while Work Buddy moves to a self-hosted
+local companion service. The desktop application is fully local: it does not use
+Sanity, cloud credentials, background cloud requests, or cloud backups.
 
 ### Backups
 
@@ -188,7 +166,7 @@ src/
   shared/     Shared types, IPC channels, and time/rest helpers
 build/        Application icon assets
 scripts/      Asset-generation scripts
-apps/web/     Next.js PWA, Google sign-in, and server-side Sanity routes
+apps/web/     Paused web companion placeholder
 ```
 
 ## Data and privacy

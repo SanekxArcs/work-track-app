@@ -129,13 +129,6 @@ export interface AppSettings {
     hasConnection: boolean
     syncOnDayEnd: boolean
   }
-  sanity: {
-    projectId: string
-    dataset: string
-    apiVersion: string
-    hasToken: boolean
-    lastSyncedAt: number | null
-  }
 }
 
 export interface AppSnapshot {
@@ -255,19 +248,12 @@ export interface GoogleSyncResult {
   calendarName: string
 }
 
-export interface SanitySyncResult {
-  merged: boolean
-  projectId: string
-  dataset: string
-  syncedAt: number
-}
-
 export type BackupImportMode = 'merge' | 'replace'
 
 export interface BackupData {
   schemaVersion: 1
   exportedAt: number
-  settings: Omit<AppSettings, 'ai' | 'googleCalendar' | 'sanity'>
+  settings: Omit<AppSettings, 'ai' | 'googleCalendar'>
   projects: Project[]
   plannedTasks: PlannedTask[]
   tasks: Task[]
@@ -322,8 +308,6 @@ export interface WorkBuddyApi {
   disconnectGoogleCalendar: () => Promise<AppSnapshot>
   syncGoogleCalendar: () => Promise<GoogleSyncResult>
   openGoogleCalendarSetup: () => Promise<void>
-  syncSanity: () => Promise<SanitySyncResult>
-  loadSanityEnvironment: () => Promise<AppSnapshot | null>
   exportBackup: () => Promise<{ path: string } | null>
   chooseBackupImport: () => Promise<BackupPreview | null>
   applyBackupImport: (mode: BackupImportMode) => Promise<AppSnapshot>

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, GoogleSyncResult, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, SanitySyncResult, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
+import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, GoogleSyncResult, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
@@ -38,8 +38,6 @@ const api: WorkBuddyApi = {
   disconnectGoogleCalendar: (): Promise<AppSnapshot> => ipcRenderer.invoke(channels.googleDisconnect),
   syncGoogleCalendar: (): Promise<GoogleSyncResult> => ipcRenderer.invoke(channels.googleSync),
   openGoogleCalendarSetup: () => ipcRenderer.invoke(channels.googleSetup),
-  syncSanity: (): Promise<SanitySyncResult> => ipcRenderer.invoke(channels.sanitySync),
-  loadSanityEnvironment: (): Promise<AppSnapshot | null> => ipcRenderer.invoke(channels.sanityLoadEnvironment),
   exportBackup: (): Promise<{ path: string } | null> => ipcRenderer.invoke(channels.backupExport),
   chooseBackupImport: (): Promise<BackupPreview | null> => ipcRenderer.invoke(channels.backupChoose),
   applyBackupImport: (mode: BackupImportMode): Promise<AppSnapshot> => ipcRenderer.invoke(channels.backupApply, mode),

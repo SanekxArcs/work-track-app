@@ -34,8 +34,6 @@ export const channels = {
   googleDisconnect: 'google-calendar:disconnect',
   googleSync: 'google-calendar:sync',
   googleSetup: 'google-calendar:setup',
-  sanitySync: 'sanity:sync',
-  sanityLoadEnvironment: 'sanity:load-environment',
   backupExport: 'backup:export',
   backupChoose: 'backup:choose',
   backupApply: 'backup:apply',

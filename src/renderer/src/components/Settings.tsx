@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, CalendarDays, Check, ChevronDown, ChevronUp, Cloud, Coffee, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, CalendarDays, Check, ChevronDown, ChevronUp, Coffee, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
@@ -48,8 +48,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
   const [backupBusy, setBackupBusy] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
-  const [sanityBusy, setSanityBusy] = useState(false)
-  const [sanityStatus, setSanityStatus] = useState('')
   const [appVersion, setAppVersion] = useState('')
   const lastSynced = useRef(JSON.stringify(snapshot.settings))
   const saveRevision = useRef(0)
@@ -287,36 +285,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     }
   }
 
-  const syncSanity = async (): Promise<void> => {
-    setSanityBusy(true)
-    setSanityStatus('')
-    try {
-      const result = await window.workBuddy.syncSanity()
-      onSnapshot(await window.workBuddy.getSnapshot())
-      setSanityStatus(result.merged ? t('sanityMerged') : t('sanityUploaded'))
-    } catch (error) {
-      setSanityStatus(error instanceof Error ? error.message : t('sanityError'))
-    } finally {
-      setSanityBusy(false)
-    }
-  }
-
-  const loadSanityEnvironment = async (): Promise<void> => {
-    setSanityBusy(true)
-    setSanityStatus('')
-    try {
-      const result = await window.workBuddy.loadSanityEnvironment()
-      if (!result) return
-      onSnapshot(result)
-      setSettings(result.settings)
-      setSanityStatus(t('sanityConfigured'))
-    } catch (error) {
-      setSanityStatus(error instanceof Error ? error.message : t('sanityError'))
-    } finally {
-      setSanityBusy(false)
-    }
-  }
-
   return (
     <motion.div className="page-stack settings-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
       <section className="settings-section">
@@ -448,17 +416,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         </div>}
         {backupStatus && <p className="settings-status">{backupStatus}</p>}
         <p className="security-note">{t('backupSecurity')}</p>
-      </section>
-
-      <section className="settings-section settings-section--sanity">
-        <div className="settings-title"><Cloud size={17} /><div><h3>{t('sanity')}</h3><p>{t('sanityBody')}</p></div></div>
-        {settings.sanity.hasToken && settings.sanity.projectId && settings.sanity.dataset ? <>
-          <div className="google-connected"><span /><div><strong>{t('sanityConnected')}</strong><small>{settings.sanity.projectId} / {settings.sanity.dataset}</small></div></div>
-          <button className="primary-button wide" disabled={sanityBusy} onClick={syncSanity}><RefreshCw size={14} className={sanityBusy ? 'spin' : ''} />{sanityBusy ? t('sanitySyncing') : t('sanitySync')}</button>
-          {settings.sanity.lastSyncedAt && <p className="security-note">{t('sanityLastSync')} {new Intl.DateTimeFormat(settings.locale === 'uk' ? 'uk-UA' : 'en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(settings.sanity.lastSyncedAt)}</p>}
-        </> : <><p className="security-note">{t('sanityMissing')}</p><button className="secondary-button wide" disabled={sanityBusy} onClick={loadSanityEnvironment}><FolderOpen size={14} />{t('sanityLoadEnvironment')}</button></>}
-        {sanityStatus && <p className="settings-status">{sanityStatus}</p>}
-        <p className="security-note">{t('sanitySecurity')}</p>
       </section>
 
       <section className="settings-section">

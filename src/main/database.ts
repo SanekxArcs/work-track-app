@@ -76,13 +76,6 @@ export const defaultSettings: AppSettings = {
     hasConnection: false,
     syncOnDayEnd: true
   },
-  sanity: {
-    projectId: '',
-    dataset: '',
-    apiVersion: '2026-08-21',
-    hasToken: false,
-    lastSyncedAt: null
-  },
   wellnessActions: [
     { id: randomUUID(), labelUk: '10 разів віджатися', labelEn: 'Do 10 push-ups', enabled: true },
     { id: randomUUID(), labelUk: 'Розім’яти спину', labelEn: 'Stretch your back', enabled: true },
@@ -257,7 +250,8 @@ function deepSettings(raw?: string): AppSettings {
   } catch {
     return structuredClone(defaultSettings)
   }
-  const stored = isRecord(parsed) ? parsed as Partial<AppSettings> : {}
+  const stored = isRecord(parsed) ? parsed as Partial<AppSettings> & { sanity?: unknown } : {}
+  const { sanity: _legacySanity, ...storedWithoutLegacy } = stored
   const storedWorkday: Record<string, unknown> = isRecord(stored.workday) ? stored.workday : {}
   const storedBreaks: Record<string, unknown> = isRecord(stored.breaks) ? stored.breaks : {}
   const storedLunch: Record<string, unknown> = isRecord(stored.lunch) ? stored.lunch : {}
@@ -265,7 +259,6 @@ function deepSettings(raw?: string): AppSettings {
   const storedNotifications: Record<string, unknown> = isRecord(stored.notifications) ? stored.notifications : {}
   const storedAi: Record<string, unknown> = isRecord(stored.ai) ? stored.ai : {}
   const storedGoogle: Record<string, unknown> = isRecord(stored.googleCalendar) ? stored.googleCalendar : {}
-  const storedSanity: Record<string, unknown> = isRecord(stored.sanity) ? stored.sanity : {}
   const sounds = ['system', 'soft', 'bell', 'pop', 'custom'] as const
   const models = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const
   const colors = Array.isArray(stored.projectColors)
@@ -277,7 +270,7 @@ function deepSettings(raw?: string): AppSettings {
     : []
   return {
     ...structuredClone(defaultSettings),
-    ...stored,
+    ...storedWithoutLegacy,
     locale: stored.locale === 'en' ? 'en' : 'uk',
     theme: stored.theme === 'light' || stored.theme === 'system' ? stored.theme : 'dark',
     alwaysOnTop: typeof stored.alwaysOnTop === 'boolean' ? stored.alwaysOnTop : defaultSettings.alwaysOnTop,
@@ -312,8 +305,7 @@ function deepSettings(raw?: string): AppSettings {
     projectColors: colors.length ? colors : [...defaultSettings.projectColors],
     wellnessActions: wellnessActions.length ? wellnessActions : structuredClone(defaultSettings.wellnessActions),
     ai: { enabled: typeof storedAi.enabled === 'boolean' ? storedAi.enabled : defaultSettings.ai.enabled, model: models.includes(storedAi.model as AppSettings['ai']['model']) ? storedAi.model as AppSettings['ai']['model'] : defaultSettings.ai.model, hasApiKey: typeof storedAi.hasApiKey === 'boolean' ? storedAi.hasApiKey : false },
-    googleCalendar: { clientId: typeof storedGoogle.clientId === 'string' ? storedGoogle.clientId : '', calendarId: typeof storedGoogle.calendarId === 'string' ? storedGoogle.calendarId : '', calendarName: typeof storedGoogle.calendarName === 'string' ? storedGoogle.calendarName : '', hasConnection: typeof storedGoogle.hasConnection === 'boolean' ? storedGoogle.hasConnection : false, syncOnDayEnd: typeof storedGoogle.syncOnDayEnd === 'boolean' ? storedGoogle.syncOnDayEnd : defaultSettings.googleCalendar.syncOnDayEnd },
-    sanity: { projectId: typeof storedSanity.projectId === 'string' ? storedSanity.projectId : '', dataset: typeof storedSanity.dataset === 'string' ? storedSanity.dataset : '', apiVersion: typeof storedSanity.apiVersion === 'string' ? storedSanity.apiVersion : defaultSettings.sanity.apiVersion, hasToken: typeof storedSanity.hasToken === 'boolean' ? storedSanity.hasToken : false, lastSyncedAt: isTimestamp(storedSanity.lastSyncedAt) ? storedSanity.lastSyncedAt : null }
+    googleCalendar: { clientId: typeof storedGoogle.clientId === 'string' ? storedGoogle.clientId : '', calendarId: typeof storedGoogle.calendarId === 'string' ? storedGoogle.calendarId : '', calendarName: typeof storedGoogle.calendarName === 'string' ? storedGoogle.calendarName : '', hasConnection: typeof storedGoogle.hasConnection === 'boolean' ? storedGoogle.hasConnection : false, syncOnDayEnd: typeof storedGoogle.syncOnDayEnd === 'boolean' ? storedGoogle.syncOnDayEnd : defaultSettings.googleCalendar.syncOnDayEnd }
   }
 }
 
@@ -437,13 +429,6 @@ export class WorkBuddyDatabase {
         redeemed_at INTEGER NOT NULL
       );
 
-      -- Web commands are eventually delivered by Sanity. Keep their ids locally so
-      -- a retry after the command was already applied cannot create a duplicate task.
-      CREATE TABLE IF NOT EXISTS processed_remote_commands (
-        id TEXT PRIMARY KEY,
-        processed_at INTEGER NOT NULL
-      );
-
       CREATE INDEX IF NOT EXISTS idx_intervals_task ON time_intervals(task_id);
       CREATE INDEX IF NOT EXISTS idx_intervals_start ON time_intervals(started_at);
       CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
@@ -456,10 +441,13 @@ export class WorkBuddyDatabase {
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
+    this.db.exec("DELETE FROM secrets WHERE key = 'sanity_api_token'; DROP TABLE IF EXISTS processed_remote_commands;")
 
-    const settings = this.db.prepare('SELECT id FROM app_settings WHERE id = 1').get()
+    const settings = this.db.prepare('SELECT json FROM app_settings WHERE id = 1').get() as { json: string } | undefined
     if (!settings) {
       this.db.prepare('INSERT INTO app_settings (id, json) VALUES (1, ?)').run(JSON.stringify(defaultSettings))
+    } else if (settings.json.includes('"sanity"')) {
+      this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(deepSettings(settings.json)))
     }
   }
 
@@ -468,7 +456,6 @@ export class WorkBuddyDatabase {
     const settings = deepSettings(row?.json)
     settings.ai.hasApiKey = this.hasSecret('gemini_api_key')
     settings.googleCalendar.hasConnection = this.hasSecret('google_calendar_tokens')
-    settings.sanity.hasToken = this.hasSecret('sanity_api_token')
     return settings
   }
 
@@ -723,7 +710,7 @@ export class WorkBuddyDatabase {
     // active timers before the renderer has had a chance to request a snapshot.
     this.normalizeStaleWorkday(Date.now())
     const settings = this.getSettings()
-    const { ai: _ai, googleCalendar: _googleCalendar, sanity: _sanity, ...backupSettings } = settings
+    const { ai: _ai, googleCalendar: _googleCalendar, ...backupSettings } = settings
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map((row): Project => ({
       id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at
     }))
@@ -852,7 +839,7 @@ export class WorkBuddyDatabase {
       }
       for (const date of backup.overtimeRedeemedDates ?? []) overtimeRedemption.run(date, Date.now())
       if (mode === 'replace') {
-        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai, googleCalendar: existingSettings.googleCalendar, sanity: existingSettings.sanity }))
+        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai, googleCalendar: existingSettings.googleCalendar }))
         this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(restoredSettings))
       }
     })
@@ -1368,14 +1355,6 @@ export class WorkBuddyDatabase {
 
   private getOpenWorkday(): WorkdayRow | undefined {
     return this.db.prepare('SELECT * FROM workdays WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get() as WorkdayRow | undefined
-  }
-
-  hasProcessedRemoteCommand(id: string): boolean {
-    return Boolean(this.db.prepare('SELECT 1 FROM processed_remote_commands WHERE id = ?').get(id))
-  }
-
-  markRemoteCommandProcessed(id: string): void {
-    this.db.prepare('INSERT OR IGNORE INTO processed_remote_commands (id, processed_at) VALUES (?, ?)').run(id, Date.now())
   }
 
   private normalizeStaleWorkday(now: number): void {

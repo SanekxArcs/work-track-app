@@ -5,7 +5,6 @@ import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { GoogleCalendarService } from './google-calendar'
 import { ReminderService } from './reminders'
-import { SanityService } from './sanity'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
 import type { AppSettings, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
@@ -19,10 +18,6 @@ let database: WorkBuddyDatabase
 let reminders: ReminderService
 let gemini: GeminiService
 let googleCalendar: GoogleCalendarService
-let sanity: SanityService
-let sanityPushTimer: NodeJS.Timeout | undefined
-let sanityCommandTimer: NodeJS.Timeout | undefined
-let sanityHeartbeatTimer: NodeJS.Timeout | undefined
 let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
@@ -30,58 +25,6 @@ let compactWindow = false
 let manualHeight = 760
 let programmaticHeight: number | undefined
 let compactBottomAnchored = false
-
-function readEnvironment(raw: string): Record<string, string> {
-  const values: Record<string, string> = {}
-  for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/)
-    if (!match) continue
-    values[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2')
-  }
-  return values
-}
-
-async function loadLocalEnvironment(): Promise<void> {
-  const locations = [join(process.cwd(), '.env')]
-  if (app.isPackaged) locations.push(join(process.resourcesPath, '.env'))
-  for (const location of locations) {
-    let raw = ''
-    try {
-      raw = await readFile(location, 'utf8')
-    } catch {
-      continue
-    }
-    for (const [key, value] of Object.entries(readEnvironment(raw))) {
-      if (process.env[key] !== undefined) continue
-      process.env[key] = value
-    }
-    return
-  }
-}
-
-function configureSanityFromEnvironment(values: Record<string, string | undefined> = process.env, throwOnUnavailable = false): boolean {
-  const projectId = values.SANITY_PROJECT_ID?.trim() || values.NEXT_PUBLIC_SANITY_PROJECT_ID?.trim() || ''
-  const dataset = values.SANITY_DATASET?.trim() || values.NEXT_PUBLIC_SANITY_DATASET?.trim() || ''
-  const apiVersion = values.SANITY_API_VERSION?.trim() || values.NEXT_PUBLIC_SANITY_API_VERSION?.trim() || ''
-  const token = values.SANITY_API_WRITE_TOKEN?.trim() || values.NEXT_PUBLIC_SANITY_API_TOKEN_FULL_CONTROL?.trim() || ''
-  if (!projectId || !dataset || !token) return false
-  if (!safeStorage.isEncryptionAvailable()) {
-    if (throwOnUnavailable) throw new Error('Secure storage is not available on this device')
-    return false
-  }
-  database.setSecret('sanity_api_token', safeStorage.encryptString(token).toString('base64'))
-  const settings = database.getSettings()
-  database.updateSettings({
-    ...settings,
-    sanity: {
-      ...settings.sanity,
-      projectId,
-      dataset,
-      apiVersion: apiVersion.replace(/^v/, '') || settings.sanity.apiVersion
-    }
-  })
-  return true
-}
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -245,9 +188,6 @@ function createWindow(): void {
 
 function emitChanged(): void {
   mainWindow?.webContents.send(channels.dataChanged)
-  if (!sanity) return
-  if (sanityPushTimer) clearTimeout(sanityPushTimer)
-  sanityPushTimer = setTimeout(() => void sanity.push().catch(() => undefined), 700)
 }
 
 function registerIpc(): void {
@@ -408,26 +348,6 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.googleSync, () => googleCalendar.sync())
   ipcMain.handle(channels.googleSetup, () => shell.openExternal('https://console.cloud.google.com/apis/credentials'))
-  ipcMain.handle(channels.sanitySync, async () => {
-    const result = await sanity.sync()
-    emitChanged()
-    return result
-  })
-  ipcMain.handle(channels.sanityLoadEnvironment, async () => {
-    if (!mainWindow) return null
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: database.getSettings().locale === 'uk' ? 'Обрати Sanity .env' : 'Choose Sanity .env',
-      properties: ['openFile'],
-      filters: [{ name: 'Environment file', extensions: ['env'] }, { name: 'All files', extensions: ['*'] }]
-    })
-    const path = result.filePaths[0]
-    if (result.canceled || !path) return null
-    if (!configureSanityFromEnvironment(readEnvironment(await readFile(path, 'utf8')), true)) throw new Error('The selected file does not contain a complete Sanity configuration')
-    await sanity.sync()
-    const snapshot = database.getSnapshot()
-    emitChanged()
-    return snapshot
-  })
   ipcMain.handle(channels.backupExport, async () => {
     if (!mainWindow) return null
     const date = localDateKey(Date.now())
@@ -546,9 +466,7 @@ else {
   })
 
   void app.whenReady().then(async () => {
-    await loadLocalEnvironment()
     database = new WorkBuddyDatabase(join(app.getPath('userData'), 'work-buddy.sqlite'))
-    configureSanityFromEnvironment()
     gemini = new GeminiService(database, () => {
       const encrypted = database.getSecret('gemini_api_key')
       if (!encrypted) return ''
@@ -556,19 +474,6 @@ else {
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
     googleCalendar = new GoogleCalendarService(database)
-    sanity = new SanityService(database, () => {
-      const encrypted = database.getSecret('sanity_api_token')
-      if (!encrypted) return ''
-      if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
-      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-    })
-    void sanity.sync().then(() => emitChanged()).catch(() => undefined)
-    sanityCommandTimer = setInterval(() => {
-      void sanity.processPendingCommands().then((changed) => { if (changed) emitChanged() }).catch(() => undefined)
-    }, 1_500)
-    sanityHeartbeatTimer = setInterval(() => {
-      void sanity.push().catch(() => undefined)
-    }, 30_000)
     registerIpc()
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
@@ -592,9 +497,6 @@ else {
 app.on('before-quit', () => {
   isQuitting = true
   reminders?.stop()
-  if (sanityPushTimer) clearTimeout(sanityPushTimer)
-  if (sanityCommandTimer) clearInterval(sanityCommandTimer)
-  if (sanityHeartbeatTimer) clearInterval(sanityHeartbeatTimer)
   database?.close()
 })
 
