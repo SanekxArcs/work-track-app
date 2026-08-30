@@ -69,13 +69,6 @@ export const defaultSettings: AppSettings = {
     model: 'gemini-3.5-flash-lite',
     hasApiKey: false
   },
-  googleCalendar: {
-    clientId: '',
-    calendarId: '',
-    calendarName: '',
-    hasConnection: false,
-    syncOnDayEnd: true
-  },
   wellnessActions: [
     { id: randomUUID(), labelUk: '10 разів віджатися', labelEn: 'Do 10 push-ups', enabled: true },
     { id: randomUUID(), labelUk: 'Розім’яти спину', labelEn: 'Stretch your back', enabled: true },
@@ -250,15 +243,14 @@ function deepSettings(raw?: string): AppSettings {
   } catch {
     return structuredClone(defaultSettings)
   }
-  const stored = isRecord(parsed) ? parsed as Partial<AppSettings> & { sanity?: unknown } : {}
-  const { sanity: _legacySanity, ...storedWithoutLegacy } = stored
+  const stored = isRecord(parsed) ? parsed as Partial<AppSettings> & { sanity?: unknown; googleCalendar?: unknown } : {}
+  const { sanity: _legacySanity, googleCalendar: _legacyGoogleCalendar, ...storedWithoutLegacy } = stored
   const storedWorkday: Record<string, unknown> = isRecord(stored.workday) ? stored.workday : {}
   const storedBreaks: Record<string, unknown> = isRecord(stored.breaks) ? stored.breaks : {}
   const storedLunch: Record<string, unknown> = isRecord(stored.lunch) ? stored.lunch : {}
   const storedIdle: Record<string, unknown> = isRecord(stored.idle) ? stored.idle : {}
   const storedNotifications: Record<string, unknown> = isRecord(stored.notifications) ? stored.notifications : {}
   const storedAi: Record<string, unknown> = isRecord(stored.ai) ? stored.ai : {}
-  const storedGoogle: Record<string, unknown> = isRecord(stored.googleCalendar) ? stored.googleCalendar : {}
   const sounds = ['system', 'soft', 'bell', 'pop', 'custom'] as const
   const models = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const
   const colors = Array.isArray(stored.projectColors)
@@ -304,8 +296,7 @@ function deepSettings(raw?: string): AppSettings {
     wellnessEnabled: typeof stored.wellnessEnabled === 'boolean' ? stored.wellnessEnabled : defaultSettings.wellnessEnabled,
     projectColors: colors.length ? colors : [...defaultSettings.projectColors],
     wellnessActions: wellnessActions.length ? wellnessActions : structuredClone(defaultSettings.wellnessActions),
-    ai: { enabled: typeof storedAi.enabled === 'boolean' ? storedAi.enabled : defaultSettings.ai.enabled, model: models.includes(storedAi.model as AppSettings['ai']['model']) ? storedAi.model as AppSettings['ai']['model'] : defaultSettings.ai.model, hasApiKey: typeof storedAi.hasApiKey === 'boolean' ? storedAi.hasApiKey : false },
-    googleCalendar: { clientId: typeof storedGoogle.clientId === 'string' ? storedGoogle.clientId : '', calendarId: typeof storedGoogle.calendarId === 'string' ? storedGoogle.calendarId : '', calendarName: typeof storedGoogle.calendarName === 'string' ? storedGoogle.calendarName : '', hasConnection: typeof storedGoogle.hasConnection === 'boolean' ? storedGoogle.hasConnection : false, syncOnDayEnd: typeof storedGoogle.syncOnDayEnd === 'boolean' ? storedGoogle.syncOnDayEnd : defaultSettings.googleCalendar.syncOnDayEnd }
+    ai: { enabled: typeof storedAi.enabled === 'boolean' ? storedAi.enabled : defaultSettings.ai.enabled, model: models.includes(storedAi.model as AppSettings['ai']['model']) ? storedAi.model as AppSettings['ai']['model'] : defaultSettings.ai.model, hasApiKey: typeof storedAi.hasApiKey === 'boolean' ? storedAi.hasApiKey : false }
   }
 }
 
@@ -441,12 +432,12 @@ export class WorkBuddyDatabase {
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
-    this.db.exec("DELETE FROM secrets WHERE key = 'sanity_api_token'; DROP TABLE IF EXISTS processed_remote_commands;")
+    this.db.exec("DELETE FROM secrets WHERE key IN ('sanity_api_token', 'google_calendar_tokens'); DROP TABLE IF EXISTS processed_remote_commands;")
 
     const settings = this.db.prepare('SELECT json FROM app_settings WHERE id = 1').get() as { json: string } | undefined
     if (!settings) {
       this.db.prepare('INSERT INTO app_settings (id, json) VALUES (1, ?)').run(JSON.stringify(defaultSettings))
-    } else if (settings.json.includes('"sanity"')) {
+    } else if (settings.json.includes('"sanity"') || settings.json.includes('"googleCalendar"')) {
       this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(deepSettings(settings.json)))
     }
   }
@@ -455,7 +446,6 @@ export class WorkBuddyDatabase {
     const row = this.db.prepare('SELECT json FROM app_settings WHERE id = 1').get() as { json: string } | undefined
     const settings = deepSettings(row?.json)
     settings.ai.hasApiKey = this.hasSecret('gemini_api_key')
-    settings.googleCalendar.hasConnection = this.hasSecret('google_calendar_tokens')
     return settings
   }
 
@@ -710,7 +700,7 @@ export class WorkBuddyDatabase {
     // active timers before the renderer has had a chance to request a snapshot.
     this.normalizeStaleWorkday(Date.now())
     const settings = this.getSettings()
-    const { ai: _ai, googleCalendar: _googleCalendar, ...backupSettings } = settings
+    const { ai: _ai, ...backupSettings } = settings
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map((row): Project => ({
       id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at
     }))
@@ -839,7 +829,7 @@ export class WorkBuddyDatabase {
       }
       for (const date of backup.overtimeRedeemedDates ?? []) overtimeRedemption.run(date, Date.now())
       if (mode === 'replace') {
-        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai, googleCalendar: existingSettings.googleCalendar }))
+        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai }))
         this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(restoredSettings))
       }
     })
@@ -902,47 +892,6 @@ export class WorkBuddyDatabase {
     const events = [...taskEvents, ...restEvents]
     if (!events.length) throw new Error('There is no tracked work to export for this day')
     return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Work Buddy//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...events, 'END:VCALENDAR', ''].map(foldIcsLine).join('\r\n')
-  }
-
-  getGoogleCalendarEvents(days = 182): Array<{ id: string; title: string; projectName: string; projectColor: string; notes: string; tags: string[]; startedAt: number; endedAt: number }> {
-    const safeDays = Math.min(730, Math.max(1, Math.round(days)))
-    const start = localDaysBefore(Date.now(), safeDays)
-    const rows = this.db.prepare(
-      `SELECT i.id, i.started_at, i.ended_at, t.title, t.notes, p.name AS project_name, p.color AS project_color
-       FROM time_intervals i
-       JOIN tasks t ON t.id = i.task_id
-       LEFT JOIN projects p ON p.id = t.project_id
-       WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
-       ORDER BY i.started_at`
-    ).all(start) as Array<{ id: string; title: string; notes: string; project_name: string | null; project_color: string | null; started_at: number; ended_at: number }>
-    const taskEvents = rows.map((row) => ({
-      id: row.id,
-      title: row.notes.trim() || row.title.trim() || 'Work Buddy task',
-      projectName: row.project_name ?? '',
-      projectColor: row.project_color ?? '',
-      notes: row.notes,
-      tags: [] as string[],
-      startedAt: row.started_at,
-      endedAt: row.ended_at
-    }))
-    const restRows = this.db.prepare(
-      `SELECT i.id, i.started_at, i.ended_at, s.type
-       FROM rest_intervals i
-       JOIN rest_sessions s ON s.id = i.rest_id
-       WHERE i.ended_at IS NOT NULL AND i.ended_at > ?
-       ORDER BY i.started_at`
-    ).all(start) as Array<{ id: string; started_at: number; ended_at: number; type: RestType }>
-    const restEvents = restRows.map((row) => ({
-      id: `rest-${row.id}`,
-      title: row.type === 'lunch' ? 'Lunch' : 'Break',
-      projectName: '',
-      projectColor: row.type === 'lunch' ? '#f6bf26' : '#039be5',
-      notes: row.type === 'lunch' ? 'Tracked lunch in Work Buddy' : 'Tracked break in Work Buddy',
-      tags: [] as string[],
-      startedAt: row.started_at,
-      endedAt: row.ended_at
-    }))
-    return [...taskEvents, ...restEvents].sort((a, b) => a.startedAt - b.startedAt)
   }
 
   startWorkday(): AppSnapshot {

@@ -122,13 +122,6 @@ export interface AppSettings {
     model: GeminiModel
     hasApiKey: boolean
   }
-  googleCalendar: {
-    clientId: string
-    calendarId: string
-    calendarName: string
-    hasConnection: boolean
-    syncOnDayEnd: boolean
-  }
 }
 
 export interface AppSnapshot {
@@ -242,18 +235,12 @@ export interface VoiceTaskDraft {
   endTime: string | null
 }
 
-export interface GoogleSyncResult {
-  created: number
-  updated: number
-  calendarName: string
-}
-
 export type BackupImportMode = 'merge' | 'replace'
 
 export interface BackupData {
   schemaVersion: 1
   exportedAt: number
-  settings: Omit<AppSettings, 'ai' | 'googleCalendar'>
+  settings: Omit<AppSettings, 'ai'>
   projects: Project[]
   plannedTasks: PlannedTask[]
   tasks: Task[]
@@ -304,10 +291,6 @@ export interface WorkBuddyApi {
   updateProject: (input: ProjectUpdateInput) => Promise<AppSnapshot>
   updateSettings: (settings: AppSettings) => Promise<AppSnapshot>
   saveAiKey: (key: string) => Promise<AppSnapshot>
-  connectGoogleCalendar: (clientId: string) => Promise<AppSnapshot>
-  disconnectGoogleCalendar: () => Promise<AppSnapshot>
-  syncGoogleCalendar: () => Promise<GoogleSyncResult>
-  openGoogleCalendarSetup: () => Promise<void>
   exportBackup: () => Promise<{ path: string } | null>
   chooseBackupImport: () => Promise<BackupPreview | null>
   applyBackupImport: (mode: BackupImportMode) => Promise<AppSnapshot>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, CalendarDays, Check, ChevronDown, ChevronUp, Coffee, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Link2, Palette, Pencil, Play, Plus, RefreshCw, Sparkles, Trash2, Unplug, Upload, Volume2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, Check, ChevronDown, ChevronUp, Coffee, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Pencil, Play, Plus, Sparkles, Trash2, Upload, Volume2, X } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
@@ -35,8 +35,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [newColor, setNewColor] = useState('#ff8fab')
   const [aiKey, setAiKey] = useState('')
   const [aiKeyStatus, setAiKeyStatus] = useState('')
-  const [googleBusy, setGoogleBusy] = useState(false)
-  const [googleStatus, setGoogleStatus] = useState('')
   const [customPreviewData, setCustomPreviewData] = useState('')
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [editingProjectName, setEditingProjectName] = useState('')
@@ -79,7 +77,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   }, [settings])
 
   const patch = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void => setSettings((current) => ({ ...current, [key]: value }))
-  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications' | 'googleCalendar'>(key: K, value: Partial<AppSettings[K]>): void => {
+  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications'>(key: K, value: Partial<AppSettings[K]>): void => {
     setSettings((current) => ({ ...current, [key]: { ...current[key], ...value } }))
   }
 
@@ -133,48 +131,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     onSnapshot(result)
     setSettings(result.settings)
     setAiKeyStatus(t('aiKeyRemoved'))
-  }
-
-  const connectGoogleCalendar = async (): Promise<void> => {
-    setGoogleBusy(true)
-    setGoogleStatus('')
-    try {
-      const result = await window.workBuddy.connectGoogleCalendar(settings.googleCalendar.clientId)
-      onSnapshot(result)
-      setSettings(result.settings)
-      setGoogleStatus(t('googleConnected'))
-    } catch (error) {
-      setGoogleStatus(error instanceof Error ? error.message : t('googleError'))
-    } finally {
-      setGoogleBusy(false)
-    }
-  }
-
-  const disconnectGoogleCalendar = async (): Promise<void> => {
-    setGoogleBusy(true)
-    try {
-      const result = await window.workBuddy.disconnectGoogleCalendar()
-      onSnapshot(result)
-      setSettings(result.settings)
-      setGoogleStatus(t('googleDisconnected'))
-    } catch (error) {
-      setGoogleStatus(error instanceof Error ? error.message : t('googleError'))
-    } finally {
-      setGoogleBusy(false)
-    }
-  }
-
-  const syncGoogleCalendar = async (): Promise<void> => {
-    setGoogleBusy(true)
-    setGoogleStatus('')
-    try {
-      const result = await window.workBuddy.syncGoogleCalendar()
-      setGoogleStatus(`${t('googleSynced')} ${result.created + result.updated}`)
-    } catch (error) {
-      setGoogleStatus(error instanceof Error ? error.message : t('googleError'))
-    } finally {
-      setGoogleBusy(false)
-    }
   }
 
   const modelOptions: Array<{ value: GeminiModel; label: string; description: string }> = [
@@ -379,24 +335,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <label className="field"><span><KeyRound size={13} /> Gemini API key {settings.ai.hasApiKey && <em>{t('configured')}</em>}</span><div className="api-key-row"><input type="password" value={aiKey} onChange={(event) => setAiKey(event.target.value)} placeholder={settings.ai.hasApiKey ? '••••••••••••••••' : 'AIza…'} /><button className="secondary-button" disabled={!aiKey.trim()} onClick={saveKey}>{t('saveKey')}</button>{settings.ai.hasApiKey && <button className="icon-button icon-button--quiet" title={t('removeKey')} onClick={removeKey}><Trash2 size={14} /></button>}</div></label>
         {aiKeyStatus && <p className="settings-status">{aiKeyStatus}</p>}
         <p className="security-note">{t('aiSecurity')}</p>
-      </section>
-
-      <section className="settings-section settings-section--google">
-        <div className="settings-title"><CalendarDays size={17} /><div><h3>{t('googleCalendar')}</h3><p>{t('googleCalendarBody')}</p></div></div>
-        <label className="field"><span><KeyRound size={13} /> {t('googleClientId')}</span><input value={settings.googleCalendar.clientId} onChange={(event) => nested('googleCalendar', { clientId: event.target.value })} placeholder="…apps.googleusercontent.com" /></label>
-        {!settings.googleCalendar.hasConnection ? <div className="sound-actions">
-          <button className="secondary-button" onClick={() => void window.workBuddy.openGoogleCalendarSetup()}><Link2 size={14} />{t('googleGetClientId')}</button>
-          <button className="primary-button" disabled={googleBusy || !settings.googleCalendar.clientId.trim()} onClick={connectGoogleCalendar}><CalendarDays size={14} />{googleBusy ? t('googleConnecting') : t('googleConnect')}</button>
-        </div> : <>
-          <div className="google-connected"><span /><div><strong>{t('googleConnected')}</strong><small>{settings.googleCalendar.calendarName || 'Work Buddy'}</small></div></div>
-          <div className="setting-line"><div><strong>{t('googleAutoSync')}</strong><p>{t('googleAutoSyncBody')}</p></div><Toggle checked={settings.googleCalendar.syncOnDayEnd} onChange={(value) => nested('googleCalendar', { syncOnDayEnd: value })} /></div>
-          <div className="sound-actions">
-            <button className="primary-button" disabled={googleBusy} onClick={syncGoogleCalendar}><RefreshCw size={14} className={googleBusy ? 'spin' : ''} />{googleBusy ? t('googleSyncing') : t('googleSync')}</button>
-            <button className="secondary-button" disabled={googleBusy} onClick={disconnectGoogleCalendar}><Unplug size={14} />{t('googleDisconnect')}</button>
-          </div>
-        </>}
-        {googleStatus && <p className="settings-status">{googleStatus}</p>}
-        <p className="security-note">{t('googleSecurity')}</p>
       </section>
 
       <section className="settings-section settings-section--backup">

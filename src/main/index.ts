@@ -3,7 +3,6 @@ import { basename, extname, join } from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
-import { GoogleCalendarService } from './google-calendar'
 import { ReminderService } from './reminders'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
@@ -17,7 +16,6 @@ let isQuitting = false
 let database: WorkBuddyDatabase
 let reminders: ReminderService
 let gemini: GeminiService
-let googleCalendar: GoogleCalendarService
 let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
@@ -208,9 +206,6 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.endWorkday, () => {
     const result = database.endWorkday()
-    if (result.settings.googleCalendar.hasConnection && result.settings.googleCalendar.syncOnDayEnd) {
-      void googleCalendar.sync(2).catch(() => undefined)
-    }
     emitChanged()
     return result
   })
@@ -336,18 +331,6 @@ function registerIpc(): void {
     emitChanged()
     return database.getSnapshot()
   })
-  ipcMain.handle(channels.googleConnect, async (_, clientId: string) => {
-    const result = await googleCalendar.connect(clientId)
-    emitChanged()
-    return result
-  })
-  ipcMain.handle(channels.googleDisconnect, () => {
-    const result = googleCalendar.disconnect()
-    emitChanged()
-    return result
-  })
-  ipcMain.handle(channels.googleSync, () => googleCalendar.sync())
-  ipcMain.handle(channels.googleSetup, () => shell.openExternal('https://console.cloud.google.com/apis/credentials'))
   ipcMain.handle(channels.backupExport, async () => {
     if (!mainWindow) return null
     const date = localDateKey(Date.now())
@@ -473,7 +456,6 @@ else {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
-    googleCalendar = new GoogleCalendarService(database)
     registerIpc()
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))

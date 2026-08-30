@@ -224,11 +224,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .history-recent button { width: 100%; min-height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; color: var(--muted); background: rgba(255,255,255,.035); display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-size: 8.5px; text-align: left; }
 .history-recent button:hover, .history-recent button.selected { color: var(--text); border-color: rgba(184,233,134,.22); background: rgba(184,233,134,.08); }
 .history-recent strong { color: var(--text); font-size: 9px; font-variant-numeric: tabular-nums; }
-.google-connected { display: flex; align-items: center; gap: 9px; margin: 10px 0; padding: 9px 10px; border: 1px solid rgba(184,233,134,.2); border-radius: 9px; background: rgba(184,233,134,.07); }
-.google-connected > span { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 99px; background: var(--accent); box-shadow: 0 0 10px rgba(184,233,134,.7); }
-.google-connected strong, .google-connected small { display: block; }
-.google-connected strong { color: var(--text); font-size: 10px; }
-.google-connected small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .section-heading { display: flex; align-items: center; justify-content: space-between; }

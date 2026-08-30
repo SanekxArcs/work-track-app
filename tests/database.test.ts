@@ -306,13 +306,15 @@ test('normalizes malformed persisted settings instead of breaking timer logic', 
     malformed.settings = {
       ...malformed.settings,
       workday: { ...malformed.settings.workday, startTime: 'not-a-time' },
-      breaks: { ...malformed.settings.breaks, everyMinutes: -4 }
-    }
+      breaks: { ...malformed.settings.breaks, everyMinutes: -4 },
+      googleCalendar: { clientId: 'obsolete-client-id' }
+    } as typeof malformed.settings
     database.importBackup(malformed, 'replace')
 
     const settings = database.getSettings()
     assert.equal(settings.workday.startTime, '09:00')
     assert.equal(settings.breaks.everyMinutes, 55)
+    assert.equal('googleCalendar' in settings, false)
   })
 })
 

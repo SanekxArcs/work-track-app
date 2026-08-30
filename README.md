@@ -11,9 +11,8 @@ The interface is available in Ukrainian and English.
 - Six-month GitHub-style history map and editable daily timeline
 - Planned-task backlog that can be attached to a tracked task
 - Gemini-powered task refinement and optional voice input
-- Optional Google Calendar export to a separate Work Buddy calendar
 - Portable `.workbuddy.json` backups with Merge or Replace restore modes
-- Per-day `.ics` calendar export for a manual Google Calendar import
+- Per-day `.ics` calendar export for manual import into any calendar
 - Tray controls, autostart, reminders, custom sounds, and desktop-transparent UI
 - Local SQLite storage; the tracker works offline
 
@@ -55,7 +54,7 @@ npm run dev
 # TypeScript checks for Electron and the renderer
 npm run typecheck
 
-# Run time-tracking, backup, sync, and calendar-export tests
+# Run time-tracking, backup, and calendar-export tests
 npm test
 
 # Production build without creating an installer
@@ -140,11 +139,11 @@ Gemini features are opt-in. In **Settings → AI sidekick**, enter your own Gemi
 
 Voice input is push-to-record: Work Buddy asks for microphone permission only after you press the microphone button. The recorded short command is sent to Gemini solely to transcribe and structure that command; it is not saved by Work Buddy.
 
-### Google Calendar
+### Calendar export
 
-Google Calendar sync is optional. Create a Google OAuth client of type **Desktop app**, enable the Calendar API, paste the client ID under **Settings → Google Calendar**, and connect your account. Work Buddy creates and writes only to its own separate calendar. Project events use the closest available native Google Calendar colour; lunch and breaks have their own stable colours.
-
-For a one-off daily export without connecting Google, open **Day**, select a day from history, and choose **Export `.ics`**. Import that file manually in Google Calendar.
+Open **Day**, select a day from history, and choose **Export `.ics`**. Import the
+file manually into any calendar that supports the standard `.ics` format. Work Buddy
+does not connect to or sync with calendar accounts.
 
 ### Web companion
 
@@ -154,13 +153,13 @@ Sanity, cloud credentials, background cloud requests, or cloud backups.
 
 ### Backups
 
-In **Settings → Backup**, export a portable `.workbuddy.json` file. Imports offer two modes: **Merge** adds the backup data to the current local database; **Replace** replaces the local tracker data and regular settings. Gemini API keys, Google OAuth tokens, and Gemini/Google integration settings are never written to backups.
+In **Settings → Backup**, export a portable `.workbuddy.json` file. Imports offer two modes: **Merge** adds the backup data to the current local database; **Replace** replaces the local tracker data and regular settings. Gemini API keys are never written to backups.
 
 ## Project structure
 
 ```text
 src/
-  main/       Electron lifecycle, SQLite, reminders, Gemini, Google Calendar
+  main/       Electron lifecycle, SQLite, reminders, Gemini, local .ics export
   preload/    Secure typed IPC bridge
   renderer/   React interface, styles, interactions
   shared/     Shared types, IPC channels, and time/rest helpers
@@ -173,7 +172,7 @@ apps/web/     Paused web companion placeholder
 
 The core tracker is local-first: projects, tasks, intervals, planned tasks, settings, and history are stored in a local SQLite database. No screenshots or window contents are collected.
 
-Gemini and Google Calendar are opt-in integrations. Only data needed for the requested AI command or calendar export leaves the app.
+Gemini is an opt-in integration. Only data needed for a requested AI command leaves the app; calendar exports are generated locally.
 
 ## Troubleshooting
 

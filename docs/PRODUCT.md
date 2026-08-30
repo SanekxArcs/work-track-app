@@ -50,10 +50,10 @@ The AI layer should be provider-agnostic, with Gemini available through a user-s
 
 AI must remain optional. The app should show exactly what text will be sent, avoid screenshots by default, and keep tracking functional offline.
 
-### Calendar and integrations
+### Calendar export
 
-- Google Calendar synchronization
-- Optional calendar block creation from tracked intervals
+- Manual `.ics` export for a selected day
+- No connected calendar accounts or background synchronization
 - GitHub, Jira, Linear, Todoist, and similar task sources
 - Cross-device synchronization
 
