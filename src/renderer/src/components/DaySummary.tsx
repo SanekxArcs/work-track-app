@@ -144,6 +144,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     : overtimeDay?.overtimeMs ?? 0
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
+  const canExportCalendar = Boolean(reportSnapshot.workday?.endedAt)
+
+  useEffect(() => { setCalendarExportStatus('') }, [selectedDate])
 
   const toggleMergeTask = (id: string): void => {
     setMergeTaskIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
@@ -212,22 +215,14 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
 
   return (
     <motion.div className="page-stack" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
-      <HistoryPanel days={history} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
-      <section className="overtime-balance-card">
-        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
-      </section>
       {hasDayDetails && <section className="day-hero">
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
           {startedAt && endedAt && <p>{formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : 'now'} · {formatDuration(span, true)}</p>}
         </div>
-        <div className="day-hero__tools">
-          {tasks.length > 0 && <button className="day-calendar-button" disabled={calendarExporting} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>}
-          <div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div>
-        </div>
+        <div className="day-hero__tools"><div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div></div>
       </section>}
-      {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
 
       {hasDayDetails && <section className="panel schedule-panel">
         <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong>{Math.round(scheduleProgress)}%</strong></div>
@@ -258,6 +253,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
           </motion.div>
         ))}
       </div>}
+
+      <section className="overtime-balance-card">
+        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
+      </section>
 
       {tasks.length > 0 && <section className="panel timeline-panel">
         <div className="section-heading">
@@ -334,6 +333,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
       {!isHistorical && <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
         {hasOpenDay ? t('endDay') : t('startDay')}
       </button>}
+
+      <HistoryPanel days={history} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
+      {canExportCalendar && <section className="history-calendar-export">
+        <button className="day-calendar-button" disabled={calendarExporting} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>
+        {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
+      </section>}
     </motion.div>
   )
 }
