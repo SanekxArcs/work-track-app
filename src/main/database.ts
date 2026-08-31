@@ -88,7 +88,7 @@ type TaskRow = {
   created_at: number
   updated_at: number
 }
-type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; created_at: number }
+type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; created_at: number; completed_at: number | null }
 type IntervalRow = { id: string; task_id: string; started_at: number; ended_at: number | null }
 type WorkdayRow = { id: string; started_at: number; ended_at: number | null }
 type RestRow = {
@@ -161,7 +161,7 @@ function validateBackup(backup: BackupData): void {
     throw new Error('The selected backup has invalid projects')
   }
   const projectIds = new Set(backup.projects.map((item) => item.id))
-  if (!hasUniqueIds(backup.plannedTasks) || !backup.plannedTasks.every((item) => isId(item.title) && typeof item.notes === 'string' && isTimestamp(item.createdAt) && isOptionalId(item.projectId) && (item.projectId === null || projectIds.has(item.projectId)))) {
+  if (!hasUniqueIds(backup.plannedTasks) || !backup.plannedTasks.every((item) => isId(item.title) && typeof item.notes === 'string' && isTimestamp(item.createdAt) && (item.completedAt === undefined || item.completedAt === null || isTimestamp(item.completedAt)) && isOptionalId(item.projectId) && (item.projectId === null || projectIds.has(item.projectId)))) {
     throw new Error('The selected backup has invalid planned tasks')
   }
   const plannedTaskIds = new Set(backup.plannedTasks.map((item) => item.id))
@@ -359,7 +359,8 @@ export class WorkBuddyDatabase {
         title TEXT NOT NULL,
         project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         notes TEXT NOT NULL DEFAULT '',
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS tasks (
@@ -424,12 +425,15 @@ export class WorkBuddyDatabase {
       CREATE INDEX IF NOT EXISTS idx_intervals_start ON time_intervals(started_at);
       CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
       CREATE INDEX IF NOT EXISTS idx_planned_tasks_created ON planned_tasks(created_at);
+      CREATE INDEX IF NOT EXISTS idx_planned_tasks_open ON planned_tasks(completed_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_rest_intervals_rest ON rest_intervals(rest_id);
       CREATE INDEX IF NOT EXISTS idx_rest_sessions_created ON rest_sessions(created_at);
     `)
 
     const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
+    const plannedTaskColumns = this.db.prepare('PRAGMA table_info(planned_tasks)').all() as Array<{ name: string }>
+    if (!plannedTaskColumns.some((column) => column.name === 'completed_at')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN completed_at INTEGER')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
     this.db.exec("DELETE FROM secrets WHERE key IN ('sanity_api_token', 'google_calendar_tokens'); DROP TABLE IF EXISTS processed_remote_commands;")
@@ -487,8 +491,8 @@ export class WorkBuddyDatabase {
         createdAt: row.created_at
       })
     )
-    const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
-      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at })
+    const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
+      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at })
     )
 
     const taskRows = this.db
@@ -671,8 +675,8 @@ export class WorkBuddyDatabase {
     const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, created_at').all() as ProjectRow[]).map(
       (row): Project => ({ id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at })
     )
-    const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
-      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at })
+    const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
+      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at })
     )
     const taskRows = this.db.prepare(
       `SELECT DISTINCT t.* FROM tasks t JOIN time_intervals i ON i.task_id = t.id
@@ -705,7 +709,7 @@ export class WorkBuddyDatabase {
       id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at
     }))
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at').all() as PlannedTaskRow[]).map((row): PlannedTask => ({
-      id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at
+      id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at
     }))
     const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
     const tasks = (this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as TaskRow[]).map((row): Task => ({
@@ -802,8 +806,8 @@ export class WorkBuddyDatabase {
       const onConflict = (replace: string): string => mode === 'merge' ? 'DO NOTHING' : `DO UPDATE SET ${replace}`
       const project = this.db.prepare(`INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at')}`)
-      const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, created_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at')}`)
+      const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at, completed_at = excluded.completed_at')}`)
       const task = this.db.prepare(`INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at')}`)
       const interval = this.db.prepare(`INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)
@@ -817,7 +821,7 @@ export class WorkBuddyDatabase {
       const overtimeRedemption = this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO NOTHING')
 
       for (const item of backup.projects) project.run(item.id, item.name, item.color, Number(item.archived), item.createdAt)
-      for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.createdAt)
+      for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.createdAt, item.completedAt ?? null)
       for (const item of backup.tasks) {
         task.run(item.id, item.title, item.projectId, item.plannedTaskId, item.notes, JSON.stringify(item.tags), item.status, item.createdAt, item.updatedAt)
         for (const itemInterval of item.intervals) interval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
@@ -935,12 +939,14 @@ export class WorkBuddyDatabase {
       if (input.taskId) {
         this.db.prepare("UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ?").run(now, taskId)
       } else {
+        this.assertPlannedTaskCanBeAttached(input.plannedTaskId)
         this.db
           .prepare(
             `INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`
           )
           .run(taskId, input.title?.trim() ?? '', input.projectId ?? null, input.plannedTaskId ?? null, input.notes?.trim() ?? '', JSON.stringify(input.tags ?? []), now, now)
+        if (input.plannedTaskId) this.completePlannedTask(input.plannedTaskId, now)
       }
 
       const open = this.db.prepare('SELECT id FROM time_intervals WHERE task_id = ? AND ended_at IS NULL').get(taskId)
@@ -1144,23 +1150,29 @@ export class WorkBuddyDatabase {
         }))
       if (hasOverlappingIntervals(intervals)) throw new Error('Task intervals cannot overlap')
     }
-    this.db
-      .prepare('UPDATE tasks SET title = ?, project_id = ?, planned_task_id = ?, notes = ?, tags_json = ?, updated_at = ? WHERE id = ?')
-      .run(
-        input.title?.trim() ?? current.title,
-        input.projectId === undefined ? current.project_id : input.projectId,
-        input.plannedTaskId === undefined ? current.planned_task_id : input.plannedTaskId,
-        input.notes?.trim() ?? current.notes,
-        JSON.stringify(input.tags ?? (JSON.parse(current.tags_json) as string[])),
-        Date.now(),
-        input.id
-      )
-    if (input.startedAt !== undefined && firstInterval) {
-      this.db.prepare('UPDATE time_intervals SET started_at = ? WHERE id = ?').run(Math.round(input.startedAt), firstInterval.id)
-    }
-    if (input.endedAt !== undefined && finalInterval) {
-      this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(input.endedAt), finalInterval.id)
-    }
+    const plannedTaskId = input.plannedTaskId === undefined ? current.planned_task_id : input.plannedTaskId
+    if (plannedTaskId && plannedTaskId !== current.planned_task_id) this.assertPlannedTaskCanBeAttached(plannedTaskId)
+    const updatedAt = Date.now()
+    this.transaction(() => {
+      this.db
+        .prepare('UPDATE tasks SET title = ?, project_id = ?, planned_task_id = ?, notes = ?, tags_json = ?, updated_at = ? WHERE id = ?')
+        .run(
+          input.title?.trim() ?? current.title,
+          input.projectId === undefined ? current.project_id : input.projectId,
+          plannedTaskId,
+          input.notes?.trim() ?? current.notes,
+          JSON.stringify(input.tags ?? (JSON.parse(current.tags_json) as string[])),
+          updatedAt,
+          input.id
+        )
+      if (input.startedAt !== undefined && firstInterval) {
+        this.db.prepare('UPDATE time_intervals SET started_at = ? WHERE id = ?').run(Math.round(input.startedAt), firstInterval.id)
+      }
+      if (input.endedAt !== undefined && finalInterval) {
+        this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(input.endedAt), finalInterval.id)
+      }
+      if (plannedTaskId && plannedTaskId !== current.planned_task_id) this.completePlannedTask(plannedTaskId, updatedAt)
+    })
     return this.getSnapshot()
   }
 
@@ -1238,7 +1250,7 @@ export class WorkBuddyDatabase {
   updatePlannedTask(input: PlannedTaskUpdateInput): AppSnapshot {
     const title = input.title.trim()
     if (!title) throw new Error('Planned task name is required')
-    const result = this.db.prepare('UPDATE planned_tasks SET title = ?, project_id = ?, notes = ? WHERE id = ?').run(
+    const result = this.db.prepare('UPDATE planned_tasks SET title = ?, project_id = ?, notes = ? WHERE id = ? AND completed_at IS NULL').run(
       title, input.projectId ?? null, input.notes?.trim() ?? '', input.id
     )
     if (!result.changes) throw new Error('Planned task not found')
@@ -1334,6 +1346,17 @@ export class WorkBuddyDatabase {
     const normalized = name.normalize('NFKC').toLocaleLowerCase()
     const projects = this.db.prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>
     return projects.some((project) => project.id !== excludedId && project.name.normalize('NFKC').toLocaleLowerCase() === normalized)
+  }
+
+  private assertPlannedTaskCanBeAttached(id: string | null | undefined): void {
+    if (!id) return
+    const plannedTask = this.db.prepare('SELECT completed_at FROM planned_tasks WHERE id = ?').get(id) as { completed_at: number | null } | undefined
+    if (!plannedTask) throw new Error('Planned task not found')
+    if (plannedTask.completed_at !== null) throw new Error('This planned task is already completed')
+  }
+
+  private completePlannedTask(id: string, completedAt: number): void {
+    this.db.prepare('UPDATE planned_tasks SET completed_at = ? WHERE id = ? AND completed_at IS NULL').run(completedAt, id)
   }
 
   private getRest(id: string): RestRow | undefined {

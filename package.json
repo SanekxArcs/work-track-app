@@ -1,6 +1,6 @@
 {
   "name": "work-buddy",
-  "version": "0.9.4",
+  "version": "0.9.6",
   "description": "A friendly always-on-top time tracker for desktop",
   "main": "./out/main/index.js",
   "author": "Work Buddy",
@@ -49,7 +49,7 @@
       "cache": ".electron-cache"
     },
     "directories": {
-      "output": "release-v0.9.4"
+      "output": "release-v0.9.6"
     },
     "files": [
       "out/**/*",

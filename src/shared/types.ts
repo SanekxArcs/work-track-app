@@ -25,6 +25,8 @@ export interface PlannedTask {
   projectId: string | null
   notes: string
   createdAt: number
+  /** Undefined is accepted only when importing backups created before completion tracking. */
+  completedAt?: number | null
 }
 
 export interface TimeInterval {

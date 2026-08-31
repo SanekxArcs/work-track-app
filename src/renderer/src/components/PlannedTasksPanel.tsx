@@ -84,7 +84,6 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
 
   return <motion.section className="panel planned-tasks-panel" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
     <div className="section-heading"><div><span className="eyebrow">Plan</span><h3>{t('plannedTasks')}</h3></div><ListTodo size={16} /></div>
-    <p>{t('plannedTasksBody')}</p>
     <div className="planned-task-add">
       <input value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void add() }} placeholder={t('plannedTaskPlaceholder')} />
       <button className="icon-button icon-button--accent" disabled={busy || !title.trim()} onClick={add} title={t('add')}><Plus size={16} /></button>

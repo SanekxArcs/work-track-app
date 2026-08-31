@@ -4,6 +4,7 @@ import { Check, FolderPlus, Sparkles, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, Project, StartMode, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { CustomSelect } from './CustomSelect'
+import { ColorPicker } from './ColorPicker'
 import { TimeInput } from './TimeInput'
 import { VoiceButton } from './VoiceButton'
 
@@ -28,7 +29,6 @@ function editableInterval(task: Task | undefined, intervalId: string | undefined
 export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
-  const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
   const [newProject, setNewProject] = useState('')
   const [projectColor, setProjectColor] = useState(snapshot.settings.projectColors[0])
@@ -44,7 +44,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     if (!open) return
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
-    setTitle(task?.title ?? '')
     setNotes(task?.notes ?? '')
     setAddingProject(false)
     setAiMessage('')
@@ -75,8 +74,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         adjustedEnd = date.getTime()
       }
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
-        : await window.workBuddy.startTask({ title, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
+        : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
@@ -107,7 +106,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setPlannedTaskId(id)
     const planned = snapshot.plannedTasks.find((item) => item.id === id)
     if (!planned) return
-    if (!title.trim()) setTitle(planned.title)
     if (!projectId && planned.projectId) setProjectId(planned.projectId)
     if (!notes.trim() && planned.notes) setNotes(planned.notes)
   }
@@ -181,11 +179,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
             </div>
 
             <label className="field">
-              <span>{t('taskName')}</span>
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('taskName')} />
-            </label>
-
-            <label className="field">
               <span>{t('project')}</span>
               <CustomSelect
                 value={projectId}
@@ -196,13 +189,13 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
             </label>
 
             {task && startTime && (
-              <div className={`task-time-fields ${endTime ? 'task-time-fields--complete' : ''}`}>
+              <div className={`task-time-fields ${task.status !== 'running' && endTime ? 'task-time-fields--complete' : ''}`}>
                 <label className="field time-edit-field">
                   <span>{t('firstStartTime')}</span>
                   <TimeInput value={startTime} onChange={setStartTime} ariaLabel={t('firstStartTime')} />
                 </label>
-                {endTime && <label className="field time-edit-field"><span>{t('finishedAt')}</span><TimeInput value={endTime} onChange={setEndTime} ariaLabel={t('finishedAt')} /></label>}
-                <small>{endTime ? t('taskTimeRangeBody') : t('firstStartTimeBody')}</small>
+                {task.status !== 'running' && endTime && <label className="field time-edit-field"><span>{t('finishedAt')}</span><TimeInput value={endTime} onChange={setEndTime} ariaLabel={t('finishedAt')} /></label>}
+                <small>{task.status !== 'running' && endTime ? t('taskTimeRangeBody') : t('firstStartTimeBody')}</small>
               </div>
             )}
 
@@ -221,9 +214,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
             ) : (
               <div className="new-project-row">
                 <input value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder={t('projectName')} />
-                <div className="color-dots">
-                  {snapshot.settings.projectColors.map((color) => <button key={color} aria-label={color} className={projectColor === color ? 'selected' : ''} style={{ background: color }} onClick={() => setProjectColor(color)} />)}
-                </div>
+                <ColorPicker value={projectColor} colors={snapshot.settings.projectColors} onChange={setProjectColor} ariaLabel={t('projectPalette')} />
                 <button className="icon-button icon-button--accent" onClick={createProject}><Check size={16} /></button>
               </div>
             )}

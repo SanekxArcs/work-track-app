@@ -429,6 +429,49 @@ test('rejects an imported backup with overlapping intervals for one task', async
   })
 })
 
+test('completes an attached planned task, hides it, and clears the link when deleted', async () => {
+  await withDatabase(async (database) => {
+    const planned = await atTime(at(26, 9), () => database.createPlannedTask({ title: 'Prepare release notes' }))
+    const plannedId = planned.plannedTasks[0]?.id
+    assert.ok(plannedId)
+
+    const started = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', plannedTaskId: plannedId }))
+    assert.equal(started.plannedTasks.length, 0)
+    assert.equal(started.tasks[0]?.plannedTaskId, plannedId)
+    assert.equal(database.exportBackup().plannedTasks[0]?.completedAt, at(26, 10))
+
+    const detached = await atTime(at(26, 10), () => database.deletePlannedTask(plannedId))
+    assert.equal(detached.tasks[0]?.plannedTaskId, null)
+  })
+})
+
+test('completes a planned task when it is attached while editing a paused task', async () => {
+  await withDatabase(async (database) => {
+    const planned = await atTime(at(26, 9), () => database.createPlannedTask({ title: 'Check invoice' }))
+    const plannedId = planned.plannedTasks[0]?.id
+    assert.ok(plannedId)
+    const started = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
+    const taskId = started.tasks[0]?.id
+    assert.ok(taskId)
+    await atTime(at(26, 11), () => database.pauseTask(taskId))
+
+    const updated = await atTime(at(26, 12), () => database.updateTask({ id: taskId, plannedTaskId: plannedId }))
+    assert.equal(updated.plannedTasks.length, 0)
+    assert.equal(updated.tasks[0]?.plannedTaskId, plannedId)
+    assert.equal(database.exportBackup().plannedTasks[0]?.completedAt, at(26, 12))
+  })
+})
+
+test('imports an older backup that has no planned-task completion field', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.createPlannedTask({ title: 'Legacy item' }))
+    const backup = database.exportBackup()
+    delete backup.plannedTasks[0]?.completedAt
+
+    assert.doesNotThrow(() => database.parseBackup(JSON.stringify(backup)))
+  })
+})
+
 test('restoring an active break keeps the tasks that should resume afterwards', async () => {
   await withDatabase(async (database) => {
     const initial = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Resume after break' }))
