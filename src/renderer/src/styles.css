@@ -202,8 +202,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .day-hero h2 { margin: 5px 0 3px; font-size: 17px; }
 .day-hero p { margin: 0; color: var(--muted); font-size: 10.5px; }
 .day-hero__tools { display: flex; align-items: center; gap: 8px; }
-.day-calendar-button { min-height: 31px; padding: 0 9px; border: 1px solid rgba(123,223,242,.24); border-radius: 9px; color: #c7edf4; background: rgba(123,223,242,.09); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 8.5px; font-weight: 700; white-space: nowrap; }
-.day-calendar-button:hover { background: rgba(123,223,242,.16); }.day-calendar-button:disabled { opacity: .55; cursor: wait; }
+.day-calendar-button { min-height: 31px; padding: 0 9px; border: 1px solid #3d8290; border-radius: 9px; color: #d8f5fa; background: #173840; box-shadow: 0 5px 14px rgba(0,0,0,.2); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 8.5px; font-weight: 700; white-space: nowrap; }
+.day-calendar-button:hover { background: #20505a; border-color: #58a9b8; }.day-calendar-button:disabled { opacity: .55; cursor: wait; }
 .calendar-export-status { margin: -2px 2px 1px; color: var(--accent); font-size: 8.5px; }
 .history-calendar-export { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; margin: -5px 2px 2px; }
 .history-calendar-export .calendar-export-status { margin: 0; }

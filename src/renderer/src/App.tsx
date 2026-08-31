@@ -183,8 +183,15 @@ export default function App(): React.JSX.Element {
   const fitWindowToContent = (): void => {
     const content = contentRef.current
     if (!content || compact) return
+    // The scroll container fills all spare window space, so its scrollHeight
+    // cannot tell us whether a short page should shrink the window. Measure
+    // the actual page inside it instead.
+    const page = Array.from(content.children).find((element) => element.classList.contains('page-stack')) as HTMLElement | undefined
+    const styles = window.getComputedStyle(content)
     const chromeHeight = window.innerHeight - content.clientHeight
-    const requestedHeight = chromeHeight + content.scrollHeight + 8
+    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom)
+    const pageHeight = page ? Math.ceil(page.getBoundingClientRect().height) : content.scrollHeight
+    const requestedHeight = chromeHeight + pageHeight + verticalPadding + 8
     void window.workBuddy.fitWindowToContent(requestedHeight)
   }
 
