@@ -41,6 +41,8 @@ export const channels = {
   notify: 'notification:show',
   windowMode: 'window:mode',
   windowHeight: 'window:height',
+  windowEditor: 'window:editor',
+  windowFit: 'window:fit',
   windowView: 'window:view',
   chooseSound: 'sound:choose',
   soundData: 'sound:data',

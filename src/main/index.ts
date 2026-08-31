@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage,
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { ReminderService } from './reminders'
+import { fitWindowHeight, isBottomAnchored } from './window-layout'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
 import type { AppSettings, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
@@ -23,6 +24,7 @@ let compactWindow = false
 let manualHeight = 760
 let programmaticHeight: number | undefined
 let compactBottomAnchored = false
+let editorRestoreBounds: Electron.Rectangle | null = null
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -412,12 +414,40 @@ function registerIpc(): void {
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
     if (!mainWindow || compactWindow) return
     const current = mainWindow.getBounds()
-    const maxHeight = screen.getDisplayMatching(current).workArea.height - 16
-    const height = Math.min(maxHeight, Math.max(230, Math.round(requestedHeight)))
-    if (current.height !== height) {
-      programmaticHeight = height
-      mainWindow.setBounds({ ...current, height }, false)
+    const area = screen.getDisplayMatching(current).workArea
+    const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
+    if (current.height !== next.height || current.y !== next.y || current.x !== next.x) {
+      programmaticHeight = next.height
+      mainWindow.setBounds(next, false)
     }
+  })
+  ipcMain.handle(channels.windowEditor, (_, open: boolean) => {
+    if (!mainWindow || compactWindow) return
+    const current = mainWindow.getBounds()
+    const area = screen.getDisplayMatching(current).workArea
+    if (open) {
+      if (!editorRestoreBounds) editorRestoreBounds = current
+      const requestedHeight = Math.max(current.height, Math.min(700, area.height - 16))
+      const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
+      programmaticHeight = next.height
+      mainWindow.setBounds(next, false)
+      return
+    }
+    if (!editorRestoreBounds) return
+    const restore = editorRestoreBounds
+    editorRestoreBounds = null
+    const next = fitWindowHeight(restore, area, restore.height, isBottomAnchored(restore, area), 230)
+    programmaticHeight = next.height
+    mainWindow.setBounds(next, false)
+  })
+  ipcMain.handle(channels.windowFit, (_, requestedHeight: number) => {
+    if (!mainWindow || compactWindow || !Number.isFinite(requestedHeight)) return
+    const current = mainWindow.getBounds()
+    const area = screen.getDisplayMatching(current).workArea
+    const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
+    manualHeight = next.height
+    programmaticHeight = next.height
+    mainWindow.setBounds(next, false)
   })
   ipcMain.handle(channels.windowView, () => {
     if (!mainWindow || compactWindow) return

@@ -302,6 +302,8 @@ export interface WorkBuddyApi {
   notify: (input: NotificationInput) => Promise<void>
   setWindowMode: (mode: 'compact' | 'expanded', rows?: number) => Promise<'top' | 'bottom' | null>
   setWindowHeight: (height: number) => Promise<void>
+  setWindowEditor: (open: boolean) => Promise<void>
+  fitWindowToContent: (height: number) => Promise<void>
   setWindowView: (view: 'focus' | 'manual') => Promise<void>
   chooseNotificationSound: () => Promise<{ path: string; name: string; dataUrl: string } | null>
   getCustomSoundData: () => Promise<string>

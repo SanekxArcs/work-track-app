@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
@@ -32,10 +32,10 @@ export default function App(): React.JSX.Element {
   const [showPlannedTasks, setShowPlannedTasks] = useState(false)
   const [compactHovered, setCompactHovered] = useState(false)
   const [compactAnchor, setCompactAnchor] = useState<'top' | 'bottom'>('top')
-  const focusRef = useRef<HTMLDivElement>(null)
   const compactOpenTimer = useRef<number | undefined>(undefined)
   const compactCloseTimer = useRef<number | undefined>(undefined)
   const compactTasksOpen = useRef(false)
+  const contentRef = useRef<HTMLDivElement>(null)
 
   const reload = async (): Promise<void> => setSnapshot(await window.workBuddy.getSnapshot())
 
@@ -95,26 +95,10 @@ export default function App(): React.JSX.Element {
     })
   }, [compact, compactRows])
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (compact) return
-    void window.workBuddy.setWindowView(tab === 'focus' ? 'focus' : 'manual')
-    if (tab !== 'focus') return
-    if (editorOpen) {
-      void window.workBuddy.setWindowHeight(700)
-      return
-    }
-    const element = focusRef.current
-    if (!element) return
-    let frame = 0
-    const measure = (): void => {
-      window.cancelAnimationFrame(frame)
-      frame = window.requestAnimationFrame(() => void window.workBuddy.setWindowHeight(element.scrollHeight + 147))
-    }
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(element)
-    return () => { observer.disconnect(); window.cancelAnimationFrame(frame) }
-  }, [compact, tab, editorOpen, snapshot])
+    void window.workBuddy.setWindowEditor(editorOpen)
+  }, [compact, editorOpen])
 
   if (!snapshot) {
     return <div className="app-shell app-shell--loading"><div className="loading-mark"><Sparkles size={22} /></div></div>
@@ -194,6 +178,14 @@ export default function App(): React.JSX.Element {
     const result = await window.workBuddy.endWorkday()
     setSnapshot(result)
     setTab('day')
+  }
+
+  const fitWindowToContent = (): void => {
+    const content = contentRef.current
+    if (!content || compact) return
+    const chromeHeight = window.innerHeight - content.clientHeight
+    const requestedHeight = chromeHeight + content.scrollHeight + 8
+    void window.workBuddy.fitWindowToContent(requestedHeight)
   }
 
   const navItems: Array<{ id: Tab; label: string; icon: typeof Clock3 }> = [
@@ -294,10 +286,10 @@ export default function App(): React.JSX.Element {
               ))}
             </nav>
 
-            <div className="content-scroll no-drag">
+            <div ref={contentRef} className="content-scroll no-drag">
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
-                  <motion.div ref={focusRef} key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
+                  <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
                     <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />
                     {openWorkdayStartedAt && <section className="focus-hero">
                       <div>
@@ -373,6 +365,7 @@ export default function App(): React.JSX.Element {
       </AnimatePresence>
 
       {!compact && <div className="window-bottom-edge" aria-hidden="true" />}
+      {!compact && <button className="resize-fit-handle no-drag" onDoubleClick={fitWindowToContent} title={t('fitWindowToContent')} aria-label={t('fitWindowToContent')}><span /></button>}
       {!compact && tab !== 'focus' && <div className="resize-corner" aria-hidden="true" />}
 
       <TaskEditor
