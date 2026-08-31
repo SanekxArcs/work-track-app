@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { WorkBuddyDatabase } from '../src/main/database.ts'
 import { scheduledWorkdayEndAt } from '../src/shared/workday.ts'
@@ -30,6 +31,27 @@ async function atTime<T>(timestamp: number, run: () => T | Promise<T>): Promise<
     Date.now = original
   }
 }
+
+test('migrates an existing planned-task table before creating its completion index', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-legacy-test-'))
+  const path = join(directory, 'work-buddy.sqlite')
+  const legacy = new DatabaseSync(path)
+  legacy.exec(`CREATE TABLE planned_tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    project_id TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  )`)
+  legacy.close()
+  try {
+    const database = new WorkBuddyDatabase(path)
+    assert.equal(database.getSnapshot().plannedTasks.length, 0)
+    database.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('daily coverage and history split an interval that crosses midnight', async () => {
   await withDatabase(async (database) => {

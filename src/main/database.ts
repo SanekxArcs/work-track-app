@@ -425,7 +425,6 @@ export class WorkBuddyDatabase {
       CREATE INDEX IF NOT EXISTS idx_intervals_start ON time_intervals(started_at);
       CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
       CREATE INDEX IF NOT EXISTS idx_planned_tasks_created ON planned_tasks(created_at);
-      CREATE INDEX IF NOT EXISTS idx_planned_tasks_open ON planned_tasks(completed_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_rest_intervals_rest ON rest_intervals(rest_id);
       CREATE INDEX IF NOT EXISTS idx_rest_sessions_created ON rest_sessions(created_at);
     `)
@@ -434,6 +433,7 @@ export class WorkBuddyDatabase {
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
     const plannedTaskColumns = this.db.prepare('PRAGMA table_info(planned_tasks)').all() as Array<{ name: string }>
     if (!plannedTaskColumns.some((column) => column.name === 'completed_at')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN completed_at INTEGER')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_planned_tasks_open ON planned_tasks(completed_at, created_at)')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
     this.db.exec("DELETE FROM secrets WHERE key IN ('sanity_api_token', 'google_calendar_tokens'); DROP TABLE IF EXISTS processed_remote_commands;")
