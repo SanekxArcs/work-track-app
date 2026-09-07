@@ -1,13 +1,15 @@
+import { randomBytes } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { ReminderService } from './reminders'
+import { WORK_BUDDY_LOCAL_PORT, WorkBuddyLocalServer } from './local-server'
 import { fitWindowHeight, isBottomAnchored } from './window-layout'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
-import type { AppSettings, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
+import type { AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -17,6 +19,7 @@ let isQuitting = false
 let database: WorkBuddyDatabase
 let reminders: ReminderService
 let gemini: GeminiService
+let localServer: WorkBuddyLocalServer | null = null
 let pendingBackup: BackupData | null = null
 let snapTimer: NodeJS.Timeout | undefined
 let applyingSnap = false
@@ -25,6 +28,7 @@ let manualHeight = 760
 let programmaticHeight: number | undefined
 let compactBottomAnchored = false
 let editorRestoreBounds: Electron.Rectangle | null = null
+let registeredToggleShortcut: string | null = null
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -95,6 +99,29 @@ function toggleWindow(): void {
     mainWindow.focus()
     mainWindow.moveTop()
   }
+}
+
+function registerToggleShortcut(shortcut: string): void {
+  if (registeredToggleShortcut === shortcut && globalShortcut.isRegistered(shortcut)) return
+  let registered = false
+  try {
+    registered = globalShortcut.register(shortcut, toggleWindow)
+  } catch {
+    registered = false
+  }
+  if (!registered) throw new Error('The selected global shortcut is unavailable.')
+  if (registeredToggleShortcut && registeredToggleShortcut !== shortcut) globalShortcut.unregister(registeredToggleShortcut)
+  registeredToggleShortcut = shortcut
+}
+
+function applyAppSettings(settings: AppSettings, ensureGlobalShortcut = false): AppSnapshot {
+  const current = database.getSettings()
+  if (current.globalShortcut !== settings.globalShortcut || (ensureGlobalShortcut && !globalShortcut.isRegistered(settings.globalShortcut))) registerToggleShortcut(settings.globalShortcut)
+  const result = database.updateSettings(settings)
+  app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
+  mainWindow?.setAlwaysOnTop(result.settings.alwaysOnTop, result.settings.alwaysOnTop ? 'pop-up-menu' : 'normal')
+  updateTrayMenu()
+  return result
 }
 
 function updateTrayMenu(): void {
@@ -188,6 +215,152 @@ function createWindow(): void {
 
 function emitChanged(): void {
   mainWindow?.webContents.send(channels.dataChanged)
+  localServer?.notifyChanged()
+}
+
+function extensionAccessKey(): string {
+  const stored = database.getSecret('extension_access_key')
+  if (stored) {
+    if (stored.startsWith('plain:')) return stored.slice('plain:'.length)
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+    return safeStorage.decryptString(Buffer.from(stored, 'base64'))
+  }
+
+  const key = randomBytes(32).toString('base64url')
+  database.setSecret('extension_access_key', safeStorage.isEncryptionAvailable()
+    ? safeStorage.encryptString(key).toString('base64')
+    : `plain:${key}`)
+  return key
+}
+
+function emitExtensionServerStatus(): void {
+  mainWindow?.webContents.send(channels.extensionServerChanged, localServer?.getStatus() ?? {
+    running: false,
+    port: WORK_BUDDY_LOCAL_PORT,
+    connections: 0,
+    error: 'The extension server has not started.'
+  })
+}
+
+async function invokeExtensionApi(method: string, args: unknown[]): Promise<unknown> {
+  const [first, second] = args
+  switch (method) {
+    case 'getAppVersion': return app.getVersion()
+    case 'getSnapshot': return database.getSnapshot()
+    case 'getHistory': return database.getHistory(first as number | undefined)
+    case 'getDaySnapshot': return database.getDaySnapshot(first as string)
+    case 'getOvertimeOverview': return database.getOvertimeOverview()
+    case 'setOvertimeRedeemed': return database.setOvertimeRedeemed(first as string, second as boolean)
+    case 'startWorkday': return database.startWorkday()
+    case 'endWorkday': return database.endWorkday()
+    case 'startTask': return database.startTask(first as StartTaskInput)
+    case 'pauseTask': return database.pauseTask(first as string)
+    case 'resumeTask': return database.resumeTask(first as string, second as StartMode)
+    case 'stopTask': return database.stopTask(first as string)
+    case 'pauseAllTasks': return database.pauseAllTasks()
+    case 'stopAllTasks': return database.stopAllTasks()
+    case 'startRest': return database.startRest(first as RestType)
+    case 'pauseRest': return database.pauseRest(first as string)
+    case 'resumeRest': return database.resumeRest(first as string)
+    case 'completeRest': return database.completeRest(first as string)
+    case 'skipRest': return database.skipRest(first as RestType)
+    case 'updateRestStart': return database.updateRestStart(first as string, second as number)
+    case 'setRestAlarmMuted': return database.setRestAlarmMuted(first as string, second as boolean)
+    case 'updateTask': return database.updateTask(first as TaskUpdateInput)
+    case 'mergeTasks': return database.mergeTasks(first as TaskMergeInput)
+    case 'deleteTask': return database.deleteTask(first as string)
+    case 'createPlannedTask': return database.createPlannedTask(first as PlannedTaskInput)
+    case 'updatePlannedTask': return database.updatePlannedTask(first as PlannedTaskUpdateInput)
+    case 'deletePlannedTask': return database.deletePlannedTask(first as string)
+    case 'createProject': return database.createProject(first as ProjectInput)
+    case 'updateProject': return database.updateProject(first as ProjectUpdateInput)
+    case 'updateSettings': {
+      return applyAppSettings(first as AppSettings)
+    }
+    case 'saveAiKey': {
+      const clean = (first as string).trim()
+      if (!clean) database.deleteSecret('gemini_api_key')
+      else {
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+        database.setSecret('gemini_api_key', safeStorage.encryptString(clean).toString('base64'))
+      }
+      return database.getSnapshot()
+    }
+    case 'exportBackup': {
+      if (!mainWindow) return null
+      const date = localDateKey(Date.now())
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: database.getSettings().locale === 'uk' ? 'Зберегти резервну копію' : 'Save backup',
+        defaultPath: join(app.getPath('downloads'), `work-buddy-backup-${date}.workbuddy.json`),
+        filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
+      })
+      if (result.canceled || !result.filePath) return null
+      await writeFile(result.filePath, JSON.stringify(database.exportBackup(), null, 2), 'utf8')
+      return { path: result.filePath }
+    }
+    case 'chooseBackupImport': {
+      if (!mainWindow) return null
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: database.getSettings().locale === 'uk' ? 'Обрати резервну копію' : 'Choose backup',
+        properties: ['openFile'],
+        filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
+      })
+      const path = result.filePaths[0]
+      if (result.canceled || !path) return null
+      pendingBackup = database.parseBackup(await readFile(path, 'utf8'))
+      return database.getBackupPreview(pendingBackup)
+    }
+    case 'applyBackupImport': {
+      if (!pendingBackup) throw new Error('Choose a backup file first')
+      const result = database.importBackup(pendingBackup, first as BackupImportMode)
+      pendingBackup = null
+      return result
+    }
+    case 'exportDayCalendar': {
+      if (!mainWindow) return null
+      const date = first as string
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: database.getSettings().locale === 'uk' ? 'Експортувати день у календар' : 'Export day to calendar',
+        defaultPath: join(app.getPath('downloads'), `work-buddy-${date}.ics`),
+        filters: [{ name: 'Calendar file', extensions: ['ics'] }]
+      })
+      if (result.canceled || !result.filePath) return null
+      await writeFile(result.filePath, database.createDayCalendarIcs(date), 'utf8')
+      return { path: result.filePath }
+    }
+    case 'chooseNotificationSound': {
+      if (!mainWindow) return null
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: database.getSettings().locale === 'uk' ? 'Обрати звук нагадування' : 'Choose reminder sound',
+        properties: ['openFile'],
+        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }]
+      })
+      const path = result.filePaths[0]
+      if (result.canceled || !path) return null
+      return { path, name: basename(path), dataUrl: await audioDataUrl(path) }
+    }
+    case 'suggestTask': return gemini.suggestTask(first as string)
+    case 'interpretVoiceTask': return gemini.interpretVoiceTask(first as VoiceInput, second as string | undefined)
+    case 'transcribeVoice': return gemini.transcribeVoice(first as VoiceInput)
+    case 'summarizeDay': return gemini.summarizeDay()
+    case 'notify': {
+      if (Notification.isSupported()) new Notification(first as NotificationInput).show()
+      return undefined
+    }
+    case 'getCustomSoundData': {
+      const path = database.getSettings().notifications.customSoundPath
+      return path ? audioDataUrl(path) : ''
+    }
+    // Window controls belong to Electron. They intentionally become harmless
+    // no-ops in the browser drawer, whose own shell controls visibility.
+    case 'setWindowMode': return null
+    case 'setWindowHeight':
+    case 'setWindowEditor':
+    case 'fitWindowToContent':
+    case 'setWindowView':
+    case 'minimizeToTray': return undefined
+    default: throw new Error(`Unsupported extension action: ${method}`)
+  }
 }
 
 function registerIpc(): void {
@@ -208,6 +381,11 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.endWorkday, () => {
     const result = database.endWorkday()
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.updateWorkdayStart, (_, startedAt: number) => {
+    const result = database.updateWorkdayStart(startedAt)
     emitChanged()
     return result
   })
@@ -317,12 +495,9 @@ function registerIpc(): void {
     return result
   })
   ipcMain.handle(channels.updateSettings, (_, settings: AppSettings) => {
-    const result = database.updateSettings(settings)
-    app.setLoginItemSettings({ openAtLogin: settings.autoStart })
-    mainWindow?.setAlwaysOnTop(settings.alwaysOnTop, settings.alwaysOnTop ? 'pop-up-menu' : 'normal')
-    updateTrayMenu()
-    return result
+    return applyAppSettings(settings)
   })
+  ipcMain.handle(channels.setGlobalShortcut, (_, shortcut: string) => applyAppSettings({ ...database.getSettings(), globalShortcut: shortcut }, true))
   ipcMain.handle(channels.saveAiKey, (_, key: string) => {
     const clean = key.trim()
     if (!clean) database.deleteSecret('gemini_api_key')
@@ -468,6 +643,13 @@ function registerIpc(): void {
     return path ? audioDataUrl(path) : ''
   })
   ipcMain.handle(channels.minimize, () => mainWindow?.hide())
+  ipcMain.handle(channels.extensionServerStatus, () => localServer?.getStatus() ?? {
+    running: false,
+    port: WORK_BUDDY_LOCAL_PORT,
+    connections: 0,
+    error: 'The extension server has not started.'
+  })
+  ipcMain.handle(channels.extensionAccessKey, () => extensionAccessKey())
 }
 
 const singleInstance = process.env.ELECTRON_RENDERER_URL ? true : app.requestSingleInstanceLock()
@@ -487,13 +669,25 @@ else {
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
     registerIpc()
+    localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
+    localServer.onStatusChange(emitExtensionServerStatus)
+    await localServer.start().catch(() => {
+      // A port conflict must not block the time tracker. The settings page
+      // surfaces the precise status for diagnosis.
+      emitExtensionServerStatus()
+    })
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
     tray = new Tray(createTrayIcon())
     tray.setToolTip('Work Buddy')
     tray.on('click', toggleWindow)
     updateTrayMenu()
-    globalShortcut.register('CommandOrControl+Shift+T', toggleWindow)
+    try {
+      registerToggleShortcut(database.getSettings().globalShortcut)
+    } catch {
+      // Another app can reserve a global shortcut. Work Buddy remains usable
+      // through its tray until the user chooses an available combination.
+    }
     reminders = new ReminderService(database, (sound, volume) => {
       if (sound === 'system') shell.beep()
       else mainWindow?.webContents.send(channels.playSound, sound, volume)
@@ -509,6 +703,7 @@ else {
 app.on('before-quit', () => {
   isQuitting = true
   reminders?.stop()
+  void localServer?.stop()
   database?.close()
 })
 

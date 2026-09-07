@@ -14,17 +14,8 @@ function minutesSinceMidnight(time: string): number {
   return (hours || 0) * 60 + (minutes || 0)
 }
 
-/** The scheduled length of a day, including overnight schedules. */
-export function scheduledWorkdayDurationMs(settings: AppSettings): number {
-  const start = minutesSinceMidnight(settings.workday.startTime)
-  const end = minutesSinceMidnight(settings.workday.endTime)
-  return (end > start ? end - start : end + 24 * 60 - start) * MINUTE
-}
-
-/** The usual clock-time finish on the calendar date that this workday began. */
-export function scheduledWorkdayClockEndAt(settings: AppSettings, workday: Workday | null | undefined): number | null {
-  if (!workday) return null
-  const plannedEnd = new Date(plannedEndOnWorkdayDate(workday.startedAt, settings.workday.endTime))
+function plannedEndAt(settings: AppSettings, workdayStartedAt: number): number {
+  const plannedEnd = new Date(plannedEndOnWorkdayDate(workdayStartedAt, settings.workday.endTime))
   if (minutesSinceMidnight(settings.workday.endTime) <= minutesSinceMidnight(settings.workday.startTime)) {
     plannedEnd.setDate(plannedEnd.getDate() + 1)
   }
@@ -43,7 +34,7 @@ function lunchOverageMs(settings: AppSettings, workday: Workday, rests: RestSess
 export function scheduledWorkdayEndAt(settings: AppSettings, workday: Workday | null | undefined, rests: RestSession[], now = Date.now()): number | null {
   if (!workday || workday.endedAt !== null) return null
 
-  return workday.startedAt + scheduledWorkdayDurationMs(settings) + lunchOverageMs(settings, workday, rests, now)
+  return plannedEndAt(settings, workday.startedAt) + lunchOverageMs(settings, workday, rests, now)
 }
 
 /**
@@ -62,7 +53,10 @@ export function workdayOvertimeMs(
   const endedAt = workday.endedAt ?? now
   if (endedAt <= workday.startedAt) return 0
 
-  const threshold = workday.startedAt + scheduledWorkdayDurationMs(settings) + lunchOverageMs(settings, workday, rests, endedAt)
+  const plannedEnd = plannedEndAt(settings, workday.startedAt)
+  const threshold = workday.startedAt >= plannedEnd
+    ? workday.startedAt
+    : plannedEnd + lunchOverageMs(settings, workday, rests, endedAt)
   if (!workIntervals) return Math.max(0, endedAt - threshold)
 
   const ranges = workIntervals

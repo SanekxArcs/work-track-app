@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion } from '../lib/motion-shim'
 import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square } from 'lucide-react'
-import type { AppSnapshot, StartMode, Task } from '@shared/types'
-import { restRemaining } from '@shared/rest'
-import { scheduledWorkdayEndAt } from '@shared/workday'
+import type { AppSnapshot, StartMode, Task } from '../shared/types'
+import { restRemaining } from '../shared/rest'
+import { scheduledWorkdayEndAt } from '../shared/workday'
 import { DaySummary } from './components/DaySummary'
 import { SettingsPage } from './components/Settings'
 import { TaskCard } from './components/TaskCard'
@@ -13,7 +13,6 @@ import { PlannedTasksPanel } from './components/PlannedTasksPanel'
 import { translator } from './lib/i18n'
 import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib/time'
 import { playNotificationSound } from './lib/sounds'
-import { localDayBounds } from '@shared/local-date'
 
 type Tab = 'focus' | 'day' | 'settings'
 
@@ -83,27 +82,11 @@ export default function App(): React.JSX.Element {
   const workedMs = unionDuration(dayIntervals(workdayTasks, now), now)
   const activeRest = snapshot?.rests.find((rest) => rest.status !== 'completed')
   const restRunning = activeRest?.status === 'running'
-  const lunchActive = activeRest?.type === 'lunch'
   const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : 1
   const compactPrimaryTask = activeRest ? null : liveTasks[0] ?? focusTasks[0] ?? null
   const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
   const scheduledEndAt = snapshot ? scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, now) : null
   const showFocusEndDay = scheduledEndAt !== null && now >= scheduledEndAt
-  const [todayStart, todayEnd] = localDayBounds(now)
-  const focusTimelineSegments = workdayTasks.flatMap((task) => {
-    const project = snapshot?.projects.find((item) => item.id === task.projectId)
-    const label = taskLabel(task)
-    return task.intervals.flatMap((interval) => {
-      const startedAt = Math.max(interval.startedAt, todayStart)
-      const endedAt = Math.min(interval.endedAt ?? now, todayEnd)
-      return endedAt > startedAt ? [{ id: interval.id, startedAt, endedAt, color: project?.color ?? '#b8e986', label }] : []
-    })
-  })
-  const focusTimelineStart = focusTimelineSegments.length ? Math.min(...focusTimelineSegments.map((segment) => segment.startedAt)) : now
-  const focusTimelineEnd = focusTimelineSegments.length
-    ? Math.max(focusTimelineStart + 60_000, ...focusTimelineSegments.map((segment) => segment.endedAt))
-    : now
-  const focusTimelineSpan = focusTimelineEnd - focusTimelineStart
 
   useEffect(() => {
     if (!compact) return
@@ -316,31 +299,22 @@ export default function App(): React.JSX.Element {
                   <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
                     <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />
                     {openWorkdayStartedAt && <section className="focus-hero">
-                      <div className="focus-hero__top">
-                        <div>
-                          <span className="eyebrow">{lunchActive ? t('workedToday') : liveTasks.length ? `${liveTasks.length} ${t('activeNow')}` : t('today')}</span>
-                          <strong>{formatDuration(lunchActive ? workedMs : liveTotal)}</strong>
-                        </div>
-                        {!lunchActive && <div className="focus-hero__actions no-drag">
-                          <button disabled={!liveTasks.length} onClick={() => mutate(window.workBuddy.pauseAllTasks())}><Pause size={17} fill="currentColor" /><span>{t('pauseAll')}</span></button>
-                        </div>}
+                      <div>
+                        <span className="eyebrow">{liveTasks.length ? `${liveTasks.length} ${t('activeNow')}` : t('today')}</span>
+                        <strong>{formatDuration(liveTotal)}</strong>
                       </div>
-                      {(lunchActive || focusTimelineSegments.length > 0) && <div className="focus-timeline" aria-label={t('timeline')}>
-                        {focusTimelineSegments.map((segment) => {
-                          const left = ((segment.startedAt - focusTimelineStart) / focusTimelineSpan) * 100
-                          const width = ((segment.endedAt - segment.startedAt) / focusTimelineSpan) * 100
-                          return <span key={segment.id} title={`${segment.label} · ${formatDuration(segment.endedAt - segment.startedAt, true)}`} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: segment.color }} />
-                        })}
-                      </div>}
+                      <div className="focus-hero__actions no-drag">
+                        <button disabled={!liveTasks.length} onClick={() => mutate(window.workBuddy.pauseAllTasks())}><Pause size={17} fill="currentColor" /><span>{t('pauseAll')}</span></button>
+                      </div>
                     </section>}
 
                     <div className="focus-actions">
-                      {!lunchActive && <div className="focus-actions__primary">
+                      <div className="focus-actions__primary">
                         <button className="primary-button" disabled={restRunning} onClick={() => snapshot.workday?.endedAt === null ? startInstant('parallel') : startDayWithTask()}><Plus size={17} />{snapshot.workday?.endedAt === null ? (liveTasks.length ? t('addParallel') : t('startTask')) : t('startDay')}</button>
                         {liveTasks.length > 0 && <button className="secondary-button" disabled={restRunning} onClick={() => startInstant('switch')}>{t('switchTask')}</button>}
-                      </div>}
-                      <div className={`focus-actions__tools ${openWorkdayStartedAt && !lunchActive ? '' : 'focus-actions__tools--planned-only'}`}>
-                        {!lunchActive && snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
+                      </div>
+                      <div className={`focus-actions__tools ${openWorkdayStartedAt ? '' : 'focus-actions__tools--planned-only'}`}>
+                        {snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
                         <button className={`secondary-button planned-toggle ${showPlannedTasks ? 'active' : ''}`} onClick={() => setShowPlannedTasks((current) => !current)}><ListTodo size={15} />{t('plannedTasks')}</button>
                       </div>
                     </div>

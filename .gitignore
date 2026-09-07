@@ -12,3 +12,5 @@ release-*/
 *.log
 .DS_Store
 *.tsbuildinfo
+.plasmo/
+apps/extension/build/

@@ -24,8 +24,6 @@ export interface PlannedTask {
   title: string
   projectId: string | null
   notes: string
-  /** Local clock time (HH:MM) for a daily reminder, or null when no reminder is set. */
-  reminderTime: string | null
   createdAt: number
   /** Undefined is accepted only when importing backups created before completion tracking. */
   completedAt?: number | null
@@ -89,7 +87,6 @@ export interface AppSettings {
   theme: 'dark' | 'light' | 'system'
   alwaysOnTop: boolean
   autoStart: boolean
-  globalShortcut: string
   workday: {
     startReminder: boolean
     startTime: string
@@ -203,7 +200,6 @@ export interface PlannedTaskInput {
   title: string
   projectId?: string | null
   notes?: string
-  reminderTime?: string | null
 }
 
 export interface PlannedTaskUpdateInput {
@@ -211,7 +207,6 @@ export interface PlannedTaskUpdateInput {
   title: string
   projectId?: string | null
   notes?: string
-  reminderTime?: string | null
 }
 
 export interface NotificationInput {
@@ -282,7 +277,6 @@ export interface WorkBuddyApi {
   setOvertimeRedeemed: (date: string, redeemed: boolean) => Promise<OvertimeOverview>
   startWorkday: () => Promise<AppSnapshot>
   endWorkday: () => Promise<AppSnapshot>
-  updateWorkdayStart: (startedAt: number) => Promise<AppSnapshot>
   startTask: (input: StartTaskInput) => Promise<AppSnapshot>
   pauseTask: (id: string) => Promise<AppSnapshot>
   resumeTask: (id: string, mode: StartMode) => Promise<AppSnapshot>
@@ -305,7 +299,6 @@ export interface WorkBuddyApi {
   createProject: (input: ProjectInput) => Promise<AppSnapshot>
   updateProject: (input: ProjectUpdateInput) => Promise<AppSnapshot>
   updateSettings: (settings: AppSettings) => Promise<AppSnapshot>
-  setGlobalShortcut: (shortcut: string) => Promise<AppSnapshot>
   saveAiKey: (key: string) => Promise<AppSnapshot>
   exportBackup: () => Promise<{ path: string } | null>
   chooseBackupImport: () => Promise<BackupPreview | null>

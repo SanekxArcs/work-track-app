@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
+import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
@@ -11,6 +11,7 @@ const api: WorkBuddyApi = {
   setOvertimeRedeemed: (date: string, redeemed: boolean): Promise<OvertimeOverview> => ipcRenderer.invoke(channels.overtimeRedeemed, date, redeemed),
   startWorkday: () => ipcRenderer.invoke(channels.startWorkday),
   endWorkday: () => ipcRenderer.invoke(channels.endWorkday),
+  updateWorkdayStart: (startedAt: number) => ipcRenderer.invoke(channels.updateWorkdayStart, startedAt),
   startTask: (input: StartTaskInput) => ipcRenderer.invoke(channels.startTask, input),
   pauseTask: (id: string) => ipcRenderer.invoke(channels.pauseTask, id),
   resumeTask: (id: string, mode: StartMode) => ipcRenderer.invoke(channels.resumeTask, id, mode),
@@ -33,6 +34,7 @@ const api: WorkBuddyApi = {
   createProject: (input: ProjectInput) => ipcRenderer.invoke(channels.createProject, input),
   updateProject: (input: ProjectUpdateInput) => ipcRenderer.invoke(channels.updateProject, input),
   updateSettings: (settings: AppSettings) => ipcRenderer.invoke(channels.updateSettings, settings),
+  setGlobalShortcut: (shortcut: string) => ipcRenderer.invoke(channels.setGlobalShortcut, shortcut),
   saveAiKey: (key: string) => ipcRenderer.invoke(channels.saveAiKey, key),
   exportBackup: (): Promise<{ path: string } | null> => ipcRenderer.invoke(channels.backupExport),
   chooseBackupImport: (): Promise<BackupPreview | null> => ipcRenderer.invoke(channels.backupChoose),
@@ -51,6 +53,13 @@ const api: WorkBuddyApi = {
   chooseNotificationSound: () => ipcRenderer.invoke(channels.chooseSound),
   getCustomSoundData: () => ipcRenderer.invoke(channels.soundData),
   minimizeToTray: () => ipcRenderer.invoke(channels.minimize),
+  getExtensionServerStatus: (): Promise<ExtensionServerStatus> => ipcRenderer.invoke(channels.extensionServerStatus),
+  getExtensionAccessKey: (): Promise<string> => ipcRenderer.invoke(channels.extensionAccessKey),
+  onExtensionServerStatus: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: ExtensionServerStatus): void => callback(status)
+    ipcRenderer.on(channels.extensionServerChanged, listener)
+    return () => ipcRenderer.removeListener(channels.extensionServerChanged, listener)
+  },
   onDataChanged: (callback) => {
     const listener = (): void => callback()
     ipcRenderer.on(channels.dataChanged, listener)

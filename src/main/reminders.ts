@@ -1,7 +1,7 @@
 import { Notification, powerMonitor } from 'electron'
 import type { AppSettings, Locale, NotificationSound, WellnessAction } from '../shared/types'
 import { breakStreakStartedAt, dueRestTypes, restRemaining } from '../shared/rest'
-import { scheduledWorkdayEndAt } from '../shared/workday'
+import { scheduledWorkdayClockEndAt, scheduledWorkdayEndAt } from '../shared/workday'
 import type { WorkBuddyDatabase } from './database'
 
 const MINUTE = 60_000
@@ -19,6 +19,10 @@ const copy = {
     startBody: 'Я тут і готовий рахувати. Запускай першу задачу.',
     endTitle: 'На сьогодні досить, чемпіоне',
     endBody: 'Збережи прогрес, зупини таймери й іди жити життя.',
+    endLaterTitle: 'Звичний час завершення вже настав',
+    endLaterBody: (minutes: number) => `Ти почав день пізніше, тож лишилося ще ${minutes} хв. Фініш рахуємо від твого фактичного старту.`,
+    plannedTaskTitle: 'Час для запланованої задачі ⏰',
+    plannedTaskBody: (title: string, notes: string) => notes ? `${title} — ${notes}` : title,
     idleTitle: 'Ти кудись відійшов?',
     idleBody: (minutes: number) => `Не бачу активності вже ${minutes} хв. Перевір, чи варто залишити цей час.`,
     restDoneTitle: 'Таймер відпочинку закінчився ⏰',
@@ -34,6 +38,10 @@ const copy = {
     startBody: "I'm here and ready to count. Start your first task.",
     endTitle: "That's plenty for today, champ",
     endBody: 'Save your progress, stop the timers, and go enjoy real life.',
+    endLaterTitle: 'Your usual finish time is here',
+    endLaterBody: (minutes: number) => `You started later today, so you have ${minutes} min left. Your finish is based on your actual start.`,
+    plannedTaskTitle: 'Time for your planned task ⏰',
+    plannedTaskBody: (title: string, notes: string) => notes ? `${title} — ${notes}` : title,
     idleTitle: 'Did you step away?',
     idleBody: (minutes: number) => `No activity for ${minutes} minutes. Check whether you want to keep this time.`,
     restDoneTitle: 'Your rest timer is up ⏰',
@@ -119,14 +127,25 @@ export class ReminderService {
     const text = copy[locale]
     const nowMinute = currentMinute(now)
     const activeTasks = snapshot.tasks.filter((task) => task.status === 'running')
-    const openWorkday = snapshot.workday && snapshot.workday.endedAt === null
+    const workday = snapshot.workday
+    const openWorkday = workday?.endedAt === null
 
     if (!openWorkday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
       this.once(now, 'start', () => this.show(text.startTitle, text.startBody))
     }
     const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests, now)
+    const usualClockEndAt = scheduledWorkdayClockEndAt(settings, snapshot.workday)
+    if (openWorkday && settings.workday.endReminder && scheduledEndAt !== null && usualClockEndAt !== null && scheduledEndAt > usualClockEndAt && now >= usualClockEndAt && now < scheduledEndAt) {
+      const remainingMinutes = Math.max(1, Math.ceil((scheduledEndAt - now) / MINUTE))
+      this.once(now, `end-later:${workday.id}`, () => this.show(text.endLaterTitle, text.endLaterBody(remainingMinutes)))
+    }
     if (openWorkday && settings.workday.endReminder && scheduledEndAt !== null && now >= scheduledEndAt) {
-      this.once(now, 'end', () => this.show(text.endTitle, text.endBody))
+      this.once(now, `end:${workday.id}`, () => this.show(text.endTitle, text.endBody))
+    }
+    for (const task of snapshot.plannedTasks) {
+      if (task.reminderTime && nowMinute >= minuteOfDay(task.reminderTime)) {
+        this.once(now, `planned-task:${task.id}`, () => this.show(text.plannedTaskTitle, text.plannedTaskBody(task.title, task.notes)))
+      }
     }
     const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
     if (due.includes('break')) {

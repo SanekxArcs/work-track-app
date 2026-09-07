@@ -1,0 +1,33 @@
+{
+  "name": "work-buddy-extension",
+  "displayName": "Work Buddy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local browser companion for Work Buddy",
+  "scripts": {
+    "dev": "node ./node_modules/plasmo/bin/index.mjs dev",
+    "build": "node ./node_modules/plasmo/bin/index.mjs build",
+    "package": "node ./node_modules/plasmo/bin/index.mjs package"
+  },
+  "dependencies": {
+    "lucide-react": "1.33.0",
+    "motion": "13.1.0",
+    "plasmo": "0.90.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.2.7",
+    "@types/node": "22.19.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.5",
+    "typescript": "5.9.3"
+  },
+  "manifest": {
+    "permissions": ["storage", "notifications", "alarms"],
+    "host_permissions": ["http://127.0.0.1:49837/*"],
+    "content_security_policy": {
+      "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://127.0.0.1:49837"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'motion/react'
+import { motion } from '../../lib/motion-shim'
 import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, Check, ChevronDown, ChevronUp, Coffee, Copy, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Pencil, Play, PlugZap, Plus, Sparkles, Trash2, Upload, Volume2, X } from 'lucide-react'
-import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
+import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '../../shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
 import { CustomSelect } from './CustomSelect'
@@ -25,20 +25,6 @@ function shiftTime(value: string, minutes: number): string {
   const [hours, mins] = value.split(':').map(Number)
   const total = (hours * 60 + mins + minutes + 24 * 60) % (24 * 60)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
-}
-
-function shortcutLabel(shortcut: string): string {
-  return shortcut.replace('CommandOrControl', 'Ctrl').replace('Super', 'Win').replaceAll('+', ' + ')
-}
-
-function shortcutFromKey(event: React.KeyboardEvent<HTMLButtonElement>): string | null {
-  const specialKeys: Record<string, string> = {
-    ' ': 'Space', Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Delete: 'Delete', Backspace: 'Backspace', Tab: 'Tab'
-  }
-  if (['Control', 'Shift', 'Alt', 'Meta', 'OS', 'Dead'].includes(event.key)) return null
-  const key = specialKeys[event.key] ?? (/^F(?:[1-9]|1\d|2[0-4])$/i.test(event.key) ? event.key.toUpperCase() : /^[a-z0-9]$/i.test(event.key) ? event.key.toUpperCase() : null)
-  if (!key || (!event.ctrlKey && !event.altKey && !event.metaKey)) return null
-  return [event.ctrlKey && 'CommandOrControl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Super', key].filter(Boolean).join('+')
 }
 
 export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.JSX.Element {
@@ -65,7 +51,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [extensionKey, setExtensionKey] = useState('')
   const [showExtensionKey, setShowExtensionKey] = useState(false)
   const [extensionKeyCopied, setExtensionKeyCopied] = useState(false)
-  const [shortcutError, setShortcutError] = useState('')
   const lastSynced = useRef(JSON.stringify(snapshot.settings))
   const saveRevision = useRef(0)
 
@@ -119,28 +104,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   }
 
   const setLocale = (locale: Locale): void => patch('locale', locale)
-
-  const saveGlobalShortcut = async (shortcut: string): Promise<void> => {
-    setShortcutError('')
-    try {
-      const result = await window.workBuddy.setGlobalShortcut(shortcut)
-      lastSynced.current = JSON.stringify(result.settings)
-      onSnapshot(result)
-      setSettings(result.settings)
-    } catch {
-      setShortcutError(t('globalShortcutUnavailable'))
-    }
-  }
-
-  const captureGlobalShortcut = (event: React.KeyboardEvent<HTMLButtonElement>): void => {
-    event.preventDefault()
-    const shortcut = shortcutFromKey(event)
-    if (!shortcut) {
-      setShortcutError(t('globalShortcutNeedsModifier'))
-      return
-    }
-    void saveGlobalShortcut(shortcut)
-  }
 
   const setLunchCounting = (included: boolean): void => {
     setSettings((current) => ({
@@ -315,8 +278,6 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="settings-title"><Laptop2 size={17} /><div><h3>{t('appBehavior')}</h3></div></div>
         <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
         <div className="setting-line"><span>{t('autoStart')}</span><Toggle checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
-        <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
-        {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
       </section>
 
       <section className="settings-section extension-server-settings">

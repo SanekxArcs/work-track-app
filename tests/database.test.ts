@@ -209,6 +209,16 @@ test('does not let a delayed end-day command close a newer workday', async () =>
   })
 })
 
+test('lets an open workday start be corrected independently of tasks', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 10), () => database.startWorkday())
+    const updated = await atTime(at(26, 10), () => database.updateWorkdayStart(at(26, 8, 10)))
+
+    assert.equal(updated.workday?.startedAt, at(26, 8, 10))
+    assert.equal(scheduledWorkdayEndAt(updated.settings, updated.workday, updated.rests, at(26, 10)), at(26, 17, 10))
+  })
+})
+
 test('keeps breaks from before midnight in an overnight workday snapshot', async () => {
   await withDatabase(async (database) => {
     const settings = database.getSettings()
@@ -225,7 +235,7 @@ test('keeps breaks from before midnight in an overnight workday snapshot', async
     const snapshot = await atTime(at(27, 0, 10), () => database.getSnapshot())
     assert.equal(snapshot.rests.length, 1)
     assert.equal(snapshot.rests[0].type, 'lunch')
-    assert.equal(scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, at(27, 0, 10)), at(27, 6, 10))
+    assert.equal(scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, at(27, 0, 10)), at(27, 7, 10))
   })
 })
 
@@ -464,6 +474,18 @@ test('completes an attached planned task, hides it, and clears the link when del
 
     const detached = await atTime(at(26, 10), () => database.deletePlannedTask(plannedId))
     assert.equal(detached.tasks[0]?.plannedTaskId, null)
+  })
+})
+
+test('stores an optional daily reminder time for a planned task', async () => {
+  await withDatabase(async (database) => {
+    const created = await atTime(at(26, 9), () => database.createPlannedTask({ title: 'Call the dentist', reminderTime: '14:05' }))
+    const task = created.plannedTasks[0]
+    assert.equal(task?.reminderTime, '14:05')
+
+    const updated = await database.updatePlannedTask({ id: task!.id, title: task!.title, reminderTime: null })
+    assert.equal(updated.plannedTasks[0]?.reminderTime, null)
+    assert.throws(() => database.createPlannedTask({ title: 'Invalid alarm', reminderTime: '25:00' }), /HH:MM/)
   })
 })
 

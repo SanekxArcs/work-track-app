@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react'
-import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, Sparkles, X } from 'lucide-react'
-import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
+import { motion } from '../../lib/motion-shim'
+import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, RedoDot, Sparkles } from 'lucide-react'
+import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '../../shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
-import { scheduledWorkdayDurationMs, workdayOvertimeMs } from '@shared/workday'
-import { localDateKey, localDayBounds } from '@shared/local-date'
+import { workdayOvertimeMs } from '../../shared/workday'
+import { localDateKey, localDayBounds } from '../../shared/local-date'
 import { HistoryPanel } from './HistoryPanel'
-import { TimeInput } from './TimeInput'
 
 interface DaySummaryProps {
   snapshot: AppSnapshot
@@ -59,8 +58,14 @@ function historyLabel(value: string, locale: 'uk' | 'en'): string {
 
 function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs = 0): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
   const { workday, lunch } = snapshot.settings
-  const start = snapshot.workday?.startedAt ?? atTime(reference, workday.startTime)
-  const end = start + scheduledWorkdayDurationMs(snapshot.settings) + extraLunchMs
+  const start = atTime(reference, workday.startTime)
+  let end = atTime(reference, workday.endTime)
+  if (end <= start) {
+    const nextDay = new Date(end)
+    nextDay.setDate(nextDay.getDate() + 1)
+    end = nextDay.getTime()
+  }
+  end += extraLunchMs
   const actualRests = snapshot.rests.flatMap((rest) => rest.intervals.map((interval): ScheduleSegment => ({
     type: rest.type,
     start: Math.max(start, interval.startedAt),
@@ -90,9 +95,6 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeError, setMergeError] = useState('')
   const [timelineLayout, setTimelineLayout] = useState<'lanes' | 'overlay'>('lanes')
-  const [editingWorkdayStart, setEditingWorkdayStart] = useState(false)
-  const [workdayStartTime, setWorkdayStartTime] = useState('')
-  const [workdayStartError, setWorkdayStartError] = useState('')
   const isHistorical = selectedDate !== todayKey
 
   useEffect(() => { void window.workBuddy.getHistory().then(setHistory).catch(() => undefined) }, [snapshot])
@@ -202,29 +204,6 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     }
   }
 
-  const startEditingWorkdayStart = (): void => {
-    if (!snapshot.workday || snapshot.workday.endedAt !== null) return
-    const date = new Date(snapshot.workday.startedAt)
-    setWorkdayStartTime(`${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`)
-    setWorkdayStartError('')
-    setEditingWorkdayStart(true)
-  }
-
-  const saveWorkdayStart = async (): Promise<void> => {
-    if (!snapshot.workday) return
-    const [hours, minutes] = workdayStartTime.split(':').map(Number)
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return
-    const correctedStart = new Date(snapshot.workday.startedAt)
-    correctedStart.setHours(hours, minutes, 0, 0)
-    try {
-      onSnapshot(await window.workBuddy.updateWorkdayStart(correctedStart.getTime()))
-      setEditingWorkdayStart(false)
-      setWorkdayStartError('')
-    } catch (error) {
-      setWorkdayStartError(error instanceof Error ? error.message : t('workdayStartUpdateError'))
-    }
-  }
-
   const metrics = [
     { label: t('workedToday'), value: formatDuration(coverage, true), icon: Clock3, tone: 'green' },
     { label: t('summedTime'), value: formatDuration(summed, true), icon: Layers3, tone: 'blue' },
@@ -240,8 +219,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
-          {startedAt && endedAt && <p>{hasOpenDay ? <button className="day-hero__start-time" onClick={startEditingWorkdayStart} title={t('editWorkdayStart')} aria-label={t('editWorkdayStart')}>{formatClock(startedAt, reportSnapshot.settings.locale)} <Pencil size={11} /></button> : formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : 'now'} · {formatDuration(span, true)}</p>}
-          {editingWorkdayStart && <div className="workday-start-editor"><label><span>{t('workdayStartedAt')}</span><TimeInput autoFocus value={workdayStartTime} onChange={setWorkdayStartTime} ariaLabel={t('workdayStartedAt')} /></label><button className="confirm" onClick={() => void saveWorkdayStart()} aria-label={t('save')}><Check size={13} /></button><button onClick={() => { setEditingWorkdayStart(false); setWorkdayStartError('') }} aria-label={t('cancel')}><X size={13} /></button>{workdayStartError && <small>{workdayStartError}</small>}</div>}
+          {startedAt && endedAt && <p>{formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : 'now'} · {formatDuration(span, true)}</p>}
         </div>
         <div className="day-hero__tools"><div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div></div>
       </section>}
@@ -255,7 +233,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
           ))}
           {reportNow >= schedule.start && reportNow <= schedule.end && <i className="schedule-progress__now" style={{ left: `${scheduleProgress}%` }} />}
         </div>
-        <div className="schedule-times"><span>{formatClock(schedule.start, reportSnapshot.settings.locale)}</span><span>{formatClock(schedule.end, reportSnapshot.settings.locale)}</span></div>
+        <div className="schedule-times"><span>{reportSnapshot.settings.workday.startTime}</span><span>{formatClock(schedule.end, reportSnapshot.settings.locale)}</span></div>
         <div className="schedule-legend"><span><i className="work" />{t('workSegment')}</span><span><i className="break" />{t('breakTaken')}</span><span><i className="lunch" />{t('lunchTaken')}</span></div>
         <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
       </section>}

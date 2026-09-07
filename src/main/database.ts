@@ -33,6 +33,7 @@ export const defaultSettings: AppSettings = {
   theme: 'dark',
   alwaysOnTop: true,
   autoStart: true,
+  globalShortcut: 'CommandOrControl+Shift+T',
   workday: {
     startReminder: true,
     startTime: '09:00',
@@ -88,7 +89,7 @@ type TaskRow = {
   created_at: number
   updated_at: number
 }
-type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; created_at: number; completed_at: number | null }
+type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; reminder_time: string | null; created_at: number; completed_at: number | null }
 type IntervalRow = { id: string; task_id: string; started_at: number; ended_at: number | null }
 type WorkdayRow = { id: string; started_at: number; ended_at: number | null }
 type RestRow = {
@@ -117,6 +118,18 @@ function isTimestamp(value: unknown): value is number {
 
 function isOptionalId(value: unknown): value is string | null {
   return value === null || isId(value)
+}
+
+function isReminderTime(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const match = value.match(/^(\d{2}):(\d{2})$/)
+  return match !== null && Number(match[1]) < 24 && Number(match[2]) < 60
+}
+
+function normalizeReminderTime(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || !value.trim()) return null
+  if (!isReminderTime(value)) throw new Error('Reminder time must be in HH:MM format')
+  return value
 }
 
 function hasUniqueIds(items: unknown[]): boolean {
@@ -161,7 +174,7 @@ function validateBackup(backup: BackupData): void {
     throw new Error('The selected backup has invalid projects')
   }
   const projectIds = new Set(backup.projects.map((item) => item.id))
-  if (!hasUniqueIds(backup.plannedTasks) || !backup.plannedTasks.every((item) => isId(item.title) && typeof item.notes === 'string' && isTimestamp(item.createdAt) && (item.completedAt === undefined || item.completedAt === null || isTimestamp(item.completedAt)) && isOptionalId(item.projectId) && (item.projectId === null || projectIds.has(item.projectId)))) {
+  if (!hasUniqueIds(backup.plannedTasks) || !backup.plannedTasks.every((item) => isId(item.title) && typeof item.notes === 'string' && isTimestamp(item.createdAt) && (item.reminderTime === undefined || item.reminderTime === null || isReminderTime(item.reminderTime)) && (item.completedAt === undefined || item.completedAt === null || isTimestamp(item.completedAt)) && isOptionalId(item.projectId) && (item.projectId === null || projectIds.has(item.projectId)))) {
     throw new Error('The selected backup has invalid planned tasks')
   }
   const plannedTaskIds = new Set(backup.plannedTasks.map((item) => item.id))
@@ -235,6 +248,19 @@ function unitNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback
 }
 
+function isGlobalShortcut(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const parts = value.split('+')
+  const key = parts.at(-1)
+  const modifiers = parts.slice(0, -1)
+  const allowedModifiers = new Set(['CommandOrControl', 'Alt', 'Shift', 'Super'])
+  const validKey = typeof key === 'string' && (/^[A-Z0-9]$/.test(key) || /^F(?:[1-9]|1\d|2[0-4])$/.test(key) || ['Space', 'Tab', 'Esc', 'Up', 'Down', 'Left', 'Right', 'Delete', 'Backspace'].includes(key))
+  return Boolean(key) && modifiers.length > 0 && modifiers.every((modifier) => allowedModifiers.has(modifier))
+    && new Set(modifiers).size === modifiers.length
+    && modifiers.some((modifier) => modifier === 'CommandOrControl' || modifier === 'Alt' || modifier === 'Super')
+    && validKey
+}
+
 function deepSettings(raw?: string): AppSettings {
   if (!raw) return structuredClone(defaultSettings)
   let parsed: unknown
@@ -267,6 +293,7 @@ function deepSettings(raw?: string): AppSettings {
     theme: stored.theme === 'light' || stored.theme === 'system' ? stored.theme : 'dark',
     alwaysOnTop: typeof stored.alwaysOnTop === 'boolean' ? stored.alwaysOnTop : defaultSettings.alwaysOnTop,
     autoStart: typeof stored.autoStart === 'boolean' ? stored.autoStart : defaultSettings.autoStart,
+    globalShortcut: isGlobalShortcut(stored.globalShortcut) ? stored.globalShortcut : defaultSettings.globalShortcut,
     workday: {
       startReminder: typeof storedWorkday.startReminder === 'boolean' ? storedWorkday.startReminder : defaultSettings.workday.startReminder,
       startTime: isClockTime(storedWorkday.startTime) ? storedWorkday.startTime : defaultSettings.workday.startTime,
@@ -359,6 +386,7 @@ export class WorkBuddyDatabase {
         title TEXT NOT NULL,
         project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         notes TEXT NOT NULL DEFAULT '',
+        reminder_time TEXT,
         created_at INTEGER NOT NULL,
         completed_at INTEGER
       );
@@ -433,6 +461,7 @@ export class WorkBuddyDatabase {
     if (!taskColumns.some((column) => column.name === 'planned_task_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN planned_task_id TEXT REFERENCES planned_tasks(id) ON DELETE SET NULL')
     const plannedTaskColumns = this.db.prepare('PRAGMA table_info(planned_tasks)').all() as Array<{ name: string }>
     if (!plannedTaskColumns.some((column) => column.name === 'completed_at')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN completed_at INTEGER')
+    if (!plannedTaskColumns.some((column) => column.name === 'reminder_time')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN reminder_time TEXT')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_planned_tasks_open ON planned_tasks(completed_at, created_at)')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
@@ -492,7 +521,7 @@ export class WorkBuddyDatabase {
       })
     )
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
-      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at })
+      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at })
     )
 
     const taskRows = this.db
@@ -676,7 +705,7 @@ export class WorkBuddyDatabase {
       (row): Project => ({ id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at })
     )
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
-      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at })
+      (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at })
     )
     const taskRows = this.db.prepare(
       `SELECT DISTINCT t.* FROM tasks t JOIN time_intervals i ON i.task_id = t.id
@@ -709,7 +738,7 @@ export class WorkBuddyDatabase {
       id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), createdAt: row.created_at
     }))
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at').all() as PlannedTaskRow[]).map((row): PlannedTask => ({
-      id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, createdAt: row.created_at, completedAt: row.completed_at
+      id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at
     }))
     const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
     const tasks = (this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as TaskRow[]).map((row): Task => ({
@@ -806,8 +835,8 @@ export class WorkBuddyDatabase {
       const onConflict = (replace: string): string => mode === 'merge' ? 'DO NOTHING' : `DO UPDATE SET ${replace}`
       const project = this.db.prepare(`INSERT INTO projects (id, name, color, archived, created_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('name = excluded.name, color = excluded.color, archived = excluded.archived, created_at = excluded.created_at')}`)
-      const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, created_at = excluded.created_at, completed_at = excluded.completed_at')}`)
+      const plannedTask = this.db.prepare(`INSERT INTO planned_tasks (id, title, project_id, notes, reminder_time, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, notes = excluded.notes, reminder_time = excluded.reminder_time, created_at = excluded.created_at, completed_at = excluded.completed_at')}`)
       const task = this.db.prepare(`INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at')}`)
       const interval = this.db.prepare(`INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)
@@ -821,7 +850,7 @@ export class WorkBuddyDatabase {
       const overtimeRedemption = this.db.prepare('INSERT INTO overtime_redemptions (date, redeemed_at) VALUES (?, ?) ON CONFLICT(date) DO NOTHING')
 
       for (const item of backup.projects) project.run(item.id, item.name, item.color, Number(item.archived), item.createdAt)
-      for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.createdAt, item.completedAt ?? null)
+      for (const item of backup.plannedTasks) plannedTask.run(item.id, item.title, item.projectId, item.notes, item.reminderTime ?? null, item.createdAt, item.completedAt ?? null)
       for (const item of backup.tasks) {
         task.run(item.id, item.title, item.projectId, item.plannedTaskId, item.notes, JSON.stringify(item.tags), item.status, item.createdAt, item.updatedAt)
         for (const itemInterval of item.intervals) interval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
@@ -918,6 +947,22 @@ export class WorkBuddyDatabase {
       this.finishOpenWorkday(now)
     })
     transaction()
+    return this.getSnapshot()
+  }
+
+  updateWorkdayStart(startedAt: number): AppSnapshot {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
+    const workday = this.getOpenWorkday()
+    if (!workday) throw new Error('Start the workday first')
+    this.validateAdjustedStart(startedAt, workday.started_at, null)
+    const correctedStart = Math.round(startedAt)
+    const [dayStart, dayEnd] = localDayBounds(workday.started_at)
+    const firstTrackedInterval = this.db.prepare('SELECT MIN(started_at) AS started_at FROM time_intervals WHERE started_at >= ? AND started_at < ?').get(dayStart, dayEnd) as { started_at: number | null }
+    const firstRestInterval = this.db.prepare('SELECT MIN(started_at) AS started_at FROM rest_intervals WHERE started_at >= ? AND started_at < ?').get(dayStart, dayEnd) as { started_at: number | null }
+    const firstTrackedAt = Math.min(firstTrackedInterval.started_at ?? Infinity, firstRestInterval.started_at ?? Infinity)
+    if (correctedStart > firstTrackedAt) throw new Error('Workday start cannot be after tracked time')
+    this.db.prepare('UPDATE workdays SET started_at = ? WHERE id = ?').run(correctedStart, workday.id)
     return this.getSnapshot()
   }
 
@@ -1241,8 +1286,8 @@ export class WorkBuddyDatabase {
   createPlannedTask(input: PlannedTaskInput): AppSnapshot {
     const title = input.title.trim()
     if (!title) throw new Error('Planned task name is required')
-    this.db.prepare('INSERT INTO planned_tasks (id, title, project_id, notes, created_at) VALUES (?, ?, ?, ?, ?)').run(
-      randomUUID(), title, input.projectId ?? null, input.notes?.trim() ?? '', Date.now()
+    this.db.prepare('INSERT INTO planned_tasks (id, title, project_id, notes, reminder_time, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+      randomUUID(), title, input.projectId ?? null, input.notes?.trim() ?? '', normalizeReminderTime(input.reminderTime), Date.now()
     )
     return this.getSnapshot()
   }
@@ -1250,8 +1295,11 @@ export class WorkBuddyDatabase {
   updatePlannedTask(input: PlannedTaskUpdateInput): AppSnapshot {
     const title = input.title.trim()
     if (!title) throw new Error('Planned task name is required')
-    const result = this.db.prepare('UPDATE planned_tasks SET title = ?, project_id = ?, notes = ? WHERE id = ? AND completed_at IS NULL').run(
-      title, input.projectId ?? null, input.notes?.trim() ?? '', input.id
+    const existing = this.db.prepare('SELECT reminder_time FROM planned_tasks WHERE id = ? AND completed_at IS NULL').get(input.id) as { reminder_time: string | null } | undefined
+    if (!existing) throw new Error('Planned task not found')
+    const reminderTime = input.reminderTime === undefined ? existing.reminder_time : normalizeReminderTime(input.reminderTime)
+    const result = this.db.prepare('UPDATE planned_tasks SET title = ?, project_id = ?, notes = ?, reminder_time = ? WHERE id = ? AND completed_at IS NULL').run(
+      title, input.projectId ?? null, input.notes?.trim() ?? '', reminderTime, input.id
     )
     if (!result.changes) throw new Error('Planned task not found')
     return this.getSnapshot()

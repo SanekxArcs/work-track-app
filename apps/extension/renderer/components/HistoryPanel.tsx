@@ -1,5 +1,5 @@
 import { CalendarDays } from 'lucide-react'
-import type { HistoryDay, OvertimeDay } from '@shared/types'
+import type { HistoryDay, OvertimeDay } from '../../shared/types'
 import type { Translator } from '../lib/i18n'
 import { formatDuration } from '../lib/time'
 
