@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Sparkles, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
+import { localDayBounds } from '@shared/local-date'
 import type { Translator } from '../lib/i18n'
 import { CustomSelect } from './CustomSelect'
 import { ProjectPicker } from './ProjectPicker'
@@ -49,14 +50,15 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setSaveError('')
   }, [open, task, intervalId])
 
-  // End of the closest interval (of any other task) that finished at or before this one started.
+  // End of the closest interval (of any other task) that finished on the same day at or before this one started.
   const previousEndTime = (() => {
     const current = editableInterval(task, intervalId)
     if (!task || !current) return undefined
+    const [dayStart] = localDayBounds(current.startedAt)
     let closest = 0
     for (const other of snapshot.tasks) {
       for (const interval of other.intervals) {
-        if (interval.id === current.id || !interval.endedAt || interval.endedAt > current.startedAt) continue
+        if (interval.id === current.id || !interval.endedAt || interval.endedAt > current.startedAt || interval.endedAt < dayStart) continue
         closest = Math.max(closest, interval.endedAt)
       }
     }

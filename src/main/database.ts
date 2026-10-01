@@ -7,6 +7,7 @@ import type {
   BackupImportMode,
   BackupPreview,
   HistoryDay,
+  Locale,
   OvertimeOverview,
   PlannedTask,
   PlannedTaskInput,
@@ -87,6 +88,18 @@ export const defaultSettings: AppSettings = {
   ]
 }
 
+/** Built-in statuses follow the interface language until the user renames them. */
+const defaultStatusNames: Record<string, Record<Locale, string>> = {
+  'status-active': { uk: 'Активний', en: 'Active' },
+  'status-on-hold': { uk: 'На паузі', en: 'On hold' },
+  'status-review': { uk: 'На перевірці', en: 'In review' }
+}
+
+function localizeDefaultStatus(status: ProjectStatus, locale: Locale): ProjectStatus {
+  const names = defaultStatusNames[status.id]
+  return names && Object.values(names).includes(status.name) ? { ...status, name: names[locale] } : status
+}
+
 type ProjectRow = { id: string; name: string; color: string; archived: number; status_id: string | null; type_id: string | null; sort_order: number; deadline: string | null; budget_minutes: number | null; created_at: number }
 type TaskRow = {
   id: string
@@ -101,7 +114,7 @@ type TaskRow = {
 }
 type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; reminder_time: string | null; created_at: number; completed_at: number | null }
 type IntervalRow = { id: string; task_id: string; started_at: number; ended_at: number | null }
-type WorkdayRow = { id: string; started_at: number; ended_at: number | null }
+type WorkdayRow = { id: string; started_at: number; ended_at: number | null; stopped_task_ids_json: string | null }
 type RestRow = {
   id: string
   type: RestType
@@ -134,8 +147,9 @@ function isDeadline(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
 
+/** Budgets are stored in whole minutes, so anything that rounds to zero minutes is rejected. */
 function isBudgetHours(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100_000
+  return typeof value === 'number' && Number.isFinite(value) && Math.round(value * 60) >= 1 && value <= 100_000
 }
 
 function normalizeDeadline(value: string | null | undefined): string | null {
@@ -146,7 +160,7 @@ function normalizeDeadline(value: string | null | undefined): string | null {
 
 function normalizeBudgetMinutes(hours: number | null | undefined): number | null {
   if (hours === null || hours === undefined) return null
-  if (!isBudgetHours(hours)) throw new Error('Budget must be a positive number of hours')
+  if (!isBudgetHours(hours)) throw new Error('Budget must be at least one minute')
   return Math.round(hours * 60)
 }
 
@@ -312,10 +326,11 @@ function deepSettings(raw?: string): AppSettings {
   const colors = Array.isArray(stored.projectColors)
     ? stored.projectColors.filter((color): color is string => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)).slice(0, 24)
     : []
-  const projectStatuses = Array.isArray(stored.projectStatuses)
+  const locale: Locale = stored.locale === 'en' ? 'en' : 'uk'
+  const projectStatuses = (Array.isArray(stored.projectStatuses)
     ? stored.projectStatuses.filter((status): status is ProjectStatus => isRecord(status)
       && isId(status.id) && isId(status.name) && typeof status.color === 'string' && /^#[0-9a-f]{6}$/i.test(status.color)).slice(0, 30)
-    : structuredClone(defaultSettings.projectStatuses)
+    : structuredClone(defaultSettings.projectStatuses)).map((status) => localizeDefaultStatus(status, locale))
   const projectTypes = Array.isArray(stored.projectTypes)
     ? stored.projectTypes.filter((type): type is ProjectType => isRecord(type)
       && isId(type.id) && isId(type.name) && typeof type.color === 'string' && /^#[0-9a-f]{6}$/i.test(type.color)).slice(0, 30)
@@ -327,7 +342,7 @@ function deepSettings(raw?: string): AppSettings {
   return {
     ...structuredClone(defaultSettings),
     ...storedWithoutLegacy,
-    locale: stored.locale === 'en' ? 'en' : 'uk',
+    locale,
     theme: stored.theme === 'light' || stored.theme === 'system' ? stored.theme : 'dark',
     alwaysOnTop: typeof stored.alwaysOnTop === 'boolean' ? stored.alwaysOnTop : defaultSettings.alwaysOnTop,
     autoStart: typeof stored.autoStart === 'boolean' ? stored.autoStart : defaultSettings.autoStart,
@@ -367,6 +382,21 @@ function deepSettings(raw?: string): AppSettings {
   }
 }
 
+function projectFromRow(row: ProjectRow): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    archived: Boolean(row.archived),
+    statusId: row.status_id,
+    typeId: row.type_id,
+    sortOrder: row.sort_order,
+    deadline: row.deadline,
+    budgetHours: row.budget_minutes ? row.budget_minutes / 60 : null,
+    createdAt: row.created_at
+  }
+}
+
 function icsEscape(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/;/g, '\\;').replace(/,/g, '\\,')
 }
@@ -397,8 +427,12 @@ function foldIcsLine(line: string): string {
   return parts.map((part, index) => index === 0 ? part : ` ${part}`).join('\r\n')
 }
 
+type ProjectRanges = Map<string, { tasks: Set<string>; ranges: Array<[number, number | null]> }>
+
 export class WorkBuddyDatabase {
   private readonly db: DatabaseSync
+  /** Project interval ranges from the last stats scan, reused until this connection writes again. */
+  private projectRangesCache: { changes: number; grouped: ProjectRanges } | null = null
 
   constructor(path: string) {
     this.db = new DatabaseSync(path)
@@ -509,6 +543,8 @@ export class WorkBuddyDatabase {
     if (!plannedTaskColumns.some((column) => column.name === 'completed_at')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN completed_at INTEGER')
     if (!plannedTaskColumns.some((column) => column.name === 'reminder_time')) this.db.exec('ALTER TABLE planned_tasks ADD COLUMN reminder_time TEXT')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_planned_tasks_open ON planned_tasks(completed_at, created_at)')
+    const workdayColumns = this.db.prepare('PRAGMA table_info(workdays)').all() as Array<{ name: string }>
+    if (!workdayColumns.some((column) => column.name === 'stopped_task_ids_json')) this.db.exec('ALTER TABLE workdays ADD COLUMN stopped_task_ids_json TEXT')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
     this.db.exec("DELETE FROM secrets WHERE key IN ('sanity_api_token', 'google_calendar_tokens'); DROP TABLE IF EXISTS processed_remote_commands;")
@@ -557,19 +593,7 @@ export class WorkBuddyDatabase {
     const now = Date.now()
     this.normalizeStaleWorkday(now)
     const [dayStart, dayEnd] = localDayBounds(now)
-    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, sort_order, created_at').all() as ProjectRow[]).map(
-      (row): Project => ({
-        id: row.id,
-        name: row.name,
-        color: row.color,
-        archived: Boolean(row.archived),
-        statusId: row.status_id,
-        typeId: row.type_id,
-        deadline: row.deadline,
-        budgetHours: row.budget_minutes === null ? null : row.budget_minutes / 60,
-        createdAt: row.created_at
-      })
-    )
+    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, sort_order, created_at').all() as ProjectRow[]).map(projectFromRow)
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
       (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at })
     )
@@ -751,9 +775,7 @@ export class WorkBuddyDatabase {
   getDaySnapshot(date: string): AppSnapshot {
     this.normalizeStaleWorkday(Date.now())
     const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(date))
-    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, sort_order, created_at').all() as ProjectRow[]).map(
-      (row): Project => ({ id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), statusId: row.status_id, typeId: row.type_id, deadline: row.deadline, budgetHours: row.budget_minutes === null ? null : row.budget_minutes / 60, createdAt: row.created_at })
-    )
+    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY archived, sort_order, created_at').all() as ProjectRow[]).map(projectFromRow)
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks WHERE completed_at IS NULL ORDER BY created_at DESC').all() as PlannedTaskRow[]).map(
       (row): PlannedTask => ({ id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at })
     )
@@ -784,9 +806,7 @@ export class WorkBuddyDatabase {
     this.normalizeStaleWorkday(Date.now())
     const settings = this.getSettings()
     const { ai: _ai, ...backupSettings } = settings
-    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map((row): Project => ({
-      id: row.id, name: row.name, color: row.color, archived: Boolean(row.archived), statusId: row.status_id, typeId: row.type_id, sortOrder: row.sort_order, deadline: row.deadline, budgetHours: row.budget_minutes === null ? null : row.budget_minutes / 60, createdAt: row.created_at
-    }))
+    const projects = (this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as ProjectRow[]).map(projectFromRow)
     const plannedTasks = (this.db.prepare('SELECT * FROM planned_tasks ORDER BY created_at').all() as PlannedTaskRow[]).map((row): PlannedTask => ({
       id: row.id, title: row.title, projectId: row.project_id, notes: row.notes, reminderTime: row.reminder_time, createdAt: row.created_at, completedAt: row.completed_at
     }))
@@ -926,7 +946,11 @@ export class WorkBuddyDatabase {
     return this.createCalendarIcs(date, date)
   }
 
-  /** Exports every tracked interval from the first date's start to the last date's end (inclusive). */
+  /**
+   * Exports every finished interval from the first date's start to the last date's end (inclusive).
+   * Running intervals are left out: their end is not known yet, and exporting them cut off at
+   * "now" would leave a truncated event behind in the calendar under the same UID.
+   */
   createCalendarIcs(fromDate: string, toDate: string): string {
     const dayStart = localDayBounds(localDateTimestamp(fromDate))[0]
     const dayEnd = localDayBounds(localDateTimestamp(toDate))[1]
@@ -939,12 +963,12 @@ export class WorkBuddyDatabase {
        FROM time_intervals i
        JOIN tasks t ON t.id = i.task_id
        LEFT JOIN projects p ON p.id = t.project_id
-       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
+       WHERE i.started_at < ? AND i.ended_at IS NOT NULL AND i.ended_at > ?
        ORDER BY i.started_at`
-    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; title: string; notes: string; project_name: string | null }>
+    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number; title: string; notes: string; project_name: string | null }>
     const taskEvents = rows.flatMap((row) => {
       const startedAt = Math.max(row.started_at, dayStart)
-      const endedAt = Math.min(row.ended_at ?? now, dayEnd)
+      const endedAt = Math.min(row.ended_at, dayEnd)
       if (endedAt <= startedAt) return []
       const title = row.notes.trim() || row.title.trim() || 'Work Buddy task'
       const summary = row.project_name ? `${row.project_name} · ${title}` : title
@@ -964,12 +988,12 @@ export class WorkBuddyDatabase {
       `SELECT i.id, i.started_at, i.ended_at, s.type
        FROM rest_intervals i
        JOIN rest_sessions s ON s.id = i.rest_id
-       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
+       WHERE i.started_at < ? AND i.ended_at IS NOT NULL AND i.ended_at > ?
        ORDER BY i.started_at`
-    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number | null; type: RestType }>
+    ).all(dayEnd, dayStart) as Array<{ id: string; started_at: number; ended_at: number; type: RestType }>
     const restEvents = restRows.flatMap((row) => {
       const startedAt = Math.max(row.started_at, dayStart)
-      const endedAt = Math.min(row.ended_at ?? now, dayEnd)
+      const endedAt = Math.min(row.ended_at, dayEnd)
       if (endedAt <= startedAt) return []
       const title = row.type === 'lunch' ? 'Lunch · Work Buddy' : 'Break · Work Buddy'
       return [
@@ -1020,10 +1044,16 @@ export class WorkBuddyDatabase {
     const last = this.db.prepare('SELECT * FROM workdays WHERE ended_at IS NOT NULL AND started_at >= ? ORDER BY ended_at DESC LIMIT 1').get(todayStart) as WorkdayRow | undefined
     if (!last) throw new Error('There is no finished workday from today to continue')
     this.transaction(() => {
-      // Ending the day stopped every task at the same instant. Bring those tasks
-      // back as paused so they are visible in Focus, without counting the gap.
-      this.db.prepare("UPDATE tasks SET status = 'paused', updated_at = ? WHERE status = 'stopped' AND updated_at = ?").run(now, last.ended_at)
-      this.db.prepare('UPDATE workdays SET ended_at = NULL WHERE id = ?').run(last.id)
+      // Bring the tasks that ending the day stopped back as paused so they are
+      // visible in Focus, without counting the gap. Workdays ended before this was
+      // recorded fall back to the tasks stopped at the same instant.
+      if (last.stopped_task_ids_json !== null) {
+        const pause = this.db.prepare("UPDATE tasks SET status = 'paused', updated_at = ? WHERE id = ? AND status = 'stopped'")
+        for (const id of JSON.parse(last.stopped_task_ids_json) as string[]) pause.run(now, id)
+      } else {
+        this.db.prepare("UPDATE tasks SET status = 'paused', updated_at = ? WHERE status = 'stopped' AND updated_at = ?").run(now, last.ended_at)
+      }
+      this.db.prepare('UPDATE workdays SET ended_at = NULL, stopped_task_ids_json = NULL WHERE id = ?').run(last.id)
     })
     return this.getSnapshot()
   }
@@ -1454,9 +1484,17 @@ export class WorkBuddyDatabase {
 
   reorderProjects(ids: string[]): AppSnapshot {
     if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) throw new Error('Invalid project order')
+    // The caller sends one view (active or archive). Put those projects into the slots they
+    // already occupy in the full order, then renumber everything so positions never collide.
+    const full = (this.db.prepare('SELECT id FROM projects ORDER BY archived, sort_order, created_at').all() as Array<{ id: string }>).map((row) => row.id)
+    const known = new Set(full)
+    const moved = [...new Set(ids)].filter((id) => known.has(id))
+    const movedSet = new Set(moved)
+    let next = 0
+    const order = full.map((id) => movedSet.has(id) ? moved[next++] : id)
     this.transaction(() => {
       const update = this.db.prepare('UPDATE projects SET sort_order = ? WHERE id = ?')
-      ids.forEach((id, index) => update.run(index, id))
+      order.forEach((id, index) => update.run(index, id))
     })
     return this.getSnapshot()
   }
@@ -1464,41 +1502,37 @@ export class WorkBuddyDatabase {
   getProjectTasks(projectId: string): ProjectTaskSummary[] {
     const now = Date.now()
     this.normalizeStaleWorkday(now)
-    const tasks = this.db.prepare('SELECT * FROM tasks WHERE project_id = ?').all(projectId) as TaskRow[]
-    const intervals = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
-    return tasks.map((task): ProjectTaskSummary => {
-      const rows = intervals.all(task.id) as IntervalRow[]
-      return {
-        id: task.id,
-        label: task.notes.trim() || task.title.trim(),
-        status: task.status,
-        totalMs: rows.reduce((total, row) => total + Math.max(0, Math.min(row.ended_at ?? now, now) - row.started_at), 0),
-        intervalCount: rows.length,
-        firstStartedAt: rows[0]?.started_at ?? null,
-        lastEndedAt: rows.reduce<number | null>((latest, row) => Math.max(latest ?? 0, row.ended_at ?? now), null)
-      }
-    }).sort((first, second) => (second.lastEndedAt ?? 0) - (first.lastEndedAt ?? 0)).slice(0, 200)
+    const rows = this.db.prepare(
+      `SELECT t.id, t.title, t.notes, t.status,
+         COUNT(i.id) AS interval_count,
+         COALESCE(SUM(MAX(0, MIN(COALESCE(i.ended_at, ?), ?) - i.started_at)), 0) AS total_ms,
+         MIN(i.started_at) AS first_started_at,
+         MAX(COALESCE(i.ended_at, ?)) AS last_ended_at
+       FROM tasks t LEFT JOIN time_intervals i ON i.task_id = t.id
+       WHERE t.project_id = ?
+       GROUP BY t.id
+       ORDER BY last_ended_at DESC
+       LIMIT 200`
+    ).all(now, now, now, projectId) as Array<{ id: string; title: string; notes: string; status: Task['status']; interval_count: number; total_ms: number; first_started_at: number | null; last_ended_at: number | null }>
+    return rows.map((row): ProjectTaskSummary => ({
+      id: row.id,
+      label: row.notes.trim() || row.title.trim(),
+      status: row.status,
+      totalMs: row.total_ms,
+      intervalCount: row.interval_count,
+      firstStartedAt: row.first_started_at,
+      lastEndedAt: row.last_ended_at
+    }))
   }
 
   getProjectStats(now = Date.now()): ProjectStats[] {
     this.normalizeStaleWorkday(now)
     const [todayStart] = localDayBounds(now)
     const weekStart = localDaysBefore(todayStart, 6)
-    const rows = this.db.prepare(
-      `SELECT t.project_id AS project_id, t.id AS task_id, i.started_at AS started_at, i.ended_at AS ended_at
-       FROM tasks t LEFT JOIN time_intervals i ON i.task_id = t.id
-       WHERE t.project_id IS NOT NULL ORDER BY t.project_id, i.started_at`
-    ).all() as Array<{ project_id: string; task_id: string; started_at: number | null; ended_at: number | null }>
-    const grouped = new Map<string, { tasks: Set<string>; ranges: Array<[number, number]> }>()
-    for (const row of rows) {
-      const entry = grouped.get(row.project_id) ?? { tasks: new Set<string>(), ranges: [] }
-      entry.tasks.add(row.task_id)
-      if (row.started_at !== null) entry.ranges.push([row.started_at, Math.min(row.ended_at ?? now, now)])
-      grouped.set(row.project_id, entry)
-    }
+    const grouped = this.getProjectRanges()
     // Parallel tasks in one project overlap; count each moment only once. Rows arrive
     // sorted by start, so one merge pass yields every total.
-    const coverage = (ranges: Array<[number, number]>): { totalMs: number; todayMs: number; weekMs: number; lastWorkedAt: number | null } => {
+    const coverage = (ranges: Array<[number, number | null]>): { totalMs: number; todayMs: number; weekMs: number; lastWorkedAt: number | null } => {
       const result = { totalMs: 0, todayMs: 0, weekMs: 0, lastWorkedAt: null as number | null }
       const add = (start: number, end: number): void => {
         result.totalMs += end - start
@@ -1506,7 +1540,8 @@ export class WorkBuddyDatabase {
         result.todayMs += Math.max(0, end - Math.max(start, todayStart))
       }
       let current: [number, number] | undefined
-      for (const [start, end] of ranges) {
+      for (const [start, rawEnd] of ranges) {
+        const end = Math.min(rawEnd ?? now, now)
         result.lastWorkedAt = Math.max(result.lastWorkedAt ?? end, end)
         if (end <= start) continue
         if (current && start <= current[1]) current[1] = Math.max(current[1], end)
@@ -1523,6 +1558,30 @@ export class WorkBuddyDatabase {
       const entry = grouped.get(id)
       return { projectId: id, ...coverage(entry?.ranges ?? []), taskCount: entry?.tasks.size ?? 0 }
     })
+  }
+
+  /**
+   * Every project's tracked intervals, sorted by start. The full scan only reruns after a write
+   * (total_changes() counts this connection's row changes); running intervals keep a null end
+   * so callers can measure them against the current time.
+   */
+  private getProjectRanges(): ProjectRanges {
+    const changes = (this.db.prepare('SELECT total_changes() AS changes').get() as { changes: number }).changes
+    if (this.projectRangesCache?.changes === changes) return this.projectRangesCache.grouped
+    const rows = this.db.prepare(
+      `SELECT t.project_id AS project_id, t.id AS task_id, i.started_at AS started_at, i.ended_at AS ended_at
+       FROM tasks t LEFT JOIN time_intervals i ON i.task_id = t.id
+       WHERE t.project_id IS NOT NULL ORDER BY t.project_id, i.started_at`
+    ).all() as Array<{ project_id: string; task_id: string; started_at: number | null; ended_at: number | null }>
+    const grouped: ProjectRanges = new Map()
+    for (const row of rows) {
+      const entry = grouped.get(row.project_id) ?? { tasks: new Set<string>(), ranges: [] }
+      entry.tasks.add(row.task_id)
+      if (row.started_at !== null) entry.ranges.push([row.started_at, row.ended_at])
+      grouped.set(row.project_id, entry)
+    }
+    this.projectRangesCache = { changes, grouped }
+    return grouped
   }
 
   getWorkedCoverageToday(now = Date.now()): number {
@@ -1570,9 +1629,11 @@ export class WorkBuddyDatabase {
   }
 
   private finishOpenWorkday(endedAt: number): void {
+    // Remember which tasks this stops, so continuing the day can bring exactly those back.
+    const stoppedTaskIds = (this.db.prepare("SELECT id FROM tasks WHERE status != 'stopped'").all() as Array<{ id: string }>).map((task) => task.id)
     this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
     this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE status != 'stopped'").run(endedAt)
-    this.db.prepare('UPDATE workdays SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
+    this.db.prepare('UPDATE workdays SET ended_at = ?, stopped_task_ids_json = ? WHERE ended_at IS NULL').run(endedAt, JSON.stringify(stoppedTaskIds))
     this.db.prepare('UPDATE rest_intervals SET ended_at = ? WHERE ended_at IS NULL').run(endedAt)
     this.db.prepare("UPDATE rest_sessions SET status = 'completed', ended_at = ?, resume_task_ids_json = '[]' WHERE status IN ('running', 'paused')").run(endedAt)
   }

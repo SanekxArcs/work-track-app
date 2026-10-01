@@ -684,3 +684,72 @@ test('project stats close a running interval left over from the previous day', a
     assert.equal(stats.lastWorkedAt, at(27, 0))
   })
 })
+
+test('continuing a day restores a task that was edited after the day ended', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Morning' }))
+    await atTime(at(26, 11), () => database.endWorkday())
+    await atTime(at(26, 11, 30), () => database.updateTask({ id: started.tasks[0].id, notes: 'Morning, fixed' }))
+
+    const resumed = await atTime(at(26, 12), () => database.resumeWorkday())
+    assert.equal(resumed.tasks.find((task) => task.id === started.tasks[0].id)?.status, 'paused')
+  })
+})
+
+test('rejects a project budget that rounds to zero minutes', async () => {
+  await withDatabase(async (database) => {
+    assert.throws(() => database.createProject({ name: 'Tiny', color: '#b8e986', budgetHours: 0.005 }))
+  })
+})
+
+test('built-in project statuses follow the interface language', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    assert.equal(settings.projectStatuses[0].name, 'Активний')
+    const english = database.updateSettings({ ...settings, locale: 'en' }).settings
+    assert.equal(english.projectStatuses[0].name, 'Active')
+    const renamed = database.updateSettings({ ...english, projectStatuses: [{ ...english.projectStatuses[0], name: 'Doing' }, ...english.projectStatuses.slice(1)] }).settings
+    assert.equal(database.updateSettings({ ...renamed, locale: 'uk' }).settings.projectStatuses[0].name, 'Doing')
+  })
+})
+
+test('reordering one view keeps every project position unique', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.createProject({ name: 'A', color: '#b8e986' }))
+    await atTime(at(26, 8, 1), () => database.createProject({ name: 'B', color: '#7bdff2' }))
+    const created = await atTime(at(26, 8, 2), () => database.createProject({ name: 'Old', color: '#f7a072' }))
+    const [a, b, old] = created.projects
+    database.updateProject({ id: old.id, name: old.name, color: old.color, archived: true })
+    database.reorderProjects([b.id, a.id])
+    const restored = database.updateProject({ id: old.id, name: old.name, color: old.color, archived: false })
+    assert.deepEqual(restored.projects.map((project) => project.name), ['B', 'A', 'Old'])
+  })
+})
+
+test('calendar export leaves out time that is still running', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Done' }))
+    await atTime(at(26, 10), () => database.startTask({ mode: 'switch', notes: 'Running' }))
+    const ics = await atTime(at(26, 11), () => database.createCalendarIcs('2026-08-26', '2026-08-26'))
+    assert.equal((ics.match(/BEGIN:VEVENT/g) ?? []).length, 1)
+    assert.match(ics, /SUMMARY:Done/)
+  })
+})
+
+test('project stats and task summaries pick up new tracked time', async () => {
+  await withDatabase(async (database) => {
+    const created = await atTime(at(26, 8), () => database.createProject({ name: 'Alpha', color: '#b8e986' }))
+    const projectId = created.projects[0].id
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', projectId, notes: 'One' }))
+    assert.equal((await atTime(at(26, 10), () => database.getProjectStats()))[0].totalMs, 60 * 60 * 1000)
+    await atTime(at(26, 10), () => database.endWorkday())
+    assert.equal((await atTime(at(26, 12), () => database.getProjectStats()))[0].totalMs, 60 * 60 * 1000)
+    await atTime(at(26, 13), () => database.startTask({ mode: 'parallel', projectId, notes: 'Two' }))
+    assert.equal((await atTime(at(26, 14), () => database.getProjectStats()))[0].totalMs, 2 * 60 * 60 * 1000)
+
+    const tasks = await atTime(at(26, 14), () => database.getProjectTasks(projectId))
+    assert.deepEqual(tasks.map((task) => [task.label, task.totalMs, task.intervalCount]), [['Two', 60 * 60 * 1000, 1], ['One', 60 * 60 * 1000, 1]])
+    assert.equal(tasks[1].firstStartedAt, at(26, 9))
+    assert.equal(tasks[1].lastEndedAt, at(26, 10))
+  })
+})

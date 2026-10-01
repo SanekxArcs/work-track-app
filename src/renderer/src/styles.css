@@ -461,12 +461,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .field .project-picker__field input { min-width: 0; flex: 1; width: auto; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); font-size: 10.5px; font-weight: 650; outline: none; }
 .field .project-picker__field input::placeholder { color: var(--muted); font-weight: 500; }
 .project-picker__field:focus-within { border-color: rgba(184, 233, 134, .5); }
-.project-picker .custom-select__menu button.highlighted { background: rgba(255,255,255,.08); }
-.project-picker .custom-select__menu button.selected > svg { color: var(--accent); }
+.project-picker__menu button.highlighted { background: rgba(255,255,255,.08); }
+.project-picker__menu button.selected > svg { color: var(--accent); }
 .project-picker__dot--none { border: 1px dashed var(--muted); background: transparent; }
-.project-picker .custom-select__menu small { padding: 1px 6px; width: fit-content; border-radius: 6px; background: rgba(255,255,255,.07); font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.project-picker__menu small { padding: 1px 6px; width: fit-content; border-radius: 6px; background: rgba(255,255,255,.07); font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
 .project-picker__create { grid-template-columns: auto 1fr !important; color: var(--accent) !important; }
 .project-picker__create strong { color: var(--accent); }
+.project-picker__menu { position: fixed; }
 .project-picker__empty { margin: 0; padding: 10px; color: var(--muted); font-size: 10px; }
 
 /* Continue day */

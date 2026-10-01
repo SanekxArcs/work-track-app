@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, ChevronDown, FolderPlus, Search } from 'lucide-react'
 import type { AppSnapshot, Project } from '@shared/types'
 import type { Translator } from '../lib/i18n'
+import { useAnchoredMenu } from '../lib/popover'
 
 interface ProjectPickerProps {
   value: string
@@ -40,11 +42,16 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
   const [busy, setBusy] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLInputElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const menuStyle = useAnchoredMenu(open, root, menu)
   const selected = snapshot.projects.find((project) => project.id === value)
 
   useEffect(() => {
     const close = (event: PointerEvent): void => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (root.current?.contains(target) || menu.current?.contains(target)) return
+      setOpen(false)
+      setQuery('')
     }
     window.addEventListener('pointerdown', close)
     return () => window.removeEventListener('pointerdown', close)
@@ -135,9 +142,9 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
         />
         <ChevronDown size={15} />
       </div>
-      <AnimatePresence>
+      {createPortal(<AnimatePresence>
         {open && (
-          <motion.div className="custom-select__menu" initial={{ opacity: 0, y: -5, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: 0.98 }} transition={{ duration: 0.14 }}>
+          <motion.div ref={menu} className="custom-select__menu project-picker__menu" style={{ ...menuStyle, width: root.current?.offsetWidth }} initial={{ opacity: 0, y: -5, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: 0.98 }} transition={{ duration: 0.14 }}>
             {rows.length === 0 && <p className="project-picker__empty">{t('noProjectMatches')}</p>}
             {rows.map((row, index) => {
               const key = row.kind === 'project' ? row.project.id : row.kind
@@ -162,7 +169,7 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
             })}
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>, document.body)}
     </div>
   )
 }

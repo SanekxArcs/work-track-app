@@ -119,7 +119,8 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       }).catch(() => undefined)
     }
     load()
-    const timer = window.setInterval(load, 15_000)
+    // Totals only move on their own while something is running; otherwise a snapshot change triggers the reload.
+    const timer = snapshot.tasks.some((task) => task.status === 'running') ? window.setInterval(load, 15_000) : undefined
     return () => {
       cancelled = true
       window.clearInterval(timer)

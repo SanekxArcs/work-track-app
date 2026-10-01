@@ -380,6 +380,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
           <label><span>{t('calendarTo')}</span><input type="date" min={exportFrom} value={exportTo} onChange={(event) => setExportRange({ from: exportFrom, to: event.target.value })} /></label>
         </div>
         <button className="day-calendar-button" disabled={calendarExporting || exportInvalid} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>
+        {exportTo >= todayKey && snapshot.tasks.some((task) => task.status === 'running') && <p className="calendar-export-status">{t('calendarExportRunningHint')}</p>}
         {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
       </section>
     </motion.div>
