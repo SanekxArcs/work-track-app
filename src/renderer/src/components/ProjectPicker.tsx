@@ -17,6 +17,14 @@ interface ProjectPickerProps {
   onChange: (projectId: string) => void
   onSnapshot: (snapshot: AppSnapshot) => void
   onError: (message: string) => void
+  /** Offer "create «name»" for a typed name that matches no project. */
+  allowCreate?: boolean
+  /** Projects that must not be offered, e.g. the project being merged. */
+  excludeIds?: string[]
+  /** Hide archived projects even when searching (the current value stays selectable). */
+  activeOnly?: boolean
+  /** Label for the empty choice and the placeholder; defaults to "No project". */
+  noneLabel?: string
 }
 
 type Row =
@@ -37,7 +45,9 @@ export function randomProjectColor(snapshot: AppSnapshot): string {
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
-export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChange, onSnapshot, onError }: ProjectPickerProps): React.JSX.Element {
+export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChange, onSnapshot, onError, allowCreate = true, excludeIds = [], activeOnly = false, noneLabel }: ProjectPickerProps): React.JSX.Element {
+  const emptyLabel = noneLabel ?? t('noProject')
+  const excluded = excludeIds.join('|')
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlighted, setHighlighted] = useState(0)
@@ -62,8 +72,10 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
   const rows = useMemo((): Row[] => {
     const needle = normalize(query)
     const order = new Map(snapshot.projects.map((project, index) => [project.id, index]))
+    const hidden = new Set(excluded ? excluded.split('|') : [])
     const matches = snapshot.projects
-      .filter((project) => (needle ? normalize(project.name).includes(needle) : !project.archived))
+      .filter((project) => !hidden.has(project.id) && (!activeOnly || !project.archived || project.id === value))
+      .filter((project) => (needle ? normalize(project.name).includes(needle) : !project.archived || project.id === value))
       .sort((first, second) => {
         // Prefix matches first, then active before archived.
         const firstStarts = needle && normalize(first.name).startsWith(needle) ? 0 : 1
@@ -73,9 +85,9 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
     const result: Row[] = []
     if (!needle) result.push({ kind: 'none' })
     result.push(...matches.map((project): Row => ({ kind: 'project', project })))
-    if (needle && !snapshot.projects.some((project) => normalize(project.name) === needle)) result.push({ kind: 'create', name: query.trim() })
+    if (allowCreate && needle && !snapshot.projects.some((project) => normalize(project.name) === needle)) result.push({ kind: 'create', name: query.trim() })
     return result
-  }, [query, snapshot.projects])
+  }, [query, snapshot.projects, allowCreate, excluded, activeOnly, value])
 
   useEffect(() => setHighlighted(0), [query, open])
 
@@ -144,7 +156,7 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
           aria-label={ariaLabel}
           aria-expanded={open}
           value={open ? query : selected?.name ?? ''}
-          placeholder={open ? t('projectSearchPlaceholder') : t('noProject')}
+          placeholder={open ? t('projectSearchPlaceholder') : emptyLabel}
           disabled={busy}
           onFocus={() => setOpen(true)}
           onChange={(event) => { setQuery(event.target.value); setOpen(true) }}
@@ -173,7 +185,7 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
               return (
                 <button type="button" key={key} className={`${isSelected ? 'selected' : ''} ${active ? 'highlighted' : ''}`} onMouseEnter={() => setHighlighted(index)} onClick={() => choose(row)}>
                   {project ? <i style={{ background: project.color }} /> : <i className="project-picker__dot--none" />}
-                  <span><strong>{project?.name ?? t('noProject')}</strong>{project?.archived && <small>{t('archivedTag')}</small>}</span>
+                  <span><strong>{project?.name ?? emptyLabel}</strong>{project?.archived && <small>{t('archivedTag')}</small>}</span>
                   {isSelected && <Check size={14} />}
                 </button>
               )

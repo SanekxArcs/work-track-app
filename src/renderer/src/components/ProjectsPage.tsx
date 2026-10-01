@@ -9,7 +9,7 @@ import { formatClock, formatDuration } from '../lib/time'
 import { AnimatedDuration, AnimatedNumber, ease, StackCollapse } from './Animated'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
-import { randomProjectColor } from './ProjectPicker'
+import { ProjectPicker, randomProjectColor } from './ProjectPicker'
 
 interface ProjectsPageProps {
   snapshot: AppSnapshot
@@ -382,7 +382,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
             )}
             <div className="project-details__manage">
               {others.length > 0 && <div className="project-merge">
-                <CustomSelect value={mergeTarget} ariaLabel={t('mergeInto')} onChange={setMergeTarget} options={[{ value: '', label: t('mergeInto') }, ...others.map((item) => ({ value: item.id, label: item.name, color: item.color }))]} />
+                <ProjectPicker value={mergeTarget} snapshot={snapshot} ariaLabel={t('mergeInto')} t={t} allowCreate={false} excludeIds={[project.id]} noneLabel={t('mergeInto')} onChange={setMergeTarget} onSnapshot={onSnapshot} onError={setError} />
                 <AnimatePresence initial={false}>
                   {mergeTarget && <motion.button key="merge" className="secondary-button" disabled={busy} onClick={() => askMerge(project)} initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }} transition={{ duration: 0.16, ease }}><GitMerge size={14} />{t('mergeAction')}</motion.button>}
                 </AnimatePresence>

@@ -6,7 +6,7 @@ import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
 import { Collapse, ease, Fade, StackCollapse } from './Animated'
 import { VoiceButton } from './VoiceButton'
-import { CustomSelect } from './CustomSelect'
+import { ProjectPicker } from './ProjectPicker'
 import { TimeInput } from './TimeInput'
 
 interface PlannedTasksPanelProps {
@@ -34,11 +34,6 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
   const [editingReminderTime, setEditingReminderTime] = useState('')
   const [editError, setEditError] = useState('')
   const restRunning = snapshot.rests.some((rest) => rest.status === 'running')
-  // Only active projects are offered; a task already tied to an archived one keeps it.
-  const projectOptions = (keepId = '') => [
-    { value: '', label: t('noProject') },
-    ...snapshot.projects.filter((item) => !item.archived || item.id === keepId).map((item) => ({ value: item.id, label: item.name, color: item.color }))
-  ]
 
   const add = async (): Promise<void> => {
     if (!title.trim()) return
@@ -129,7 +124,7 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
       <button className="icon-button icon-button--accent" disabled={busy || !title.trim()} onClick={add} title={t('add')}><Plus size={16} /></button>
       {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <VoiceButton t={t} disabled={busy} onVoice={addVoice} onError={setVoiceMessage} />}
     </div>
-    <div className="planned-task-add-project"><CustomSelect value={projectId} ariaLabel={t('project')} onChange={setProjectId} options={projectOptions()} /></div>
+    <div className="planned-task-add-project"><ProjectPicker value={projectId} snapshot={snapshot} ariaLabel={t('project')} t={t} activeOnly onChange={setProjectId} onSnapshot={onSnapshot} onError={setVoiceMessage} /></div>
     <Collapse open={Boolean(voiceMessage)}><p className="planned-voice-status">{voiceMessage}</p></Collapse>
     {/* Not Collapse: its permanent overflow clip would cut off the inline project select while editing. */}
     <StackCollapse open={snapshot.plannedTasks.length > 0} gap={0}>
@@ -142,7 +137,7 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
             <span style={{ background: project?.color ?? 'var(--accent)' }} />
             {editing ? <motion.div className="planned-task-editor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18, ease }}>
               <input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveEdit(); if (event.key === 'Escape') cancelEdit() }} placeholder={t('plannedTaskPlaceholder')} />
-              <CustomSelect value={editingProjectId} ariaLabel={t('project')} onChange={setEditingProjectId} options={projectOptions(task.projectId ?? '')} />
+              <ProjectPicker value={editingProjectId} snapshot={snapshot} ariaLabel={t('project')} t={t} activeOnly onChange={setEditingProjectId} onSnapshot={onSnapshot} onError={setEditError} />
               <div className="planned-task-reminder"><span>{t('plannedTaskReminder')}</span><TimeInput value={editingReminderTime} onChange={setEditingReminderTime} ariaLabel={t('plannedTaskReminder')} allowEmpty /><Fade show={Boolean(editingReminderTime)}><button className="icon-button icon-button--quiet" type="button" onClick={() => setEditingReminderTime('')} title={t('clearReminder')}><X size={12} /></button></Fade></div>
               <textarea value={editingNotes} onChange={(event) => setEditingNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={2} />
               <AnimatePresence initial={false}>{editError && <motion.small key="error" className="form-error" initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18, ease }}>{editError}</motion.small>}</AnimatePresence>
