@@ -75,6 +75,7 @@ export class ReminderService {
   private fired = new Set<string>()
   private firedDate = ''
   private restAlarm: { restId: string; nextAt: number } | null = null
+  private idleBucket = 0
 
   constructor(
     private readonly database: WorkBuddyDatabase,
@@ -120,6 +121,15 @@ export class ReminderService {
   }
 
   private check(): void {
+    // Runs on a timer: a failing read must not become an uncaught exception every tick.
+    try {
+      this.checkReminders()
+    } catch (error) {
+      console.error('Reminder check failed', error)
+    }
+  }
+
+  private checkReminders(): void {
     const snapshot = this.database.getSnapshot()
     const now = snapshot.now
     const settings = snapshot.settings
@@ -130,7 +140,8 @@ export class ReminderService {
     const workday = snapshot.workday
     const openWorkday = workday?.endedAt === null
 
-    if (!openWorkday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
+    // Any workday today, even an ended one, means the day has already started.
+    if (!workday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
       this.once(now, 'start', () => this.show(text.startTitle, text.startBody))
     }
     const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests, now)
@@ -167,10 +178,10 @@ export class ReminderService {
     } else this.restAlarm = null
     if (activeTasks.length && settings.idle.enabled) {
       const idleMinutes = Math.floor(powerMonitor.getSystemIdleTime() / 60)
-      if (idleMinutes >= settings.idle.thresholdMinutes) {
-        const bucket = Math.floor(idleMinutes / settings.idle.thresholdMinutes)
-        this.once(now, `idle:${bucket}`, () => this.show(text.idleTitle, text.idleBody(idleMinutes)))
-      }
-    }
+      // Buckets restart with every idle period, so each absence gets its own reminders.
+      const bucket = Math.floor(idleMinutes / settings.idle.thresholdMinutes)
+      if (bucket > this.idleBucket) this.show(text.idleTitle, text.idleBody(idleMinutes))
+      this.idleBucket = bucket
+    } else this.idleBucket = 0
   }
 }

@@ -4,7 +4,9 @@ import { AnimatePresence, motion } from 'motion/react'
 import { Check, ChevronDown, FolderPlus, Search } from 'lucide-react'
 import type { AppSnapshot, Project } from '@shared/types'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { useAnchoredMenu } from '../lib/popover'
+import { popoverMotion } from './Animated'
 
 interface ProjectPickerProps {
   value: string
@@ -87,7 +89,7 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
       setOpen(false)
       setQuery('')
     } catch (error) {
-      onError(error instanceof Error ? error.message : t('timeUpdateError'))
+      onError(errorText(error, t, 'timeUpdateError'))
     } finally {
       setBusy(false)
     }
@@ -102,6 +104,14 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
     setOpen(false)
     setQuery('')
     input.current?.blur()
+  }
+
+  // The menu lives in a portal, so leaving the field by keyboard (Tab) must close it explicitly.
+  const onBlur = (event: React.FocusEvent<HTMLInputElement>): void => {
+    const next = event.relatedTarget as Node | null
+    if (next && (root.current?.contains(next) || menu.current?.contains(next))) return
+    setOpen(false)
+    setQuery('')
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -139,12 +149,13 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
           onFocus={() => setOpen(true)}
           onChange={(event) => { setQuery(event.target.value); setOpen(true) }}
           onKeyDown={onKeyDown}
+          onBlur={onBlur}
         />
         <ChevronDown size={15} />
       </div>
       {createPortal(<AnimatePresence>
         {open && (
-          <motion.div ref={menu} className="custom-select__menu project-picker__menu" style={{ ...menuStyle, width: root.current?.offsetWidth }} initial={{ opacity: 0, y: -5, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: 0.98 }} transition={{ duration: 0.14 }}>
+          <motion.div ref={menu} className="custom-select__menu project-picker__menu" style={{ ...menuStyle, width: root.current?.offsetWidth }} {...popoverMotion}>
             {rows.length === 0 && <p className="project-picker__empty">{t('noProjectMatches')}</p>}
             {rows.map((row, index) => {
               const key = row.kind === 'project' ? row.project.id : row.kind

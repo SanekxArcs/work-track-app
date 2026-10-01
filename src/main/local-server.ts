@@ -92,9 +92,8 @@ export class WorkBuddyLocalServer {
     }
   }
 
-  private isAuthorized(request: IncomingMessage, url: URL): boolean {
+  private isAuthorized(request: IncomingMessage): boolean {
     return keysMatch(request.headers['x-work-buddy-key'] as string | undefined, this.accessKey)
-      || keysMatch(url.searchParams.get('key') ?? undefined, this.accessKey)
   }
 
   private touchClient(request: IncomingMessage): void {
@@ -125,7 +124,14 @@ export class WorkBuddyLocalServer {
       return
     }
 
-    if (!this.isAuthorized(request, url)) {
+    // Web pages can reach loopback too; only the extension (or a non-browser
+    // client without an Origin) may use the bridge.
+    const origin = request.headers.origin
+    if (origin !== undefined && !origin.startsWith('chrome-extension://')) {
+      writeJson(response, 403, { error: 'Forbidden origin' })
+      return
+    }
+    if (!this.isAuthorized(request)) {
       writeJson(response, 401, { error: 'Pair this extension with Work Buddy first.' })
       return
     }
@@ -151,6 +157,11 @@ export class WorkBuddyLocalServer {
     }
 
     if (request.method === 'POST' && url.pathname === '/api') {
+      // The extension always posts JSON; anything else is a form-style request it never makes.
+      if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+        writeJson(response, 415, { error: 'Expected application/json.' })
+        return
+      }
       try {
         const payload = await readJson(request)
         if (!isRecord(payload) || typeof payload.method !== 'string' || !Array.isArray(payload.args)) {

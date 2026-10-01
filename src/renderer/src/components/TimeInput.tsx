@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { AnimatePresence, motion } from 'motion/react'
 import { Clock3 } from 'lucide-react'
 import { useAnchoredMenu } from '../lib/popover'
+import { popoverMotion } from './Animated'
 
 interface TimeInputProps {
   value: string
@@ -119,7 +121,7 @@ export function TimeInput({ value, onChange, className, autoFocus = false, ariaL
       <Clock3 size={14} aria-hidden="true" />
       <span>{current ? `${hour}:${minute}` : '--:--'}</span>
     </button>
-    {open && createPortal(<div ref={menuRef} className="tp-menu" style={menuStyle} role="dialog" aria-label={ariaLabel}>
+    {createPortal(<AnimatePresence>{open && <motion.div ref={menuRef} className="tp-menu" style={menuStyle} role="dialog" aria-label={ariaLabel} {...popoverMotion}>
       <input
         ref={typedRef}
         className="tp-typed"
@@ -142,6 +144,6 @@ export function TimeInput({ value, onChange, className, autoFocus = false, ariaL
         {allowEmpty && <button type="button" className="tp-secondary tp-secondary--danger" onClick={() => { onChange(''); setOpen(false) }}>{copy.clear}</button>}
         <button type="button" className="tp-done" onClick={() => setOpen(false)}>{copy.done}</button>
       </div>
-    </div>, document.body)}
+    </motion.div>}</AnimatePresence>, document.body)}
   </div>
 }

@@ -26,6 +26,20 @@ function editableInterval(task: Task | undefined, intervalId: string | undefined
     ?? task.intervals.slice().sort((first, second) => second.startedAt - first.startedAt)[0]
 }
 
+function clockValue(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/** A new timestamp only when the HH:MM was edited; otherwise undefined keeps the exact original. */
+function editedTimestamp(original: number, value: string): number | undefined {
+  if (!value || value === clockValue(original)) return undefined
+  const [hours, minutes] = value.split(':').map(Number)
+  const date = new Date(original)
+  date.setHours(hours, minutes, 0, 0)
+  return date.getTime()
+}
+
 export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
@@ -49,8 +63,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setAiMessage('')
     setProjectColor(snapshot.settings.projectColors[0])
     const interval = editableInterval(task, intervalId)
-    setStartTime(interval ? `${String(new Date(interval.startedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.startedAt).getMinutes()).padStart(2, '0')}` : '')
-    setEndTime(interval?.endedAt ? `${String(new Date(interval.endedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.endedAt).getMinutes()).padStart(2, '0')}` : '')
+    setStartTime(interval ? clockValue(interval.startedAt) : '')
+    setEndTime(interval?.endedAt ? clockValue(interval.endedAt) : '')
     setSaveError('')
   }, [open, task, intervalId])
 
@@ -59,22 +73,12 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setSaveError('')
     try {
       const interval = editableInterval(task, intervalId)
-      let adjustedStart = interval?.startedAt
-      let adjustedEnd = interval?.endedAt
-      if (interval && startTime) {
-        const [hours, minutes] = startTime.split(':').map(Number)
-        const date = new Date(interval.startedAt)
-        date.setHours(hours, minutes, 0, 0)
-        adjustedStart = date.getTime()
-      }
-      if (interval?.endedAt && endTime) {
-        const [hours, minutes] = endTime.split(':').map(Number)
-        const date = new Date(interval.endedAt)
-        date.setHours(hours, minutes, 0, 0)
-        adjustedEnd = date.getTime()
-      }
+      // Untouched times are not sent: rebuilding them from HH:MM would drop
+      // the seconds and could collide with the neighbouring interval.
+      const adjustedStart = interval ? editedTimestamp(interval.startedAt, startTime) : undefined
+      const adjustedEnd = interval?.endedAt ? editedTimestamp(interval.endedAt, endTime) : undefined
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd })
         : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {

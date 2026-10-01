@@ -1,10 +1,8 @@
-import { breakStreakStartedAt, dueRestTypes } from "./shared/rest"
-import type { AppSnapshot, RestType } from "./shared/types"
-
 const baseUrl = "http://127.0.0.1:49837"
 const accessKeyName = "workBuddyExtensionAccessKey"
-const restReminderAlarm = "workBuddyRestReminder"
-const notifiedRestsKey = "workBuddyNotifiedRests"
+
+// Break and lunch reminders are shown natively by the desktop app. The
+// extension only works while that app runs, so it does not repeat them.
 
 const allowedMethods = new Set([
   "getAppVersion", "getSnapshot", "getHistory", "getDaySnapshot", "getOvertimeOverview", "setOvertimeRedeemed",
@@ -16,105 +14,86 @@ const allowedMethods = new Set([
   "notify", "chooseNotificationSound", "getCustomSoundData"
 ])
 
-type BridgeMessage = { scope: "work-buddy"; kind: "health" } | { scope: "work-buddy"; kind: "invoke"; method: string; args: unknown[] }
+type BridgeMessage =
+  | { scope: "work-buddy"; kind: "health" }
+  | { scope: "work-buddy"; kind: "invoke"; method: string; args: unknown[] }
+  | { scope: "work-buddy"; kind: "pair"; key: string }
+type BridgeErrorCode = "offline" | "unauthorized"
+
+class BridgeError extends Error {
+  constructor(message: string, readonly code: BridgeErrorCode) {
+    super(message)
+  }
+}
 
 async function accessKey(): Promise<string> {
   const data = await chrome.storage.local.get(accessKeyName)
   return typeof data[accessKeyName] === "string" ? data[accessKeyName] : ""
 }
 
-async function handle(message: BridgeMessage): Promise<unknown> {
-  if (message.kind === "health") {
-    const response = await fetch(`${baseUrl}/health`, { cache: "no-store" })
-    if (!response.ok) throw new Error("Work Buddy is not running")
-    return response.json()
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${baseUrl}${path}`, { cache: "no-store", ...init })
+  } catch {
+    throw new BridgeError("Work Buddy is not running", "offline")
   }
-  if (!allowedMethods.has(message.method)) throw new Error("Unsupported Work Buddy action")
-  const key = await accessKey()
-  if (!key) throw new Error("Pair this extension with Work Buddy first")
-  const response = await fetch(`${baseUrl}/api`, {
+}
+
+async function readBody(response: Response): Promise<{ result?: unknown; error?: string }> {
+  try {
+    return await response.json() as { result?: unknown; error?: string }
+  } catch {
+    return {}
+  }
+}
+
+async function callApi(key: string, method: string, args: unknown[]): Promise<unknown> {
+  if (!key) throw new BridgeError("Pair this extension with Work Buddy first", "unauthorized")
+  const response = await request("/api", {
     method: "POST",
-    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
       "X-Work-Buddy-Key": key,
       "X-Work-Buddy-Client": chrome.runtime.id
     },
-    body: JSON.stringify({ method: message.method, args: message.args })
+    body: JSON.stringify({ method, args })
   })
-  const body = await response.json() as { result?: unknown; error?: string }
+  const body = await readBody(response)
+  if (response.status === 401) throw new BridgeError(body.error ?? "Pair this extension with Work Buddy first", "unauthorized")
   if (!response.ok) throw new Error(body.error ?? "Work Buddy request failed")
   return body.result
 }
 
-function notificationCopy(type: RestType, snapshot: AppSnapshot): { title: string; message: string } {
-  const uk = snapshot.settings.locale === "uk"
-  if (type === "lunch") return uk
-    ? { title: "Друже, час поїсти 🍜", message: `Забирай свої ${snapshot.settings.lunch.durationMinutes} хвилин на обід.` }
-    : { title: "Buddy, food time 🍜", message: `Take your ${snapshot.settings.lunch.durationMinutes}-minute lunch.` }
-  return uk
-    ? { title: "Гей, видихни трохи 👋", message: `Відлипни від екрана хоча б на ${snapshot.settings.breaks.durationMinutes} хв.` }
-    : { title: "Hey, take a breather 👋", message: `Step away from the screen for at least ${snapshot.settings.breaks.durationMinutes} minutes.` }
-}
-
-function restNoticeKey(type: RestType, snapshot: AppSnapshot): string | null {
-  const workday = snapshot.workday
-  if (!workday) return null
-  if (type === "lunch") return `lunch:${workday.id}`
-  return `break:${workday.id}:${breakStreakStartedAt(workday, snapshot.rests)}`
-}
-
-async function checkRestReminders(): Promise<void> {
-  const key = await accessKey()
-  if (!key) return
-  const snapshot = await handle({ scope: "work-buddy", kind: "invoke", method: "getSnapshot", args: [] }) as AppSnapshot
-  const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, snapshot.tasks, snapshot.now)
-  const stored = await chrome.storage.local.get(notifiedRestsKey)
-  const notified = typeof stored[notifiedRestsKey] === "object" && stored[notifiedRestsKey] !== null
-    ? stored[notifiedRestsKey] as Record<string, number>
-    : {}
-  const now = snapshot.now
-  const recent = Object.fromEntries(Object.entries(notified).filter(([, notifiedAt]) => typeof notifiedAt === "number" && now - notifiedAt < 48 * 60 * 60 * 1000)) as Record<string, number>
-
-  for (const type of due) {
-    const noticeKey = restNoticeKey(type, snapshot)
-    if (!noticeKey || recent[noticeKey]) continue
-    const copy = notificationCopy(type, snapshot)
-    await chrome.notifications.create(`work-buddy-${noticeKey}`, {
-      type: "basic",
-      iconUrl: chrome.runtime.getURL(chrome.runtime.getManifest().icons?.["128"] ?? ""),
-      title: copy.title,
-      message: copy.message,
-      priority: 2
-    })
-    recent[noticeKey] = now
+async function handle(message: BridgeMessage): Promise<unknown> {
+  if (message.kind === "health") {
+    const response = await request("/health")
+    if (!response.ok) throw new BridgeError("Work Buddy is not running", "offline")
+    return response.json()
   }
-
-  await chrome.storage.local.set({ [notifiedRestsKey]: recent })
+  if (message.kind === "pair") {
+    // Store the key only once the desktop app has accepted it, so a mistyped
+    // key never counts as a successful pairing.
+    const key = message.key.trim()
+    await callApi(key, "getSnapshot", [])
+    await chrome.storage.local.set({ [accessKeyName]: key })
+    return null
+  }
+  if (!allowedMethods.has(message.method)) throw new Error("Unsupported Work Buddy action")
+  return callApi(await accessKey(), message.method, message.args)
 }
-
-function scheduleRestReminders(): void {
-  chrome.alarms.create(restReminderAlarm, { periodInMinutes: 1 })
-  void checkRestReminders().catch(() => undefined)
-}
-
-chrome.runtime.onInstalled.addListener(scheduleRestReminders)
-chrome.runtime.onStartup.addListener(scheduleRestReminders)
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === restReminderAlarm) void checkRestReminders().catch(() => undefined)
-})
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[accessKeyName]) void checkRestReminders().catch(() => undefined)
-})
-scheduleRestReminders()
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || typeof message !== "object" || message === null) return
   const candidate = message as Partial<BridgeMessage>
-  if (candidate.scope !== "work-buddy" || (candidate.kind !== "health" && candidate.kind !== "invoke")) return
+  if (candidate.scope !== "work-buddy" || (candidate.kind !== "health" && candidate.kind !== "invoke" && candidate.kind !== "pair")) return
+  if (candidate.kind === "pair" && typeof candidate.key !== "string") return
   void handle(candidate as BridgeMessage).then(
     (result) => sendResponse({ ok: true, result }),
-    (error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Work Buddy request failed" })
+    (error: unknown) => sendResponse({
+      ok: false,
+      error: error instanceof Error ? error.message : "Work Buddy request failed",
+      code: error instanceof BridgeError ? error.code : undefined
+    })
   )
   return true
 })

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
 import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2 } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { playNotificationSound } from '../lib/sounds'
+import { AnimatedText, Collapse, ease, Fade, StackItem, Swap } from './Animated'
 import { ColorPicker } from './ColorPicker'
+import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
 import { TimeInput } from './TimeInput'
 
@@ -18,8 +21,16 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (checked: b
   return <button type="button" className={`toggle ${checked ? 'toggle--on' : ''}`} onClick={() => onChange(!checked)}><motion.span layout transition={{ type: 'spring', stiffness: 500, damping: 32 }} /></button>
 }
 
+/** Keeps a local draft so clearing the field to retype it does not save the minimum in between. */
 function NumberField({ value, onChange, suffix, min = 1 }: { value: number; onChange: (value: number) => void; suffix: string; min?: number }): React.JSX.Element {
-  return <label className="number-field"><input type="number" min={min} value={value} onChange={(event) => onChange(Math.max(min, Number(event.target.value)))} /><span>{suffix}</span></label>
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+  const commit = (text: string): void => {
+    setDraft(text)
+    const parsed = Number(text)
+    if (text.trim() && Number.isInteger(parsed) && parsed >= min && parsed !== value) onChange(parsed)
+  }
+  return <label className="number-field"><input type="number" min={min} step={1} value={draft} onChange={(event) => commit(event.target.value)} onBlur={() => setDraft(String(value))} /><span>{suffix}</span></label>
 }
 
 /**
@@ -79,11 +90,14 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [aiKey, setAiKey] = useState('')
   const [aiKeyStatus, setAiKeyStatus] = useState('')
   const [customPreviewData, setCustomPreviewData] = useState('')
+  const [soundError, setSoundError] = useState('')
+  const [extensionKeyError, setExtensionKeyError] = useState('')
   const [newStatusName, setNewStatusName] = useState('')
   const [newTypeName, setNewTypeName] = useState('')
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
   const [backupBusy, setBackupBusy] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [extensionServer, setExtensionServer] = useState<ExtensionServerStatus | null>(null)
   const [extensionKey, setExtensionKey] = useState('')
@@ -157,7 +171,15 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   }
 
   const captureGlobalShortcut = (event: React.KeyboardEvent<HTMLButtonElement>): void => {
+    const plain = !event.ctrlKey && !event.altKey && !event.metaKey
+    // Plain Tab keeps keyboard navigation working; plain Escape leaves the capture field.
+    if (plain && event.key === 'Tab') return
     event.preventDefault()
+    if (plain && event.key === 'Escape') {
+      setShortcutError('')
+      event.currentTarget.blur()
+      return
+    }
     const shortcut = shortcutFromKey(event)
     if (!shortcut) {
       setShortcutError(t('globalShortcutNeedsModifier'))
@@ -191,16 +213,20 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       setAiKey('')
       setAiKeyStatus(result.settings.ai.hasApiKey ? t('aiKeySaved') : t('aiKeyRemoved'))
     } catch (error) {
-      setAiKeyStatus(error instanceof Error ? error.message : t('aiError'))
+      setAiKeyStatus(errorText(error, t, 'aiError'))
     }
   }
 
   const removeKey = async (): Promise<void> => {
-    await window.workBuddy.updateSettings(settings)
-    const result = await window.workBuddy.saveAiKey('')
-    onSnapshot(result)
-    setSettings(result.settings)
-    setAiKeyStatus(t('aiKeyRemoved'))
+    try {
+      await window.workBuddy.updateSettings(settings)
+      const result = await window.workBuddy.saveAiKey('')
+      onSnapshot(result)
+      setSettings(result.settings)
+      setAiKeyStatus(t('aiKeyRemoved'))
+    } catch (error) {
+      setAiKeyStatus(errorText(error, t, 'aiError'))
+    }
   }
 
   const modelOptions: Array<{ value: GeminiModel; label: string; description: string }> = [
@@ -220,15 +246,25 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   ]
 
   const chooseSound = async (): Promise<void> => {
-    const result = await window.workBuddy.chooseNotificationSound()
-    if (!result) return
-    setCustomPreviewData(result.dataUrl)
-    nested('notifications', { sound: 'custom', customSoundPath: result.path, customSoundName: result.name })
-    await playNotificationSound('custom', result.dataUrl)
+    setSoundError('')
+    try {
+      const result = await window.workBuddy.chooseNotificationSound()
+      if (!result) return
+      setCustomPreviewData(result.dataUrl)
+      nested('notifications', { sound: 'custom', customSoundPath: result.path, customSoundName: result.name })
+      await playNotificationSound('custom', result.dataUrl)
+    } catch (error) {
+      setSoundError(errorText(error, t, 'soundPlayError'))
+    }
   }
 
   const previewSound = async (): Promise<void> => {
-    await playNotificationSound(settings.notifications.sound, settings.notifications.sound === 'custom' ? customPreviewData : undefined, settings.notifications.volume)
+    setSoundError('')
+    try {
+      await playNotificationSound(settings.notifications.sound, settings.notifications.sound === 'custom' ? customPreviewData : undefined, settings.notifications.volume)
+    } catch {
+      setSoundError(t('soundPlayError'))
+    }
   }
 
   const addStatus = (): void => {
@@ -262,7 +298,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       const result = await window.workBuddy.exportBackup()
       if (result) setBackupStatus(t('backupSaved'))
     } catch (error) {
-      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+      setBackupStatus(errorText(error, t, 'backupError'))
     } finally {
       setBackupBusy(false)
     }
@@ -276,14 +312,13 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       setBackupPreview(preview)
       if (preview) setBackupStatus(t('backupReady'))
     } catch (error) {
-      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+      setBackupStatus(errorText(error, t, 'backupError'))
     } finally {
       setBackupBusy(false)
     }
   }
 
   const importBackup = async (mode: 'merge' | 'replace'): Promise<void> => {
-    if (mode === 'replace' && !window.confirm(t('backupReplaceConfirm'))) return
     setBackupBusy(true)
     try {
       const result = await window.workBuddy.applyBackupImport(mode)
@@ -292,22 +327,32 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       setBackupPreview(null)
       setBackupStatus(t('backupImported'))
     } catch (error) {
-      setBackupStatus(error instanceof Error ? error.message : t('backupError'))
+      setBackupStatus(errorText(error, t, 'backupError'))
     } finally {
       setBackupBusy(false)
+      setReplaceConfirmOpen(false)
     }
   }
 
   const revealExtensionKey = async (): Promise<void> => {
-    if (!extensionKey) setExtensionKey(await window.workBuddy.getExtensionAccessKey())
-    setShowExtensionKey((shown) => !shown)
+    setExtensionKeyError('')
+    try {
+      if (!extensionKey) setExtensionKey(await window.workBuddy.getExtensionAccessKey())
+      setShowExtensionKey((shown) => !shown)
+    } catch (error) {
+      setExtensionKeyError(errorText(error, t, 'saveFailed'))
+    }
   }
 
   const copyExtensionKey = async (): Promise<void> => {
     if (!extensionKey) return
-    await navigator.clipboard.writeText(extensionKey)
-    setExtensionKeyCopied(true)
-    window.setTimeout(() => setExtensionKeyCopied(false), 1600)
+    try {
+      await navigator.clipboard.writeText(extensionKey)
+      setExtensionKeyCopied(true)
+      window.setTimeout(() => setExtensionKeyCopied(false), 1600)
+    } catch {
+      setExtensionKeyError(t('saveFailed'))
+    }
   }
 
   const uk = settings.locale === 'uk'
@@ -326,6 +371,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="settings-title"><Laptop2 size={17} /><div><h3>{t('appBehavior')}</h3></div></div>
         <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
         <div className="setting-line"><span>{t('autoStart')}</span><Toggle checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
+        <div className="setting-line"><div><strong>{t('notchLook')}</strong><p>{t('notchLookBody')}</p></div><Toggle checked={settings.notchEnabled} onChange={(value) => patch('notchEnabled', value)} /></div>
         <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
         {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
       </section>
@@ -334,13 +380,14 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="settings-title"><PlugZap size={17} /><div><h3>{uk ? 'Chrome extension' : 'Chrome extension'}</h3><p>{uk ? 'Локальний міст до Work Buddy. Дані не виходять з цього комп’ютера.' : 'Local bridge to Work Buddy. Your data never leaves this computer.'}</p></div></div>
         <div className={`extension-server-state ${extensionServer?.running ? 'extension-server-state--online' : ''}`}>
           <span />
-          <div><strong>{extensionServer?.running ? (uk ? 'Сервер увімкнено' : 'Server is running') : (uk ? 'Сервер недоступний' : 'Server is unavailable')}</strong><small>{extensionServer?.running ? `${uk ? 'Порт' : 'Port'} ${extensionServer.port} · ${extensionServer.connections} ${uk ? 'підключень' : 'connections'}` : extensionServer?.error}</small></div>
+          <div><strong><AnimatedText text={extensionServer?.running ? (uk ? 'Сервер увімкнено' : 'Server is running') : (uk ? 'Сервер недоступний' : 'Server is unavailable')} /></strong><small>{extensionServer?.running ? `${uk ? 'Порт' : 'Port'} ${extensionServer.port} · ${extensionServer.connections} ${uk ? 'підключень' : 'connections'}` : extensionServer?.error}</small></div>
         </div>
         <div className="extension-key-actions">
-          <button className="secondary-button" onClick={() => void revealExtensionKey()}>{showExtensionKey ? (uk ? 'Сховати ключ' : 'Hide key') : (uk ? 'Показати ключ підключення' : 'Show connection key')}</button>
-          {showExtensionKey && extensionKey && <button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={uk ? 'Копіювати ключ' : 'Copy key'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</button>}
+          <button className="secondary-button" onClick={() => void revealExtensionKey()}><AnimatedText text={showExtensionKey ? (uk ? 'Сховати ключ' : 'Hide key') : (uk ? 'Показати ключ підключення' : 'Show connection key')} /></button>
+          <Fade show={showExtensionKey && Boolean(extensionKey)}><button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={uk ? 'Копіювати ключ' : 'Copy key'}><Swap id={extensionKeyCopied ? 'copied' : 'copy'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</Swap></button></Fade>
         </div>
-        {showExtensionKey && extensionKey && <code className="extension-access-key">{extensionKey}</code>}
+        <Collapse open={showExtensionKey && Boolean(extensionKey)}><code className="extension-access-key">{extensionKey}</code></Collapse>
+        <Collapse open={Boolean(extensionKeyError)}><p className="form-error">{extensionKeyError}</p></Collapse>
       </section>
 
       <section className="settings-section settings-section--sound">
@@ -350,6 +397,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <button className="secondary-button" onClick={previewSound}><Play size={14} fill="currentColor" />{t('previewSound')}</button>
           <button className="secondary-button" onClick={chooseSound}><FolderOpen size={14} />{t('chooseSound')}</button>
         </div>
+        <Collapse open={Boolean(soundError)}><p className="form-error">{soundError}</p></Collapse>
         <label className="sound-volume"><span>{t('volume')}</span><input type="range" min="0" max="100" value={Math.round(settings.notifications.volume * 100)} onChange={(event) => nested('notifications', { volume: Number(event.target.value) / 100 })} /><strong>{Math.round(settings.notifications.volume * 100)}%</strong></label>
       </section>
 
@@ -374,7 +422,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <button className={settings.lunch.mode === 'worked' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'worked' })}>{t('afterWork')}</button>
         </div>
         <div className="two-fields">
-          <div><span>{settings.lunch.mode === 'clock' ? t('atTime') : t('after')}</span>{settings.lunch.mode === 'clock' ? <TimeInput className="time-input block" ariaLabel={t('atTime')} value={settings.lunch.time} onChange={(value) => nested('lunch', { time: value })} /> : <NumberField value={settings.lunch.afterMinutes} onChange={(value) => nested('lunch', { afterMinutes: value })} suffix={t('minutes')} />}</div>
+          <div><span><AnimatedText text={settings.lunch.mode === 'clock' ? t('atTime') : t('after')} /></span><motion.div key={settings.lunch.mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18, ease }}>{settings.lunch.mode === 'clock' ? <TimeInput className="time-input block" ariaLabel={t('atTime')} value={settings.lunch.time} onChange={(value) => nested('lunch', { time: value })} /> : <NumberField value={settings.lunch.afterMinutes} onChange={(value) => nested('lunch', { afterMinutes: value })} suffix={t('minutes')} />}</motion.div></div>
           <div><span>{t('lunchDuration')}</span><NumberField value={settings.lunch.durationMinutes} onChange={(value) => nested('lunch', { durationMinutes: value })} suffix={t('minutes')} /></div>
         </div>
         <div className="setting-line lunch-counting"><div><strong>{t('lunchIncluded')}</strong><p>{t('lunchIncludedBody')}</p></div><Toggle checked={settings.lunch.includedInWorkHours} onChange={setLunchCounting} /></div>
@@ -383,24 +431,28 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       <section className="settings-section">
         <div className="settings-title"><Palette size={17} /><div><h3>{t('projectPalette')}</h3><p>{t('projectPaletteBody')}</p></div></div>
         <div className="palette-editor">
-          {settings.projectColors.map((color) => (
-            <button key={color} className="palette-chip" style={{ '--chip-color': color } as React.CSSProperties} title={t('removeColor')} disabled={settings.projectColors.length <= 1} onClick={() => patch('projectColors', settings.projectColors.filter((item) => item !== color))}><span /><Trash2 size={12} /></button>
-          ))}
-          <div className="color-adder"><input type="color" value={newColor} onChange={(event) => setNewColor(event.target.value)} /><button className="icon-button icon-button--accent" onClick={addColor} title={t('addColor')}><Plus size={15} /></button></div>
+          <AnimatePresence initial={false} mode="popLayout">
+            {settings.projectColors.map((color) => (
+              <motion.button key={color} layout="position" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={{ duration: 0.18, ease }} className="palette-chip" style={{ '--chip-color': color } as React.CSSProperties} title={t('removeColor')} disabled={settings.projectColors.length <= 1} onClick={() => patch('projectColors', settings.projectColors.filter((item) => item !== color))}><span /><Trash2 size={12} /></motion.button>
+            ))}
+          </AnimatePresence>
+          <motion.div layout="position" transition={{ duration: 0.18, ease }} className="color-adder"><input type="color" value={newColor} onChange={(event) => setNewColor(event.target.value)} /><button className="icon-button icon-button--accent" onClick={addColor} title={t('addColor')}><Plus size={15} /></button></motion.div>
         </div>
       </section>
 
       <section className="settings-section project-statuses-settings">
         <div className="settings-title"><Tags size={17} /><div><h3>{t('projectStatuses')}</h3><p>{t('projectStatusesBody')}</p></div></div>
         <div className="status-editor-list">
+          <AnimatePresence initial={false}>
           {settings.projectStatuses.map((status) => (
-            <div className="status-editor-row" key={status.id}>
+            <StackItem key={status.id} gap={6}><div className="status-editor-row">
               <ColorPicker value={status.color} colors={settings.projectColors} onChange={(color) => updateStatus(status.id, { color })} ariaLabel={t('projectPalette')} />
               <NameField value={status.name} ariaLabel={t('statusName')} onChange={(name) => updateStatus(status.id, { name })} onEmptyBlur={() => patch('projectStatuses', settings.projectStatuses.filter((item) => item.id !== status.id))} />
               <button className="icon-button icon-button--quiet" onClick={() => patch('projectStatuses', settings.projectStatuses.filter((item) => item.id !== status.id))} title={t('deleteStatus')}><Trash2 size={14} /></button>
-            </div>
+            </div></StackItem>
           ))}
-          {settings.projectStatuses.length === 0 && <p className="empty-copy">{t('noStatusesYet')}</p>}
+          </AnimatePresence>
+          <Collapse open={settings.projectStatuses.length === 0}><p className="empty-copy">{t('noStatusesYet')}</p></Collapse>
         </div>
         <div className="action-inputs status-add-row"><input value={newStatusName} maxLength={40} onChange={(event) => setNewStatusName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addStatus() }} placeholder={t('statusName')} /><button className="icon-button icon-button--accent" onClick={addStatus} title={t('addStatus')}><Plus size={16} /></button></div>
       </section>
@@ -408,14 +460,16 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       <section className="settings-section project-types-settings">
         <div className="settings-title"><Shapes size={17} /><div><h3>{t('projectTypes')}</h3><p>{t('projectTypesBody')}</p></div></div>
         <div className="status-editor-list">
+          <AnimatePresence initial={false}>
           {settings.projectTypes.map((type) => (
-            <div className="status-editor-row" key={type.id}>
+            <StackItem key={type.id} gap={6}><div className="status-editor-row">
               <ColorPicker value={type.color} colors={settings.projectColors} onChange={(color) => updateType(type.id, { color })} ariaLabel={t('projectPalette')} />
               <NameField value={type.name} ariaLabel={t('typeName')} onChange={(name) => updateType(type.id, { name })} onEmptyBlur={() => patch('projectTypes', settings.projectTypes.filter((item) => item.id !== type.id))} />
               <button className="icon-button icon-button--quiet" onClick={() => patch('projectTypes', settings.projectTypes.filter((item) => item.id !== type.id))} title={t('deleteType')}><Trash2 size={14} /></button>
-            </div>
+            </div></StackItem>
           ))}
-          {settings.projectTypes.length === 0 && <p className="empty-copy">{t('noTypesYet')}</p>}
+          </AnimatePresence>
+          <Collapse open={settings.projectTypes.length === 0}><p className="empty-copy">{t('noTypesYet')}</p></Collapse>
         </div>
         <div className="action-inputs status-add-row"><input value={newTypeName} maxLength={40} onChange={(event) => setNewTypeName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addType() }} placeholder={t('typeName')} /><button className="icon-button icon-button--accent" onClick={addType} title={t('addType')}><Plus size={16} /></button></div>
       </section>
@@ -423,8 +477,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       <section className="settings-section settings-section--ai">
         <div className="settings-title"><Sparkles size={17} /><div><h3>{t('aiAssistant')}</h3><p>{t('aiAssistantBody')}</p></div><Toggle checked={settings.ai.enabled} onChange={(value) => nested('ai', { enabled: value })} /></div>
         <label className="field"><span>{t('aiModel')}</span><CustomSelect value={settings.ai.model} ariaLabel={t('aiModel')} onChange={(value) => nested('ai', { model: value as GeminiModel })} options={modelOptions} /></label>
-        <label className="field"><span><KeyRound size={13} /> Gemini API key {settings.ai.hasApiKey && <em>{t('configured')}</em>}</span><div className="api-key-row"><input type="password" value={aiKey} onChange={(event) => setAiKey(event.target.value)} placeholder={settings.ai.hasApiKey ? '••••••••••••••••' : 'AIza…'} /><button className="secondary-button" disabled={!aiKey.trim()} onClick={saveKey}>{t('saveKey')}</button>{settings.ai.hasApiKey && <button className="icon-button icon-button--quiet" title={t('removeKey')} onClick={removeKey}><Trash2 size={14} /></button>}</div></label>
-        {aiKeyStatus && <p className="settings-status">{aiKeyStatus}</p>}
+        <label className="field"><span><KeyRound size={13} /> {t('geminiApiKey')} {settings.ai.hasApiKey && <em>{t('configured')}</em>}</span><div className="api-key-row"><input type="password" value={aiKey} onChange={(event) => setAiKey(event.target.value)} placeholder={settings.ai.hasApiKey ? '••••••••••••••••' : 'AIza…'} /><button className="secondary-button" disabled={!aiKey.trim()} onClick={saveKey}>{t('saveKey')}</button>{settings.ai.hasApiKey && <button className="icon-button icon-button--quiet" title={t('removeKey')} onClick={removeKey}><Trash2 size={14} /></button>}</div></label>
+        <Collapse open={Boolean(aiKeyStatus)}><p className="settings-status">{aiKeyStatus}</p></Collapse>
         <p className="security-note">{t('aiSecurity')}</p>
       </section>
 
@@ -434,29 +488,31 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <button className="secondary-button" disabled={backupBusy} onClick={exportBackup}><Download size={14} />{t('backupExport')}</button>
           <button className="secondary-button" disabled={backupBusy} onClick={chooseBackup}><Upload size={14} />{t('backupImport')}</button>
         </div>
-        {backupPreview && <div className="backup-preview">
+        <Collapse open={Boolean(backupPreview)}>{backupPreview && <div className="backup-preview">
           <p>{t('backupContents')}</p>
           <strong>{backupPreview.projectCount} {t('backupProjects')} · {backupPreview.plannedTaskCount} {t('backupPlanned')} · {backupPreview.taskCount} {t('backupTasks')} · {backupPreview.intervalCount} {t('backupIntervals')}</strong>
           <small>{backupPreview.workdayCount} {t('backupDays')} · {backupPreview.restCount} {t('backupRests')}</small>
           <div className="sound-actions">
             <button className="primary-button" disabled={backupBusy} onClick={() => void importBackup('merge')}>{t('backupMerge')}</button>
-            <button className="secondary-button" disabled={backupBusy} onClick={() => void importBackup('replace')}>{t('backupReplace')}</button>
+            <button className="secondary-button" disabled={backupBusy} onClick={() => setReplaceConfirmOpen(true)}>{t('backupReplace')}</button>
           </div>
-        </div>}
-        {backupStatus && <p className="settings-status">{backupStatus}</p>}
+        </div>}</Collapse>
+        <Collapse open={Boolean(backupStatus)}><p className="settings-status">{backupStatus}</p></Collapse>
         <p className="security-note">{t('backupSecurity')}</p>
       </section>
 
       <section className="settings-section">
         <div className="settings-title"><Dumbbell size={17} /><div><h3>{t('wellness')}</h3><p>{t('wellnessBody')}</p></div><Toggle checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} /></div>
         <div className="wellness-list">
+          <AnimatePresence initial={false}>
           {settings.wellnessActions.map((action) => (
-            <div className="wellness-item" key={action.id}>
+            <StackItem key={action.id} gap={6}><div className="wellness-item">
               <Toggle checked={action.enabled} onChange={(enabled) => patch('wellnessActions', settings.wellnessActions.map((item) => item.id === action.id ? { ...item, enabled } : item))} />
               <span>{settings.locale === 'uk' ? action.labelUk : action.labelEn}</span>
               <button className="icon-button icon-button--quiet" onClick={() => patch('wellnessActions', settings.wellnessActions.filter((item) => item.id !== action.id))}><Trash2 size={14} /></button>
-            </div>
+            </div></StackItem>
           ))}
+          </AnimatePresence>
         </div>
         <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction}><Plus size={16} /></button></div>
       </section>
@@ -467,7 +523,18 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
 
       <section className="app-version"><Info size={14} /><span>{t('appVersion')}</span><strong>{appVersion ? `v${appVersion}` : '…'}</strong></section>
 
-      <div className={`autosave-indicator autosave-indicator--${saveState}`}><span />{saveState === 'saving' ? t('saving') : saveState === 'error' ? t('saveFailed') : t('autosaved')}</div>
+      <div className={`autosave-indicator autosave-indicator--${saveState}`}><span /><AnimatedText text={saveState === 'saving' ? t('saving') : saveState === 'error' ? t('saveFailed') : t('autosaved')} /></div>
+
+      <ConfirmDialog
+        open={replaceConfirmOpen}
+        title={t('backupReplaceTitle')}
+        body={<p>{t('backupReplaceBody')}</p>}
+        confirmLabel={t('backupReplace')}
+        cancelLabel={t('cancel')}
+        busy={backupBusy}
+        onConfirm={() => void importBackup('replace')}
+        onCancel={() => setReplaceConfirmOpen(false)}
+      />
     </motion.div>
   )
 }

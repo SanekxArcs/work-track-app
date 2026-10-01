@@ -1,4 +1,5 @@
 import type { AiDaySummary, AiTaskSuggestion, AppSnapshot, GeminiModel, VoiceInput, VoiceTaskDraft } from '../shared/types'
+import { localDayBounds } from '../shared/local-date'
 import { WorkBuddyDatabase } from './database'
 
 type GeminiResponse = {
@@ -15,11 +16,14 @@ function parseJson<T>(text: string): T {
   return JSON.parse(clean) as T
 }
 
-function taskMinutes(snapshot: AppSnapshot, now = Date.now()): Array<{ description: string; project: string; minutes: number }> {
+function taskMinutes(snapshot: AppSnapshot, now = snapshot.now): Array<{ description: string; project: string; minutes: number }> {
+  // Snapshot tasks carry their whole history; only today's share is "today's work".
+  const [dayStart, dayEnd] = localDayBounds(now)
   return snapshot.tasks.map((task) => ({
     description: task.notes || task.title || 'No description',
     project: snapshot.projects.find((project) => project.id === task.projectId)?.name ?? '',
-    minutes: Math.max(0, Math.round(task.intervals.reduce((sum, interval) => sum + ((interval.endedAt ?? now) - interval.startedAt), 0) / 60_000))
+    minutes: Math.round(task.intervals.reduce((sum, interval) =>
+      sum + Math.max(0, Math.min(interval.endedAt ?? now, dayEnd) - Math.max(interval.startedAt, dayStart)), 0) / 60_000)
   })).filter((task) => task.minutes > 0)
 }
 
@@ -34,9 +38,10 @@ export class GeminiService {
     if (!apiKey) throw new Error('Gemini API key is missing')
     if (voice && (!voice.data || voice.data.length > 12 * 1024 * 1024)) throw new Error('Voice note is missing or too large')
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      signal: AbortSignal.timeout(30_000),
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: prompt }, ...(voice ? [{ inlineData: { mimeType: voice.mimeType, data: voice.data } }] : [])] }],
         generationConfig: {

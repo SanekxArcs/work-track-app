@@ -1,9 +1,10 @@
 import type { PlasmoCSConfig } from "plasmo"
 import cssText from "data-text:~style.css"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import App from "../renderer/App"
-import type { WorkBuddyApi } from "../shared/types"
-import { getAccessKey, getServerHealth, remoteApi, saveAccessKey } from "../lib/remote-api"
+import { browserLocale, translator, type Translator } from "../renderer/lib/i18n"
+import type { Locale, WorkBuddyApi } from "../shared/types"
+import { clearAccessKey, getAccessKey, getServerHealth, pairWithKey, remoteApi, remoteErrorCode } from "../lib/remote-api"
 
 declare global {
   interface Window {
@@ -26,18 +27,36 @@ export const getStyle = (): HTMLStyleElement => {
 
 type Position = { x: number; y: number }
 const positionKey = "workBuddyFloatingButtonPosition"
+const localeKey = "workBuddyLocale"
+const buttonSize = 30
+const edgeGap = 8
 
 function storageGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve) => chrome.storage.local.get(key, (value) => resolve(value[key] as T | undefined)))
 }
 
-function storageSet(value: Record<string, Position>): Promise<void> {
+function storageSet(value: Record<string, Position | Locale>): Promise<void> {
   return new Promise((resolve) => chrome.storage.local.set(value, resolve))
 }
 
-function PairingCard({ onPaired }: { onPaired: () => void }): React.JSX.Element {
+/** Keeps the floating button reachable when the saved spot is off-screen in this window. */
+function clampPosition(position: Position): Position {
+  const maxX = Math.max(edgeGap, window.innerWidth - buttonSize - edgeGap)
+  const maxY = Math.max(edgeGap, window.innerHeight - buttonSize - edgeGap)
+  return {
+    x: Math.min(Math.max(edgeGap, Number(position.x) || 0), maxX),
+    y: Math.min(Math.max(edgeGap, Number(position.y) || 0), maxY)
+  }
+}
+
+// Keys typed in the panel must not reach the host page's shortcuts
+// (YouTube "k", GitHub "/"). React handles the events inside first.
+const stopPropagation = (event: React.SyntheticEvent): void => event.stopPropagation()
+
+function PairingCard({ t, expired, onPaired }: { t: Translator; expired: boolean; onPaired: () => void }): React.JSX.Element {
   const [key, setKey] = useState("")
   const [status, setStatus] = useState<"checking" | "online" | "offline">("checking")
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
 
   useEffect(() => {
@@ -46,45 +65,75 @@ function PairingCard({ onPaired }: { onPaired: () => void }): React.JSX.Element 
 
   const pair = async (): Promise<void> => {
     setError("")
+    setBusy(true)
     try {
-      await saveAccessKey(key)
-      await remoteApi.getSnapshot()
+      await pairWithKey(key)
       onPaired()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Не вдалося підключитися")
+      const code = remoteErrorCode(reason)
+      if (code === "unauthorized") setError(t("pairingInvalidKey"))
+      else if (code === "offline") {
+        setStatus("offline")
+        setError(t("extensionOffline"))
+      } else if (code === "invalidated") setError(t("extensionReloaded"))
+      else setError(reason instanceof Error && reason.message ? reason.message : t("pairingFailed"))
+    } finally {
+      setBusy(false)
     }
   }
 
   return <section className="extension-pairing-card">
     <div className="brand-mark"><span /></div>
-    <p className="eyebrow">Work Buddy у браузері</p>
-    <h2>{status === "online" ? "Підключи extension" : "Work Buddy зараз недоступний"}</h2>
-    <p>{status === "online" ? "У Windows-додатку відкрий Налаштування → Chrome extension, скопіюй ключ і встав його сюди один раз." : "Запусти Work Buddy. Він має працювати на цьому комп’ютері."}</p>
+    <p className="eyebrow">{t("pairingEyebrow")}</p>
+    <h2>{status === "offline" ? t("pairingOfflineTitle") : t("pairingTitle")}</h2>
+    <p>{status === "offline" ? t("pairingOfflineBody") : t("pairingBody")}</p>
+    {expired && status !== "offline" && <small className="extension-pairing-notice">{t("pairingExpired")}</small>}
     {status !== "offline" && <>
-      <input autoFocus value={key} onChange={(event) => setKey(event.target.value)} placeholder="Ключ підключення" aria-label="Ключ підключення" />
-      <button className="primary-button" disabled={!key.trim()} onClick={() => void pair()}>Підключити Work Buddy</button>
+      <input autoFocus value={key} onChange={(event) => setKey(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && key.trim() && !busy) void pair() }} placeholder={t("pairingKey")} aria-label={t("pairingKey")} />
+      <button className="primary-button" disabled={!key.trim() || busy} onClick={() => void pair()}>{t("pairingConnect")}</button>
     </>}
     {error && <small className="extension-pairing-error">{error}</small>}
-    <small className={`extension-pairing-status extension-pairing-status--${status}`}><i />{status === "checking" ? "Перевіряю сервер…" : status === "online" ? "Сервер Work Buddy увімкнено" : "Немає з’єднання з локальним сервером"}</small>
+    <small className={`extension-pairing-status extension-pairing-status--${status}`}><i />{status === "checking" ? t("pairingChecking") : status === "online" ? t("pairingOnline") : t("pairingOffline")}</small>
   </section>
 }
 
 export default function WorkBuddyContent(): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [paired, setPaired] = useState<boolean | null>(null)
-  const [position, setPosition] = useState<Position>({ x: Math.max(12, window.innerWidth - 46), y: Math.round(window.innerHeight * .42) })
+  const [pairingExpired, setPairingExpired] = useState(false)
+  const [locale, setLocale] = useState<Locale>(browserLocale)
+  const [position, setPosition] = useState<Position>(() => clampPosition({ x: window.innerWidth - 46, y: Math.round(window.innerHeight * .42) }))
   const drag = useRef<{ pointerId: number; startX: number; startY: number; origin: Position; last: Position; moved: boolean } | null>(null)
+  const t = useMemo(() => translator(locale), [locale])
 
   useEffect(() => {
     window.workBuddy = remoteApi
-    void getAccessKey().then((key) => setPaired(Boolean(key)))
+    void getAccessKey().then((key) => setPaired(Boolean(key))).catch(() => setPaired(false))
     void storageGet<Position>(positionKey).then((stored) => {
-      if (stored) setPosition(stored)
-    })
+      if (stored) setPosition(clampPosition(stored))
+    }).catch(() => undefined)
+    void storageGet<Locale>(localeKey).then((stored) => {
+      if (stored === "uk" || stored === "en") setLocale(stored)
+    }).catch(() => undefined)
     const hide = (): void => setOpen(false)
+    const keepOnScreen = (): void => setPosition((current) => clampPosition(current))
     window.addEventListener("work-buddy-extension-hide", hide)
-    return () => window.removeEventListener("work-buddy-extension-hide", hide)
+    window.addEventListener("resize", keepOnScreen)
+    return () => {
+      window.removeEventListener("work-buddy-extension-hide", hide)
+      window.removeEventListener("resize", keepOnScreen)
+    }
   }, [])
+
+  const rememberLocale = (next: Locale): void => {
+    setLocale(next)
+    void storageSet({ [localeKey]: next }).catch(() => undefined)
+  }
+
+  const unpair = (): void => {
+    setPairingExpired(true)
+    void clearAccessKey().catch(() => undefined).finally(() => setPaired(false))
+  }
 
   const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>): void => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -98,10 +147,7 @@ export default function WorkBuddyContent(): React.JSX.Element {
     const dy = event.clientY - active.startY
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) active.moved = true
     if (!active.moved) return
-    const next = {
-      x: Math.min(Math.max(8, active.origin.x + dx), window.innerWidth - 38),
-      y: Math.min(Math.max(8, active.origin.y + dy), window.innerHeight - 38)
-    }
+    const next = clampPosition({ x: active.origin.x + dx, y: active.origin.y + dy })
     active.last = next
     setPosition(next)
   }
@@ -110,15 +156,23 @@ export default function WorkBuddyContent(): React.JSX.Element {
     const active = drag.current
     drag.current = null
     if (!active) return
-    if (active.moved) void storageSet({ [positionKey]: active.last })
+    if (active.moved) void storageSet({ [positionKey]: active.last }).catch(() => undefined)
     else setOpen((shown) => !shown)
   }
 
-  return <div className="work-buddy-extension-root">
+  return <div
+    className="work-buddy-extension-root"
+    onKeyDown={stopPropagation}
+    onKeyUp={stopPropagation}
+    onKeyPress={stopPropagation}
+    onInput={stopPropagation}
+    onPaste={stopPropagation}
+    onCopy={stopPropagation}
+    onCut={stopPropagation}>
     <button
       className={`work-buddy-float ${open ? "work-buddy-float--open" : ""}`}
       style={{ left: position.x, top: position.y }}
-      aria-label="Відкрити Work Buddy"
+      aria-label={t("openWorkBuddy")}
       title="Work Buddy"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -127,7 +181,9 @@ export default function WorkBuddyContent(): React.JSX.Element {
       <span />
     </button>
     {open && <aside className="work-buddy-drawer" aria-label="Work Buddy">
-      {paired ? <App /> : <PairingCard onPaired={() => setPaired(true)} />}
+      {paired
+        ? <App onUnpaired={unpair} onLocale={rememberLocale} />
+        : <PairingCard t={t} expired={pairingExpired} onPaired={() => { setPairingExpired(false); setPaired(true) }} />}
     </aside>}
   </div>
 }

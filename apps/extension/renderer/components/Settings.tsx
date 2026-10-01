@@ -18,7 +18,21 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (checked: b
 }
 
 function NumberField({ value, onChange, suffix, min = 1 }: { value: number; onChange: (value: number) => void; suffix: string; min?: number }): React.JSX.Element {
-  return <label className="number-field"><input type="number" min={min} value={value} onChange={(event) => onChange(Math.max(min, Number(event.target.value)))} /><span>{suffix}</span></label>
+  // A local draft lets the field be emptied while typing; only whole numbers
+  // at or above the minimum are saved, and anything else is undone on blur.
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => { setDraft(String(value)) }, [value])
+  const valid = (text: string): number | null => {
+    if (!/^\d+$/.test(text.trim())) return null
+    const parsed = Number(text)
+    return Number.isSafeInteger(parsed) && parsed >= min ? parsed : null
+  }
+  const change = (text: string): void => {
+    setDraft(text)
+    const parsed = valid(text)
+    if (parsed !== null && parsed !== value) onChange(parsed)
+  }
+  return <label className="number-field"><input type="number" min={min} step={1} value={draft} onChange={(event) => change(event.target.value)} onBlur={() => { if (valid(draft) === null) setDraft(String(value)) }} /><span>{suffix}</span></label>
 }
 
 function shiftTime(value: string, minutes: number): string {

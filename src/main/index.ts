@@ -9,7 +9,7 @@ import { WORK_BUDDY_LOCAL_PORT, WorkBuddyLocalServer } from './local-server'
 import { fitWindowHeight, isBottomAnchored } from './window-layout'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
+import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -32,9 +32,13 @@ let registeredToggleShortcut: string | null = null
 let dockedSide: 'left' | 'right' | null = null
 let dockRestoreBounds: Electron.Rectangle | null = null
 let dockRestoreSide: 'left' | 'right' | null = null
+let notchState: 'collapsed' | 'open' | null = null
+let notchGrabOffset = 0
+const chosenSoundPaths = new Set<string>()
 
 const WINDOW_WIDTH = 430
 const DOCK_SIZE = { width: 104, height: 46 }
+const NOTCH_SIZE = { width: 300, height: 40 }
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -42,8 +46,24 @@ function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   return width * height
 }
 
+/**
+ * The notch's pill centre stays at least half a full window from the screen edges, so the
+ * window it opens into is always centred on it and the pill never jumps while it grows.
+ */
+function clampNotchCenter(center: number, area: Electron.Rectangle): number {
+  return Math.min(Math.max(center, area.x + WINDOW_WIDTH / 2), area.x + area.width - WINDOW_WIDTH / 2)
+}
+
+/** The saved notch spot, or the top centre of the screen the window is on. */
+function notchAnchor(): { area: Electron.Rectangle; center: number } {
+  const placement = database.getNotchPlacement()
+  const saved = placement ? screen.getAllDisplays().find((display) => display.id === placement.displayId) : undefined
+  const area = (saved ?? screen.getDisplayMatching(mainWindow?.getBounds() ?? screen.getPrimaryDisplay().workArea)).workArea
+  return { area, center: clampNotchCenter(saved && placement ? area.x + placement.ratio * area.width : area.x + area.width / 2, area) }
+}
+
 function snapWindowToScreen(): void {
-  if (!mainWindow || applyingSnap) return
+  if (!mainWindow || applyingSnap || notchState) return
   const bounds = mainWindow.getBounds()
   const displays = screen.getAllDisplays()
   const display = displays.reduce((best, candidate) =>
@@ -128,8 +148,36 @@ function registerToggleShortcut(shortcut: string): void {
   registeredToggleShortcut = shortcut
 }
 
+function guardCustomSoundPath(settings: AppSettings, current: AppSettings): AppSettings {
+  const path = settings.notifications?.customSoundPath
+  if (typeof path !== 'string' || path === '' || path === current.notifications.customSoundPath || chosenSoundPaths.has(path)) return settings
+  // The sound path is read back from disk, so only a file picked in the sound dialog may be stored.
+  return { ...settings, notifications: { ...settings.notifications, customSoundPath: current.notifications.customSoundPath, customSoundName: current.notifications.customSoundName } }
+}
+
+async function chooseSoundFile(): Promise<{ path: string; name: string; dataUrl: string } | null> {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: database.getSettings().locale === 'uk' ? 'Обрати звук нагадування' : 'Choose reminder sound',
+    properties: ['openFile'],
+    filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }]
+  })
+  const path = result.filePaths[0]
+  if (result.canceled || !path) return null
+  const dataUrl = await audioDataUrl(path)
+  chosenSoundPaths.add(path)
+  return { path, name: basename(path), dataUrl }
+}
+
+function showNotification(input: unknown): void {
+  // Callers include the extension bridge; never pass its object through to Electron.
+  const value = (typeof input === 'object' && input !== null ? input : {}) as Partial<Record<keyof NotificationInput, unknown>>
+  if (Notification.isSupported()) new Notification({ title: String(value.title ?? ''), body: String(value.body ?? '') }).show()
+}
+
 function applyAppSettings(settings: AppSettings, ensureGlobalShortcut = false): AppSnapshot {
   const current = database.getSettings()
+  settings = guardCustomSoundPath(settings, current)
   if (current.globalShortcut !== settings.globalShortcut || (ensureGlobalShortcut && !globalShortcut.isRegistered(settings.globalShortcut))) registerToggleShortcut(settings.globalShortcut)
   const result = database.updateSettings(settings)
   app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
@@ -234,10 +282,14 @@ function emitChanged(): void {
 
 function extensionAccessKey(): string {
   const stored = database.getSecret('extension_access_key')
-  if (stored) {
-    if (stored.startsWith('plain:')) return stored.slice('plain:'.length)
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
-    return safeStorage.decryptString(Buffer.from(stored, 'base64'))
+  if (stored?.startsWith('plain:')) return stored.slice('plain:'.length)
+  if (stored && safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(stored, 'base64'))
+    } catch {
+      // An unreadable key (e.g. a changed OS profile) must not stop the
+      // tracker; a fresh one only means pairing the extension again.
+    }
   }
 
   const key = randomBytes(32).toString('base64url')
@@ -344,23 +396,13 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
       await writeFile(result.filePath, database.createDayCalendarIcs(date), 'utf8')
       return { path: result.filePath }
     }
-    case 'chooseNotificationSound': {
-      if (!mainWindow) return null
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: database.getSettings().locale === 'uk' ? 'Обрати звук нагадування' : 'Choose reminder sound',
-        properties: ['openFile'],
-        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }]
-      })
-      const path = result.filePaths[0]
-      if (result.canceled || !path) return null
-      return { path, name: basename(path), dataUrl: await audioDataUrl(path) }
-    }
+    case 'chooseNotificationSound': return chooseSoundFile()
     case 'suggestTask': return gemini.suggestTask(first as string)
     case 'interpretVoiceTask': return gemini.interpretVoiceTask(first as VoiceInput, second as string | undefined)
     case 'transcribeVoice': return gemini.transcribeVoice(first as VoiceInput)
     case 'summarizeDay': return gemini.summarizeDay()
     case 'notify': {
-      if (Notification.isSupported()) new Notification(first as NotificationInput).show()
+      showNotification(first)
       return undefined
     }
     case 'getCustomSoundData': {
@@ -402,6 +444,12 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.resumeWorkday, () => {
     const result = database.resumeWorkday()
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.resetWorkday, (_, workdayId: string) => {
+    if (typeof workdayId !== 'string') throw new Error('Workday not found')
+    const result = database.resetWorkday(workdayId)
     emitChanged()
     return result
   })
@@ -533,9 +581,15 @@ function registerIpc(): void {
     return result
   })
   ipcMain.handle(channels.updateSettings, (_, settings: AppSettings) => {
-    return applyAppSettings(settings)
+    const result = applyAppSettings(settings)
+    emitChanged()
+    return result
   })
-  ipcMain.handle(channels.setGlobalShortcut, (_, shortcut: string) => applyAppSettings({ ...database.getSettings(), globalShortcut: shortcut }, true))
+  ipcMain.handle(channels.setGlobalShortcut, (_, shortcut: string) => {
+    const result = applyAppSettings({ ...database.getSettings(), globalShortcut: shortcut }, true)
+    emitChanged()
+    return result
+  })
   ipcMain.handle(channels.saveAiKey, (_, key: string) => {
     const clean = key.trim()
     if (!clean) database.deleteSecret('gemini_api_key')
@@ -604,12 +658,38 @@ function registerIpc(): void {
   ipcMain.handle(channels.interpretVoiceTask, (_, input: VoiceInput, taskId?: string) => gemini.interpretVoiceTask(input, taskId))
   ipcMain.handle(channels.transcribeVoice, (_, input: VoiceInput) => gemini.transcribeVoice(input))
   ipcMain.handle(channels.summarizeDay, () => gemini.summarizeDay())
-  ipcMain.handle(channels.notify, (_, input: NotificationInput) => {
-    if (Notification.isSupported()) new Notification(input).show()
-  })
-  ipcMain.handle(channels.windowMode, (_, mode: 'compact' | 'expanded' | 'docked', rows = 1) => {
+  ipcMain.handle(channels.notify, (_, input: NotificationInput) => showNotification(input))
+  ipcMain.handle(channels.windowMode, (_, mode: WindowMode, rows = 1) => {
     if (!mainWindow) return null
-    const current = mainWindow.getBounds()
+    let current = mainWindow.getBounds()
+    if (mode === 'notch' || mode === 'notch-open') {
+      // The notch hangs from the top edge where the user left it; hovering opens it in place.
+      const { area, center } = notchAnchor()
+      const size = mode === 'notch' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+      notchState = mode === 'notch' ? 'collapsed' : 'open'
+      dockedSide = null
+      dockRestoreBounds = null
+      dockRestoreSide = null
+      compactWindow = true
+      editorRestoreBounds = null
+      mainWindow.setResizable(false)
+      mainWindow.setMovable(false)
+      mainWindow.setMinimumSize(size.width, size.height)
+      mainWindow.setMaximumSize(size.width, size.height)
+      programmaticHeight = size.height
+      mainWindow.setBounds({ x: Math.round(center - size.width / 2), y: area.y, ...size }, false)
+      return null
+    }
+    if (notchState) {
+      // Leaving the notch (pinning it open, compact or dock) starts from right under it.
+      const { area, center } = notchAnchor()
+      notchState = null
+      compactWindow = false
+      mainWindow.setMovable(true)
+      mainWindow.setMinimumSize(WINDOW_WIDTH, 64)
+      mainWindow.setMaximumSize(WINDOW_WIDTH, area.height)
+      current = { x: Math.round(center - WINDOW_WIDTH / 2), y: area.y, width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+    }
     if (mode === 'docked') {
       const area = screen.getDisplayMatching(current).workArea
       const centerX = current.x + current.width / 2
@@ -682,6 +762,22 @@ function registerIpc(): void {
     mainWindow.setBounds({ ...current, x, y, height }, true)
     return nextCompact ? (keepBottom ? 'bottom' : 'top') : null
   })
+  ipcMain.handle(channels.notchDrag, (_, phase: 'start' | 'move' | 'end') => {
+    if (!mainWindow || notchState !== 'collapsed') return
+    const cursor = screen.getCursorScreenPoint()
+    const bounds = mainWindow.getBounds()
+    if (phase === 'start') {
+      notchGrabOffset = cursor.x - (bounds.x + bounds.width / 2)
+      return
+    }
+    // Slides along the top edge only, onto whichever screen the cursor is over.
+    const area = screen.getDisplayNearestPoint(cursor).workArea
+    const center = clampNotchCenter(cursor.x - notchGrabOffset, area)
+    mainWindow.setBounds({ x: Math.round(center - NOTCH_SIZE.width / 2), y: area.y, ...NOTCH_SIZE }, false)
+    if (phase === 'end') {
+      database.setNotchPlacement({ displayId: screen.getDisplayNearestPoint(cursor).id, ratio: (center - area.x) / area.width })
+    }
+  })
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
     if (!mainWindow || compactWindow) return
     const current = mainWindow.getBounds()
@@ -723,17 +819,7 @@ function registerIpc(): void {
   ipcMain.handle(channels.windowView, () => {
     if (!mainWindow || compactWindow) return
   })
-  ipcMain.handle(channels.chooseSound, async () => {
-    if (!mainWindow) return null
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: database.getSettings().locale === 'uk' ? 'Обрати звук нагадування' : 'Choose reminder sound',
-      properties: ['openFile'],
-      filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }]
-    })
-    const path = result.filePaths[0]
-    if (result.canceled || !path) return null
-    return { path, name: basename(path), dataUrl: await audioDataUrl(path) }
-  })
+  ipcMain.handle(channels.chooseSound, () => chooseSoundFile())
   ipcMain.handle(channels.soundData, async () => {
     const path = database.getSettings().notifications.customSoundPath
     return path ? audioDataUrl(path) : ''
@@ -765,13 +851,19 @@ else {
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
     registerIpc()
-    localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
-    localServer.onStatusChange(emitExtensionServerStatus)
-    await localServer.start().catch(() => {
-      // A port conflict must not block the time tracker. The settings page
-      // surfaces the precise status for diagnosis.
-      emitExtensionServerStatus()
-    })
+    try {
+      localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
+      localServer.onStatusChange(emitExtensionServerStatus)
+      await localServer.start().catch(() => {
+        // A port conflict must not block the time tracker. The settings page
+        // surfaces the precise status for diagnosis.
+        emitExtensionServerStatus()
+      })
+    } catch (error) {
+      // Without a key the bridge stays off; status reports it as not started.
+      localServer = null
+      console.error('Extension server could not start', error)
+    }
     createWindow()
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
     tray = new Tray(createTrayIcon())

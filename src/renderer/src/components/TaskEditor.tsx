@@ -4,6 +4,9 @@ import { Sparkles, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { localDayBounds } from '@shared/local-date'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
+import { AnimatedText, Collapse, ease } from './Animated'
+import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
 import { ProjectPicker } from './ProjectPicker'
 import { TimeInput } from './TimeInput'
@@ -19,6 +22,20 @@ interface TaskEditorProps {
   onClose: () => void
   onSnapshot: (snapshot: AppSnapshot) => void
   onSaved: (snapshot: AppSnapshot) => void
+}
+
+function clockTime(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/** Applies an edited HH:MM to a timestamp, or undefined when the minute is unchanged so its seconds stay put. */
+function editedTime(original: number, value: string): number | undefined {
+  if (!value || value === clockTime(original)) return undefined
+  const [hours, minutes] = value.split(':').map(Number)
+  const date = new Date(original)
+  date.setHours(hours, minutes, 0, 0)
+  return date.getTime()
 }
 
 function editableInterval(task: Task | undefined, intervalId: string | undefined): Task['intervals'][number] | undefined {
@@ -37,16 +54,20 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
   const [saveError, setSaveError] = useState('')
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   useEffect(() => {
     if (!open) return
+    setDeleteOpen(false)
+    setDeleteError('')
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
     setNotes(task?.notes ?? '')
     setAiMessage('')
     const interval = editableInterval(task, intervalId)
-    setStartTime(interval ? `${String(new Date(interval.startedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.startedAt).getMinutes()).padStart(2, '0')}` : '')
-    setEndTime(interval?.endedAt ? `${String(new Date(interval.endedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.endedAt).getMinutes()).padStart(2, '0')}` : '')
+    setStartTime(interval ? clockTime(interval.startedAt) : '')
+    setEndTime(interval?.endedAt ? clockTime(interval.endedAt) : '')
     setSaveError('')
   }, [open, task, intervalId])
 
@@ -62,9 +83,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         closest = Math.max(closest, interval.endedAt)
       }
     }
-    if (!closest) return undefined
-    const date = new Date(closest)
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+    return closest ? clockTime(closest) : undefined
   })()
 
   const saveTask = async (mode: StartMode): Promise<void> => {
@@ -72,26 +91,16 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setSaveError('')
     try {
       const interval = editableInterval(task, intervalId)
-      let adjustedStart = interval?.startedAt
-      let adjustedEnd = interval?.endedAt
-      if (interval && startTime) {
-        const [hours, minutes] = startTime.split(':').map(Number)
-        const date = new Date(interval.startedAt)
-        date.setHours(hours, minutes, 0, 0)
-        adjustedStart = date.getTime()
-      }
-      if (interval?.endedAt && endTime) {
-        const [hours, minutes] = endTime.split(':').map(Number)
-        const date = new Date(interval.endedAt)
-        date.setHours(hours, minutes, 0, 0)
-        adjustedEnd = date.getTime()
-      }
+      // Only send times the user changed; resending HH:MM would drop the seconds and can
+      // collide with a neighbouring interval that ended within the same minute.
+      const adjustedStart = interval ? editedTime(interval.startedAt, startTime) : undefined
+      const adjustedEnd = interval?.endedAt ? editedTime(interval.endedAt, endTime) : undefined
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd })
         : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
+      setSaveError(errorText(error, t, 'timeUpdateError'))
     } finally {
       setBusy(false)
     }
@@ -115,7 +124,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
       setNotes(suggestion.notes)
       setAiMessage('')
     } catch (error) {
-      setAiMessage(error instanceof Error ? error.message : t('aiError'))
+      setAiMessage(errorText(error, t, 'aiError'))
     } finally {
       setAiBusy(false)
     }
@@ -149,18 +158,32 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   }
 
   const deleteTask = async (): Promise<void> => {
-    if (!task || !window.confirm(t('deleteTaskConfirm'))) return
+    if (!task) return
     setBusy(true)
+    setDeleteError('')
     try {
       onSaved(await window.workBuddy.deleteTask(task.id))
+      setDeleteOpen(false)
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : t('deleteTaskError'))
+      setDeleteError(errorText(error, t, 'deleteTaskError'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
+    <>
+    <ConfirmDialog
+      open={open && deleteOpen}
+      title={t('deleteTaskTitle')}
+      body={<p>{t('deleteTaskBody')}</p>}
+      confirmLabel={t('confirmDelete')}
+      cancelLabel={t('cancel')}
+      busy={busy}
+      error={deleteError}
+      onConfirm={() => void deleteTask()}
+      onCancel={() => setDeleteOpen(false)}
+    />
     <AnimatePresence>
       {open && (
         <motion.div className="modal-backdrop no-drag" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -200,15 +223,17 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
               <textarea autoFocus={Boolean(task)} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
             </label>
 
-            {aiMessage && <p className="ai-note">{aiMessage}</p>}
+            <Collapse open={Boolean(aiMessage)}><p className="ai-note">{aiMessage}</p></Collapse>
 
-            {saveError && <p className="form-error">{saveError}</p>}
+            <Collapse open={Boolean(saveError)}><p className="form-error">{saveError}</p></Collapse>
             <div className="modal-actions">
               {task ? (
                 <>
-                  <button className="icon-button icon-button--quiet delete-task-icon" disabled={busy} onClick={deleteTask} title={t('deleteTask')} aria-label={t('deleteTask')}><Trash2 size={15} /></button>
+                  <button className="icon-button icon-button--quiet delete-task-icon" disabled={busy} onClick={() => { setDeleteError(''); setDeleteOpen(true) }} title={t('deleteTask')} aria-label={t('deleteTask')}><Trash2 size={15} /></button>
                   {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <div className="ai-editor-actions">
-                    {notes.trim() && <button className="secondary-button ai-refine-button" disabled={aiBusy || busy} onClick={suggestWithAi}><Sparkles size={14} />{aiBusy ? t('aiThinking') : t('refineAi')}</button>}
+                    <AnimatePresence initial={false}>
+                      {notes.trim() && <motion.button key="refine" className="secondary-button ai-refine-button" disabled={aiBusy || busy} onClick={suggestWithAi} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16, ease }}><Sparkles size={14} /><AnimatedText text={aiBusy ? t('aiThinking') : t('refineAi')} /></motion.button>}
+                    </AnimatePresence>
                     <VoiceButton t={t} disabled={aiBusy || busy} onVoice={applyVoice} onError={setAiMessage} />
                   </div>}
                   <button className="primary-button" disabled={busy} onClick={() => saveTask(defaultMode)}>{t('save')}</button>
@@ -224,5 +249,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         </motion.div>
       )}
     </AnimatePresence>
+    </>
   )
 }

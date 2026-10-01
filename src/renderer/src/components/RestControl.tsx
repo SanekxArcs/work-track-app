@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { motion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
 import { Check, Coffee, Dumbbell, Pause, Pencil, Play, SkipForward, Square, Volume2, VolumeX, X } from 'lucide-react'
 import type { AppSnapshot, RestSession, RestType } from '@shared/types'
 import { dueRestTypes, restElapsed, restRemaining } from '@shared/rest'
 import type { Translator } from '../lib/i18n'
-import { formatDuration } from '../lib/time'
+import { errorText } from '../lib/errors'
+import { AnimatedDuration, Collapse, ease, StackItem, Swap } from './Animated'
 import { TimeInput } from './TimeInput'
 
 interface RestControlProps {
@@ -28,26 +29,36 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
   const start = (type: RestType): void => { void mutate(window.workBuddy.startRest(type)) }
   const skip = (type: RestType): void => { void mutate(window.workBuddy.skipRest(type)) }
 
-  if (active) return <ActiveRest rest={active} now={now} t={t} mutate={mutate} />
-  if (!due.length) return null
-
+  // Due cards and the running rest grow in and shrink out, so the page below glides instead of jumping.
   return (
-    <div className="rest-due-stack">
-      {due.map((type, index) => {
-        const Icon = type === 'lunch' ? Coffee : Dumbbell
-        const copy = restCopy(type, t)
-        return (
-          <motion.section className={`rest-due rest-due--${type}`} key={type} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .05 }}>
-            <div className="rest-due__icon"><Icon size={18} /></div>
-            <div><strong>{type === 'lunch' ? t('lunchIsDue') : t('breakIsDue')}</strong><p>{copy.due}</p></div>
-            <div className="rest-due__actions">
-              <button className="rest-due__start" onClick={() => start(type)}><Play size={14} fill="currentColor" />{type === 'lunch' ? t('startLunch') : t('startBreak')}</button>
-              <button className="rest-due__skip" onClick={() => skip(type)}><SkipForward size={13} />{t('skipToday')}</button>
-            </div>
-          </motion.section>
-        )
-      })}
-    </div>
+    <AnimatePresence initial={false}>
+      {active ? (
+        <StackItem key={`rest-${active.id}`}><ActiveRest rest={active} now={now} t={t} mutate={mutate} /></StackItem>
+      ) : due.length > 0 ? (
+        <StackItem key="due">
+          <div className="rest-due-stack">
+            <AnimatePresence initial={false}>
+              {due.map((type) => {
+                const Icon = type === 'lunch' ? Coffee : Dumbbell
+                const copy = restCopy(type, t)
+                return (
+                  <StackItem key={type} gap={7}>
+                    <section className={`rest-due rest-due--${type}`}>
+                      <div className="rest-due__icon"><Icon size={18} /></div>
+                      <div><strong>{type === 'lunch' ? t('lunchIsDue') : t('breakIsDue')}</strong><p>{copy.due}</p></div>
+                      <div className="rest-due__actions">
+                        <button className="rest-due__start" onClick={() => start(type)}><Play size={14} fill="currentColor" />{type === 'lunch' ? t('startLunch') : t('startBreak')}</button>
+                        <button className="rest-due__skip" onClick={() => skip(type)}><SkipForward size={13} />{t('skipToday')}</button>
+                      </div>
+                    </section>
+                  </StackItem>
+                )
+              })}
+            </AnimatePresence>
+          </div>
+        </StackItem>
+      ) : null}
+    </AnimatePresence>
   )
 }
 
@@ -75,33 +86,33 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
       await mutate(window.workBuddy.updateRestStart(rest.id, adjusted.getTime()))
       setEditingTime(false)
     } catch (error) {
-      setTimeError(error instanceof Error ? error.message : t('timeUpdateError'))
+      setTimeError(errorText(error, t, 'timeUpdateError'))
     }
   }
 
   return (
-    <motion.section className={`active-rest active-rest--${rest.type}`} layout initial={{ opacity: 0, scale: .98 }} animate={{ opacity: 1, scale: 1 }}>
+    <section className={`active-rest active-rest--${rest.type}`}>
       <div className="active-rest__top">
-        <div className="active-rest__identity"><span><Icon size={18} /></span>{paused && <div><small>{t('restPaused')}</small></div>}</div>
-        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}><span>{remaining === 0 ? t('restTimeUp') : formatDuration(remaining)}</span>{overtime > 0 && <small>+{formatDuration(overtime, true)}</small>}<Pencil size={11} /></button>
+        <div className="active-rest__identity"><span><Icon size={18} /></span><AnimatePresence initial={false}>{paused && <motion.div key="paused" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -4 }} transition={{ duration: 0.18, ease }}><small>{t('restPaused')}</small></motion.div>}</AnimatePresence></div>
+        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}>{remaining === 0 ? <span>{t('restTimeUp')}</span> : <AnimatedDuration className="active-rest__time" ms={remaining} />}{overtime > 0 && <small>+<AnimatedDuration ms={overtime} compact /></small>}<Pencil size={11} /></button>
       </div>
-      {editingTime && (
+      <Collapse open={editingTime}>
         <div className="rest-time-editor">
           <label><span>{t('restStartedAt')}</span><TimeInput autoFocus value={startTime} onChange={setStartTime} ariaLabel={t('restStartedAt')} /></label>
           <button className="confirm" onClick={saveStart}><Check size={14} /></button>
           <button onClick={() => { setEditingTime(false); setStartTime(initialTime); setTimeError('') }}><X size={14} /></button>
-          {timeError && <small>{timeError}</small>}
+          <Collapse open={Boolean(timeError)} className="rest-time-editor__error"><small>{timeError}</small></Collapse>
         </div>
-      )}
+      </Collapse>
       <div className="active-rest__progress"><motion.span animate={{ width: `${progress}%` }} /></div>
-      <p>{paused ? t('restPausedBody') : t('restRunningBody')}</p>
+      <motion.p key={paused ? 'paused' : 'running'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, ease }}>{paused ? t('restPausedBody') : t('restRunningBody')}</motion.p>
       <div className={`active-rest__actions ${remaining === 0 ? 'active-rest__actions--with-sound' : ''}`}>
         {paused
           ? <button className="rest-primary" onClick={() => void mutate(window.workBuddy.resumeRest(rest.id))}><Play size={15} fill="currentColor" />{t('continueRest')}</button>
           : <button onClick={() => void mutate(window.workBuddy.pauseRest(rest.id))}><Pause size={15} fill="currentColor" />{t('pauseRest')}</button>}
-        {remaining === 0 && <button className={`rest-sound-toggle ${rest.alarmMuted ? 'is-muted' : ''}`} onClick={() => void mutate(window.workBuddy.setRestAlarmMuted(rest.id, !rest.alarmMuted))} title={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')} aria-label={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')}>{rest.alarmMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
+        {remaining === 0 && <button className={`rest-sound-toggle ${rest.alarmMuted ? 'is-muted' : ''}`} onClick={() => void mutate(window.workBuddy.setRestAlarmMuted(rest.id, !rest.alarmMuted))} title={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')} aria-label={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')}><Swap id={rest.alarmMuted ? 'muted' : 'sound'}>{rest.alarmMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</Swap></button>}
         <button className="rest-finish" onClick={() => void mutate(window.workBuddy.completeRest(rest.id))}><Square size={13} fill="currentColor" />{t('finishRest')}</button>
       </div>
-    </motion.section>
+    </section>
   )
 }

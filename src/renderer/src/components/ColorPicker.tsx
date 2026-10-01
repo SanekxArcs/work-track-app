@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, ChevronDown } from 'lucide-react'
 import { useAnchoredMenu } from '../lib/popover'
+import { popoverMotion } from './Animated'
 
 interface ColorPickerProps {
   value: string
@@ -34,7 +35,7 @@ export function ColorPicker({ value, colors, onChange, ariaLabel }: ColorPickerP
       <ChevronDown size={14} />
     </button>
     {createPortal(<AnimatePresence>
-      {open && <motion.div ref={menu} className="color-picker__menu color-picker__menu--floating" style={menuStyle} initial={{ opacity: 0, scale: .98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .98 }} transition={{ duration: .14 }}>
+      {open && <motion.div ref={menu} className="color-picker__menu color-picker__menu--floating" style={menuStyle} {...popoverMotion}>
         {colors.map((color) => <button type="button" key={color} className={color === value ? 'selected' : ''} style={{ background: color }} aria-label={color} title={color.toUpperCase()} onClick={() => { onChange(color); setOpen(false) }}>
           {color === value && <Check size={13} />}
         </button>)}

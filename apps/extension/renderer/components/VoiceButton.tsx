@@ -21,6 +21,7 @@ export function VoiceButton({ t, disabled = false, className = '', onVoice, onEr
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const maxDuration = useRef<number | undefined>(undefined)
+  const cancelled = useRef(false)
 
   const release = (): void => {
     if (maxDuration.current) window.clearTimeout(maxDuration.current)
@@ -31,12 +32,29 @@ export function VoiceButton({ t, disabled = false, className = '', onVoice, onEr
     setRecording(false)
   }
 
-  useEffect(() => () => release(), [])
+  useEffect(() => {
+    cancelled.current = false
+    return () => {
+      // Unmounting mid-recording discards the clip instead of submitting it.
+      cancelled.current = true
+      const active = recorder.current
+      if (active) {
+        active.onstop = null
+        active.ondataavailable = null
+        if (active.state !== 'inactive') active.stop()
+      }
+      release()
+    }
+  }, [])
 
   const start = async (): Promise<void> => {
     try {
       onError('')
       const nextStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (cancelled.current) {
+        nextStream.getTracks().forEach((track) => track.stop())
+        return
+      }
       stream.current = nextStream
       const mimeType = preferredMimeType()
       const nextRecorder = new MediaRecorder(nextStream, mimeType ? { mimeType } : undefined)
@@ -45,10 +63,11 @@ export function VoiceButton({ t, disabled = false, className = '', onVoice, onEr
       nextRecorder.onstop = () => {
         const blob = new Blob(chunks, { type: nextRecorder.mimeType || 'audio/webm' })
         release()
-        if (blob.size < 400) return
+        if (cancelled.current || blob.size < 400) return
         setProcessing(true)
         const reader = new FileReader()
         reader.onload = () => {
+          if (cancelled.current) return
           const dataUrl = String(reader.result)
           const data = dataUrl.slice(dataUrl.indexOf(',') + 1)
           void onVoice({ data, mimeType: blob.type || 'audio/webm' }).catch((error: unknown) => onError(error instanceof Error ? error.message : t('voiceError'))).finally(() => setProcessing(false))

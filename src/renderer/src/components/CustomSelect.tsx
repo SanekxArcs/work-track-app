@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, ChevronDown } from 'lucide-react'
+import { popoverMotion } from './Animated'
+import { useAnchoredMenu } from '../lib/popover'
 
 export interface SelectOption {
   value: string
@@ -19,11 +22,16 @@ interface CustomSelectProps {
 export function CustomSelect({ value, options, onChange, ariaLabel }: CustomSelectProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  // The menu lives in a portal so a card, panel or the scroll area can never clip it;
+  // it opens above the field when there is no room below.
+  const menuStyle = useAnchoredMenu(open, root, menu)
   const selected = options.find((option) => option.value === value) ?? options[0]
 
   useEffect(() => {
     const close = (event: PointerEvent): void => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (!root.current?.contains(target) && !menu.current?.contains(target)) setOpen(false)
     }
     window.addEventListener('pointerdown', close)
     return () => window.removeEventListener('pointerdown', close)
@@ -38,9 +46,9 @@ export function CustomSelect({ value, options, onChange, ariaLabel }: CustomSele
         </span>
         <ChevronDown size={15} />
       </button>
-      <AnimatePresence>
+      {createPortal(<AnimatePresence>
         {open && (
-          <motion.div className="custom-select__menu" initial={{ opacity: 0, y: -5, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: 0.98 }} transition={{ duration: 0.14 }}>
+          <motion.div ref={menu} className="custom-select__menu no-drag" style={{ ...menuStyle, width: root.current?.offsetWidth }} {...popoverMotion}>
             {options.map((option) => (
               <button type="button" key={option.value} className={option.value === value ? 'selected' : ''} onClick={() => { onChange(option.value); setOpen(false) }}>
                 {option.color && <i style={{ background: option.color }} />}
@@ -50,7 +58,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel }: CustomSele
             ))}
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>, document.body)}
     </div>
   )
 }

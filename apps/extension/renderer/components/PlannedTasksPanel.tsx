@@ -3,6 +3,7 @@ import { Check, ListTodo, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { AnimatePresence, motion } from '../../lib/motion-shim'
 import type { AppSnapshot } from '../../shared/types'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { VoiceButton } from './VoiceButton'
 import { CustomSelect } from './CustomSelect'
 
@@ -21,13 +22,17 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
   const [editingProjectId, setEditingProjectId] = useState('')
   const [editingNotes, setEditingNotes] = useState('')
   const [editError, setEditError] = useState('')
+  const [listError, setListError] = useState('')
 
   const add = async (): Promise<void> => {
     if (!title.trim()) return
     setBusy(true)
+    setListError('')
     try {
       onSnapshot(await window.workBuddy.createPlannedTask({ title }))
       setTitle('')
+    } catch (error) {
+      setListError(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
@@ -35,8 +40,11 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
 
   const remove = async (id: string): Promise<void> => {
     setBusy(true)
+    setListError('')
     try {
       onSnapshot(await window.workBuddy.deletePlannedTask(id))
+    } catch (error) {
+      setListError(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
@@ -76,7 +84,7 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
       onSnapshot(await window.workBuddy.updatePlannedTask({ id: editingId, title: editingTitle, projectId: editingProjectId || null, notes: editingNotes }))
       setEditingId(null)
     } catch (error) {
-      setEditError(error instanceof Error ? error.message : t('saveFailed'))
+      setEditError(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
@@ -90,6 +98,7 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
       {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <VoiceButton t={t} disabled={busy} onVoice={addVoice} onError={setVoiceMessage} />}
     </div>
     {voiceMessage && <p className="planned-voice-status">{voiceMessage}</p>}
+    {listError && <small className="form-error">{listError}</small>}
     <AnimatePresence initial={false}>
       {snapshot.plannedTasks.length > 0 && <div className="planned-task-list">
         {snapshot.plannedTasks.map((task) => {

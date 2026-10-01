@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { motion } from 'motion/react'
 import { CalendarDays } from 'lucide-react'
 import type { HistoryDay, OvertimeDay } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { formatDuration } from '../lib/time'
+import { ease } from './Animated'
 
 interface HistoryPanelProps {
   days: HistoryDay[]
@@ -59,12 +61,12 @@ export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSe
   const unredeemedOvertime = new Map(overtimeDays.filter((day) => !day.redeemed && day.overtimeMs > 0).map((day) => [day.date, day.overtimeMs]))
 
   return <section className="panel history-panel">
-    <div className="section-heading"><div><span className="eyebrow">History</span><h3>{t('workHistory')}</h3></div><CalendarDays size={16} /></div>
+    <div className="section-heading"><div><span className="eyebrow">{t('historyEyebrow')}</span><h3>{t('workHistory')}</h3></div><CalendarDays size={16} /></div>
     <p>{t('workHistoryBody')}</p>
     <div className="history-range" role="group" aria-label={t('historyRange')}>
       {RANGES.map((item) => <button key={item} type="button" className={range === item ? 'active' : ''} onClick={() => chooseRange(item)}>{item}</button>)}
     </div>
-    <div className="history-heatmap" aria-label={t('workHistory')} style={{ gridTemplateColumns: `auto repeat(${columns}, minmax(0, 1fr))` }}>
+    <motion.div key={range} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, ease }} className="history-heatmap" aria-label={t('workHistory')} style={{ gridTemplateColumns: `auto repeat(${columns}, minmax(0, 1fr))` }}>
       {weekdayLabels.map((label, index) => <span key={label} className="history-weekday">{label}</span>)}
       {Array.from({ length: leadingBlanks }, (_, index) => <span key={`blank-${index}`} className="history-cell history-cell--blank" aria-hidden="true" />)}
       {visibleDays.map((day) => {
@@ -72,7 +74,7 @@ export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSe
         const overtimeLabel = overtimeMs ? ` · +${formatDuration(overtimeMs, true)} · ${t('unredeemedOvertime')}` : ''
         return <button key={day.date} className={`history-cell history-cell--${level(day.workedMs)} ${overtimeMs ? 'history-cell--overtime' : ''} ${selectedDate === day.date ? 'selected' : ''}`} onClick={() => onSelect(day.date)} title={`${labelForDate(day.date, locale)} · ${formatDuration(day.workedMs, true)}${overtimeLabel}`} aria-label={`${labelForDate(day.date, locale)}: ${formatDuration(day.workedMs, true)}${overtimeLabel}`}>{overtimeMs && <i className="history-cell__overtime" aria-hidden="true" />}</button>
       })}
-    </div>
+    </motion.div>
     <div className="history-legend"><span>{t('less')}</span><i className="history-cell--0" /><i className="history-cell--1" /><i className="history-cell--2" /><i className="history-cell--3" /><i className="history-cell--4" /><span>{t('more')}</span><span className="history-overtime-legend"><i />{t('unredeemedOvertime')}</span></div>
     {recentDays.length > 0 && <div className="history-recent">
       {recentDays.map((day) => <button key={day.date} className={selectedDate === day.date ? 'selected' : ''} onClick={() => onSelect(day.date)}><span>{labelForDate(day.date, locale)}</span><strong>{formatDuration(day.workedMs, true)}</strong></button>)}

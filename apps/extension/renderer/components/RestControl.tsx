@@ -4,6 +4,7 @@ import { Check, Coffee, Dumbbell, Pause, Pencil, Play, SkipForward, Square, Volu
 import type { AppSnapshot, RestSession, RestType } from '../../shared/types'
 import { dueRestTypes, restElapsed, restRemaining } from '../../shared/rest'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { formatDuration } from '../lib/time'
 import { TimeInput } from './TimeInput'
 
@@ -23,16 +24,23 @@ function restCopy(type: RestType, t: Translator): { title: string; due: string }
 export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
   const active = snapshot.rests.find((rest) => rest.status !== 'completed')
   const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
+  const [error, setError] = useState('')
 
   const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => onSnapshot(await promise)
-  const start = (type: RestType): void => { void mutate(window.workBuddy.startRest(type)) }
-  const skip = (type: RestType): void => { void mutate(window.workBuddy.skipRest(type)) }
+  /** Applies the result, or shows why the action failed. */
+  const run = (promise: Promise<AppSnapshot>): void => {
+    setError('')
+    void mutate(promise).catch((reason: unknown) => setError(errorText(reason, t)))
+  }
+  const start = (type: RestType): void => run(window.workBuddy.startRest(type))
+  const skip = (type: RestType): void => run(window.workBuddy.skipRest(type))
 
-  if (active) return <ActiveRest rest={active} now={now} t={t} mutate={mutate} />
+  if (active) return <ActiveRest rest={active} now={now} t={t} error={error} mutate={mutate} run={run} />
   if (!due.length) return null
 
   return (
     <div className="rest-due-stack">
+      {error && <small className="form-error">{error}</small>}
       {due.map((type, index) => {
         const Icon = type === 'lunch' ? Coffee : Dumbbell
         const copy = restCopy(type, t)
@@ -51,7 +59,7 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
   )
 }
 
-function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; t: Translator; mutate: (promise: Promise<AppSnapshot>) => Promise<void> }): React.JSX.Element {
+function ActiveRest({ rest, now, t, error, mutate, run }: { rest: RestSession; now: number; t: Translator; error: string; mutate: (promise: Promise<AppSnapshot>) => Promise<void>; run: (promise: Promise<AppSnapshot>) => void }): React.JSX.Element {
   const [editingTime, setEditingTime] = useState(false)
   const [timeError, setTimeError] = useState('')
   const Icon = rest.type === 'lunch' ? Coffee : Dumbbell
@@ -74,8 +82,8 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
     try {
       await mutate(window.workBuddy.updateRestStart(rest.id, adjusted.getTime()))
       setEditingTime(false)
-    } catch (error) {
-      setTimeError(error instanceof Error ? error.message : t('timeUpdateError'))
+    } catch (reason) {
+      setTimeError(errorText(reason, t, 'timeUpdateError'))
     }
   }
 
@@ -95,12 +103,13 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
       )}
       <div className="active-rest__progress"><motion.span animate={{ width: `${progress}%` }} /></div>
       <p>{paused ? t('restPausedBody') : t('restRunningBody')}</p>
+      {error && <small className="form-error">{error}</small>}
       <div className={`active-rest__actions ${remaining === 0 ? 'active-rest__actions--with-sound' : ''}`}>
         {paused
-          ? <button className="rest-primary" onClick={() => void mutate(window.workBuddy.resumeRest(rest.id))}><Play size={15} fill="currentColor" />{t('continueRest')}</button>
-          : <button onClick={() => void mutate(window.workBuddy.pauseRest(rest.id))}><Pause size={15} fill="currentColor" />{t('pauseRest')}</button>}
-        {remaining === 0 && <button className={`rest-sound-toggle ${rest.alarmMuted ? 'is-muted' : ''}`} onClick={() => void mutate(window.workBuddy.setRestAlarmMuted(rest.id, !rest.alarmMuted))} title={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')} aria-label={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')}>{rest.alarmMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
-        <button className="rest-finish" onClick={() => void mutate(window.workBuddy.completeRest(rest.id))}><Square size={13} fill="currentColor" />{t('finishRest')}</button>
+          ? <button className="rest-primary" onClick={() => run(window.workBuddy.resumeRest(rest.id))}><Play size={15} fill="currentColor" />{t('continueRest')}</button>
+          : <button onClick={() => run(window.workBuddy.pauseRest(rest.id))}><Pause size={15} fill="currentColor" />{t('pauseRest')}</button>}
+        {remaining === 0 && <button className={`rest-sound-toggle ${rest.alarmMuted ? 'is-muted' : ''}`} onClick={() => run(window.workBuddy.setRestAlarmMuted(rest.id, !rest.alarmMuted))} title={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')} aria-label={rest.alarmMuted ? t('unmuteRestAlarm') : t('muteRestAlarm')}>{rest.alarmMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>}
+        <button className="rest-finish" onClick={() => run(window.workBuddy.completeRest(rest.id))}><Square size={13} fill="currentColor" />{t('finishRest')}</button>
       </div>
     </motion.section>
   )

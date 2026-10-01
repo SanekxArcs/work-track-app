@@ -4,7 +4,7 @@ import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, 
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '../../shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
-import { workdayOvertimeMs } from '../../shared/workday'
+import { dayPlannedEndAt, dayStartedAt, workdayLunchAllowanceMs, workdayOvertimeMs, workdayPlannedDurationMs } from '../../shared/workday'
 import { localDateKey, localDayBounds } from '../../shared/local-date'
 import { HistoryPanel } from './HistoryPanel'
 
@@ -58,14 +58,11 @@ function historyLabel(value: string, locale: 'uk' | 'en'): string {
 
 function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs = 0): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
   const { workday, lunch } = snapshot.settings
-  const start = atTime(reference, workday.startTime)
-  let end = atTime(reference, workday.endTime)
-  if (end <= start) {
-    const nextDay = new Date(end)
-    nextDay.setDate(nextDay.getDate() + 1)
-    end = nextDay.getTime()
-  }
-  end += extraLunchMs
+  // Matches the desktop: the scheduled day runs from the actual start for the
+  // configured length, not from the usual clock times.
+  // The day starts with its first session; gaps between sessions within the plan move the end.
+  const start = snapshot.workday ? dayStartedAt(snapshot.workday) : atTime(reference, workday.startTime)
+  const end = (snapshot.workday ? dayPlannedEndAt(snapshot.settings, snapshot.workday, [], reference) : start + workdayPlannedDurationMs(snapshot.settings, null)) + extraLunchMs
   const actualRests = snapshot.rests.flatMap((rest) => rest.intervals.map((interval): ScheduleSegment => ({
     type: rest.type,
     start: Math.max(start, interval.startedAt),
@@ -132,12 +129,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const lunchTime = restTime('lunch')
   const hasDayDetails = Boolean(reportSnapshot.workday) || tasks.length > 0 || breakTime > 0 || lunchTime > 0
   const baseSchedule = scheduleSegments(reportSnapshot, reportNow)
-  const lunchOverage = Math.max(0, lunchTime - reportSnapshot.settings.lunch.durationMinutes * 60_000)
+  const lunchOverage = Math.max(0, lunchTime - workdayLunchAllowanceMs(reportSnapshot.settings, reportSnapshot.workday))
   const schedule = scheduleSegments(reportSnapshot, reportNow, lunchOverage)
   const scheduleSpan = schedule.end - schedule.start
   const scheduleProgress = Math.min(100, Math.max(0, ((reportNow - schedule.start) / scheduleSpan) * 100))
   const scheduledMinutes = scheduleSpan / 60_000
-  const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
+  const countedMinutes = workdayPlannedDurationMs(reportSnapshot.settings, reportSnapshot.workday) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
   const overtimeDay = overtimeOverview.days.find((day) => day.date === selectedDate)
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))

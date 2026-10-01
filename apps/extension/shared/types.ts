@@ -53,6 +53,9 @@ export interface Workday {
   id: string
   startedAt: number
   endedAt: number | null
+  scheduledMinutes?: number | null
+  lunchMinutes?: number | null
+  earlierSessions?: Array<{ startedAt: number; endedAt: number }>
 }
 
 export interface RestInterval {

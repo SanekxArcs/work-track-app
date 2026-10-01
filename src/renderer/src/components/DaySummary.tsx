@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, Sparkles, Undo2, X } from 'lucide-react'
+import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, RotateCcw, Sparkles, Undo2, X } from 'lucide-react'
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
-import { scheduledWorkdayDurationMs, workdayOvertimeMs } from '@shared/workday'
+import { dayPlannedEndAt, dayStartedAt, workdayLunchAllowanceMs, workdayOvertimeMs, workdayPlannedDurationMs } from '@shared/workday'
 import { localDateKey, localDayBounds, localDaysBefore } from '@shared/local-date'
+import { AnimatedDuration, AnimatedNumber, AnimatedText, Collapse, ease, StackCollapse } from './Animated'
+import { ConfirmDialog } from './ConfirmDialog'
 import { HistoryPanel } from './HistoryPanel'
 import { TimeInput } from './TimeInput'
 
@@ -60,8 +63,9 @@ function historyLabel(value: string, locale: 'uk' | 'en'): string {
 
 function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs = 0): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
   const { workday, lunch } = snapshot.settings
-  const start = snapshot.workday?.startedAt ?? atTime(reference, workday.startTime)
-  const end = start + scheduledWorkdayDurationMs(snapshot.settings) + extraLunchMs
+  // The day starts with its first session; gaps between sessions within the plan move the end.
+  const start = snapshot.workday ? dayStartedAt(snapshot.workday) : atTime(reference, workday.startTime)
+  const end = (snapshot.workday ? dayPlannedEndAt(snapshot.settings, snapshot.workday, [], reference) : start + workdayPlannedDurationMs(snapshot.settings, null)) + extraLunchMs
   const actualRests = snapshot.rests.flatMap((rest) => rest.intervals.map((interval): ScheduleSegment => ({
     type: rest.type,
     start: Math.max(start, interval.startedAt),
@@ -91,11 +95,22 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const [mergeTaskIds, setMergeTaskIds] = useState<string[]>([])
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeError, setMergeError] = useState('')
+  const [overtimeError, setOvertimeError] = useState('')
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetBusy, setResetBusy] = useState(false)
+  const [resetError, setResetError] = useState('')
   const [timelineLayout, setTimelineLayout] = useState<'lanes' | 'overlay'>('lanes')
   const [editingWorkdayStart, setEditingWorkdayStart] = useState(false)
   const [workdayStartTime, setWorkdayStartTime] = useState('')
   const [workdayStartError, setWorkdayStartError] = useState('')
   const isHistorical = selectedDate !== todayKey
+  // Follow the calendar past midnight while today is shown, instead of turning it into history.
+  const shownToday = useRef(todayKey)
+  useEffect(() => {
+    if (shownToday.current === todayKey) return
+    setSelectedDate((current) => current === shownToday.current ? todayKey : current)
+    shownToday.current = todayKey
+  }, [todayKey])
 
   useEffect(() => { void window.workBuddy.getHistory(365).then(setHistory).catch(() => undefined) }, [snapshot])
   useEffect(() => { void window.workBuddy.getOvertimeOverview().then(setOvertimeOverview).catch(() => undefined) }, [snapshot])
@@ -132,12 +147,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const lunchTime = restTime('lunch')
   const hasDayDetails = Boolean(reportSnapshot.workday) || tasks.length > 0 || breakTime > 0 || lunchTime > 0
   const baseSchedule = scheduleSegments(reportSnapshot, reportNow)
-  const lunchOverage = Math.max(0, lunchTime - reportSnapshot.settings.lunch.durationMinutes * 60_000)
+  const lunchOverage = Math.max(0, lunchTime - workdayLunchAllowanceMs(reportSnapshot.settings, reportSnapshot.workday))
   const schedule = scheduleSegments(reportSnapshot, reportNow, lunchOverage)
   const scheduleSpan = schedule.end - schedule.start
   const scheduleProgress = Math.min(100, Math.max(0, ((reportNow - schedule.start) / scheduleSpan) * 100))
   const scheduledMinutes = scheduleSpan / 60_000
-  const countedMinutes = (baseSchedule.end - baseSchedule.start) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
+  const countedMinutes = workdayPlannedDurationMs(reportSnapshot.settings, reportSnapshot.workday) / 60_000 - (reportSnapshot.settings.lunch.includedInWorkHours ? 0 : baseSchedule.lunchMinutes)
   const overtimeDay = overtimeOverview.days.find((day) => day.date === selectedDate)
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
@@ -145,6 +160,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
   const canContinueDay = Boolean(snapshot.workday && snapshot.workday.endedAt !== null && snapshot.workday.startedAt >= todayStart)
+  const canResetDay = !isHistorical && Boolean(snapshot.workday && (snapshot.workday.endedAt === null || snapshot.workday.startedAt >= todayStart))
   const exportFrom = exportRange?.from ?? selectedDate
   const exportTo = exportRange?.to ?? selectedDate
   const exportInvalid = !exportFrom || !exportTo || exportTo < exportFrom
@@ -170,16 +186,34 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       onSnapshot(await window.workBuddy.mergeTasks({ targetId, sourceIds, date: selectedDate }))
       leaveMergeMode()
     } catch (error) {
-      setMergeError(error instanceof Error ? error.message : t('mergeError'))
+      setMergeError(errorText(error, t, 'mergeError'))
     } finally {
       setMergeBusy(false)
     }
   }
 
+  const resetDay = async (): Promise<void> => {
+    if (!snapshot.workday) return
+    setResetBusy(true)
+    setResetError('')
+    try {
+      onSnapshot(await window.workBuddy.resetWorkday(snapshot.workday.id))
+      setResetOpen(false)
+    } catch (error) {
+      setResetError(errorText(error, t, 'saveFailed'))
+    } finally {
+      setResetBusy(false)
+    }
+  }
+
   const toggleOvertimeRedemption = async (): Promise<void> => {
     if (!overtimeDay) return
-    const result = await window.workBuddy.setOvertimeRedeemed(overtimeDay.date, !overtimeDay.redeemed)
-    setOvertimeOverview(result)
+    setOvertimeError('')
+    try {
+      setOvertimeOverview(await window.workBuddy.setOvertimeRedeemed(overtimeDay.date, !overtimeDay.redeemed))
+    } catch (error) {
+      setOvertimeError(errorText(error, t, 'saveFailed'))
+    }
   }
 
   const generateSummary = async (): Promise<void> => {
@@ -188,7 +222,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
     try {
       setAiSummary((await window.workBuddy.summarizeDay()).summary)
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : t('aiError'))
+      setAiError(errorText(error, t, 'aiError'))
     } finally {
       setAiBusy(false)
     }
@@ -201,7 +235,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       const result = await window.workBuddy.exportRangeCalendar(exportFrom, exportTo)
       if (result) setCalendarExportStatus(t('calendarExportReady'))
     } catch (error) {
-      setCalendarExportStatus(error instanceof Error ? error.message : t('calendarExportError'))
+      setCalendarExportStatus(errorText(error, t, 'calendarExportError'))
     } finally {
       setCalendarExporting(false)
     }
@@ -226,17 +260,17 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       setEditingWorkdayStart(false)
       setWorkdayStartError('')
     } catch (error) {
-      setWorkdayStartError(error instanceof Error ? error.message : t('workdayStartUpdateError'))
+      setWorkdayStartError(errorText(error, t, 'workdayStartUpdateError'))
     }
   }
 
   const metrics = [
-    { label: t('workedToday'), value: formatDuration(coverage, true), icon: Clock3, tone: 'green' },
-    { label: t('summedTime'), value: formatDuration(summed, true), icon: Layers3, tone: 'blue' },
-    { label: t('overlap'), value: formatDuration(overlap, true), icon: GitBranch, tone: 'purple' },
-    { label: t('contextSwitches'), value: String(switches), icon: ArrowRightLeft, tone: 'orange' },
-    { label: t('breakTime'), value: formatDuration(breakTime, true), icon: Dumbbell, tone: 'blue' },
-    { label: t('lunchTime'), value: formatDuration(lunchTime, true), icon: Coffee, tone: 'orange' }
+    { label: t('workedToday'), value: <AnimatedDuration ms={coverage} compact />, icon: Clock3, tone: 'green' },
+    { label: t('summedTime'), value: <AnimatedDuration ms={summed} compact />, icon: Layers3, tone: 'blue' },
+    { label: t('overlap'), value: <AnimatedDuration ms={overlap} compact />, icon: GitBranch, tone: 'purple' },
+    { label: t('contextSwitches'), value: <AnimatedNumber value={switches} />, icon: ArrowRightLeft, tone: 'orange' },
+    { label: t('breakTime'), value: <AnimatedDuration ms={breakTime} compact />, icon: Dumbbell, tone: 'blue' },
+    { label: t('lunchTime'), value: <AnimatedDuration ms={lunchTime} compact />, icon: Coffee, tone: 'orange' }
   ]
 
   return (
@@ -245,14 +279,14 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
-          {startedAt && endedAt && <p>{hasOpenDay ? <button className="day-hero__start-time" onClick={startEditingWorkdayStart} title={t('editWorkdayStart')} aria-label={t('editWorkdayStart')}>{formatClock(startedAt, reportSnapshot.settings.locale)} <Pencil size={11} /></button> : formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : 'now'} · {formatDuration(span, true)}</p>}
-          {editingWorkdayStart && <div className="workday-start-editor"><label><span>{t('workdayStartedAt')}</span><TimeInput autoFocus value={workdayStartTime} onChange={setWorkdayStartTime} ariaLabel={t('workdayStartedAt')} /></label><button className="confirm" onClick={() => void saveWorkdayStart()} aria-label={t('save')}><Check size={13} /></button><button onClick={() => { setEditingWorkdayStart(false); setWorkdayStartError('') }} aria-label={t('cancel')}><X size={13} /></button>{workdayStartError && <small>{workdayStartError}</small>}</div>}
+          {startedAt && endedAt && <p>{hasOpenDay ? <button className="day-hero__start-time" onClick={startEditingWorkdayStart} title={t('editWorkdayStart')} aria-label={t('editWorkdayStart')}>{formatClock(startedAt, reportSnapshot.settings.locale)} <Pencil size={11} /></button> : formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : t('nowLabel')} · {formatDuration(span, true)}</p>}
+          <Collapse open={editingWorkdayStart}><div className="workday-start-editor"><label><span>{t('workdayStartedAt')}</span><TimeInput autoFocus value={workdayStartTime} onChange={setWorkdayStartTime} ariaLabel={t('workdayStartedAt')} /></label><button className="confirm" onClick={() => void saveWorkdayStart()} aria-label={t('save')}><Check size={13} /></button><button onClick={() => { setEditingWorkdayStart(false); setWorkdayStartError('') }} aria-label={t('cancel')}><X size={13} /></button><Collapse open={Boolean(workdayStartError)} className="workday-start-editor__error"><small>{workdayStartError}</small></Collapse></div></Collapse>
         </div>
         <div className="day-hero__tools"><div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div></div>
       </section>}
 
       {hasDayDetails && <section className="panel schedule-panel">
-        <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong>{Math.round(scheduleProgress)}%</strong></div>
+        <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong><AnimatedNumber value={Math.round(scheduleProgress)} suffix="%" /></strong></div>
         <div className="schedule-progress">
           <span className="schedule-progress__elapsed" style={{ width: `${scheduleProgress}%` }} />
           {schedule.segments.map((segment, index) => (
@@ -265,11 +299,11 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
       </section>}
 
-      {overtime > 0 && (
-        <motion.section className="overtime-card" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
-          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+{formatDuration(overtime, true)}</strong><p>{t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} />{overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')}</button>}
-        </motion.section>
-      )}
+      <StackCollapse open={overtime > 0}>
+        <section className="overtime-card">
+          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+<AnimatedDuration ms={overtime} compact /></strong><p className={overtimeError ? 'form-error' : undefined}>{overtimeError || t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} /><AnimatedText text={overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')} /></button>}
+        </section>
+      </StackCollapse>
 
       {hasDayDetails && <div className="metrics-grid">
         {metrics.map(({ label, value, icon: Icon, tone }, index) => (
@@ -282,14 +316,15 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       </div>}
 
       <section className="overtime-balance-card">
-        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
+        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+<AnimatedDuration ms={overtimeOverview.balanceMs} compact /></strong><p>{t('overtimeBalanceBody')}</p></div>
       </section>
 
       {tasks.length > 0 && <section className="panel timeline-panel">
         <div className="section-heading">
-          <div><span className="eyebrow">Timeline</span><h3>{t('timeline')}</h3></div>
+          <div><span className="eyebrow">{t('timelineEyebrow')}</span><h3>{t('timeline')}</h3></div>
           <div className="timeline-heading-actions"><button className={`timeline-layout-toggle ${timelineLayout === 'overlay' ? 'is-overlay' : ''}`} onClick={() => setTimelineLayout((current) => current === 'lanes' ? 'overlay' : 'lanes')} title={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')} aria-label={timelineLayout === 'lanes' ? t('timelineOverlay') : t('timelineRows')}><RedoDot size={15} /></button>{startedAt && <span className="timeline-range">{formatClock(timelineStart, reportSnapshot.settings.locale)} — {formatClock(timelineEnd, reportSnapshot.settings.locale)}</span>}</div>
         </div>
+        <motion.div key={timelineLayout} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, ease }}>
         {timelineLayout === 'lanes' ? <div className="timeline">
             {tasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
@@ -328,11 +363,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
             })}</div>
           </div>
         }
+        </motion.div>
       </section>}
 
       {tasks.length > 0 && <section className="panel day-tasks-panel">
-        <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
-        {mergeMode && <div className="day-merge-controls"><p>{t('mergeTasksHint')}</p>{mergeError && <small>{mergeError}</small>}<div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div>}
+        <div className="section-heading"><div><span className="eyebrow">{t('tasksEyebrow')}</span><h3>{t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        <Collapse open={mergeMode}><div className="day-merge-controls"><p>{t('mergeTasksHint')}</p><Collapse open={Boolean(mergeError)}><small>{mergeError}</small></Collapse><div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div></Collapse>
         <div className="day-task-list">
           {tasks.map((task) => {
             const project = getProject(reportSnapshot.projects, task)
@@ -348,21 +384,35 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         </div>
       </section>}
 
-      {canShowAiSummary && (
+      <StackCollapse open={canShowAiSummary}>
         <section className="panel ai-summary-panel">
           <div className="section-heading"><div><span className="eyebrow">Gemini</span><h3>{t('aiDaySummary')}</h3></div><Sparkles size={16} /></div>
-          {aiSummary ? <div className="ai-summary-copy">{aiSummary}</div> : <p>{t('aiDaySummaryBody')}</p>}
-          {aiError && <p className="ai-error">{aiError}</p>}
-          <button className="secondary-button wide" disabled={aiBusy || tasks.length === 0} onClick={generateSummary}>{aiBusy ? t('aiThinking') : t('generateSummary')}</button>
+          <Collapse open={!aiSummary}><p>{t('aiDaySummaryBody')}</p></Collapse>
+          <Collapse open={Boolean(aiSummary)}><div className="ai-summary-copy">{aiSummary}</div></Collapse>
+          <Collapse open={Boolean(aiError)}><p className="ai-error">{aiError}</p></Collapse>
+          <button className="secondary-button wide" disabled={aiBusy || tasks.length === 0} onClick={generateSummary}><AnimatedText text={aiBusy ? t('aiThinking') : t('generateSummary')} /></button>
         </section>
-      )}
+      </StackCollapse>
 
       {!isHistorical && <div className="day-actions">
         <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
           {hasOpenDay ? t('endDay') : t('startDay')}
         </button>
         {!hasOpenDay && canContinueDay && <button className="secondary-button" onClick={onContinueDay} title={t('continueDayHint')}><Undo2 size={15} />{t('continueDay')}</button>}
+        {canResetDay && <button className="reset-day-button" onClick={() => { setResetError(''); setResetOpen(true) }}><RotateCcw size={13} />{t('resetDay')}</button>}
       </div>}
+
+      <ConfirmDialog
+        open={resetOpen}
+        title={t('resetDayTitle')}
+        body={<p>{t('resetDayBody').replace('{time}', snapshot.workday ? formatClock(snapshot.workday.startedAt, snapshot.settings.locale) : '')}</p>}
+        confirmLabel={t('resetDayConfirm')}
+        cancelLabel={t('cancel')}
+        busy={resetBusy}
+        error={resetError}
+        onConfirm={() => void resetDay()}
+        onCancel={() => setResetOpen(false)}
+      />
 
       <HistoryPanel days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
       <section className="panel calendar-range-export">
@@ -379,9 +429,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
           <label><span>{t('calendarFrom')}</span><input type="date" value={exportFrom} onChange={(event) => setExportRange({ from: event.target.value, to: exportTo < event.target.value ? event.target.value : exportTo })} /></label>
           <label><span>{t('calendarTo')}</span><input type="date" min={exportFrom} value={exportTo} onChange={(event) => setExportRange({ from: exportFrom, to: event.target.value })} /></label>
         </div>
-        <button className="day-calendar-button" disabled={calendarExporting || exportInvalid} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>
-        {exportTo >= todayKey && snapshot.tasks.some((task) => task.status === 'running') && <p className="calendar-export-status">{t('calendarExportRunningHint')}</p>}
-        {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
+        <button className="day-calendar-button" disabled={calendarExporting || exportInvalid} onClick={() => void exportCalendar()}><Download size={14} /><AnimatedText text={calendarExporting ? t('calendarExporting') : t('calendarExport')} /></button>
+        <StackCollapse gap={10} open={exportTo >= todayKey && (snapshot.tasks.some((task) => task.status === 'running') || snapshot.rests.some((rest) => rest.status === 'running'))}><p className="calendar-export-status">{t('calendarExportRunningHint')}</p></StackCollapse>
+        <StackCollapse gap={10} open={Boolean(calendarExportStatus)}><p className="calendar-export-status">{calendarExportStatus}</p></StackCollapse>
       </section>
     </motion.div>
   )

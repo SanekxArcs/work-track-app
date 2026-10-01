@@ -95,6 +95,11 @@ export interface Workday {
   id: string
   startedAt: number
   endedAt: number | null
+  /** Schedule length and lunch allowance captured for this day, so later settings changes leave it alone. */
+  scheduledMinutes?: number | null
+  lunchMinutes?: number | null
+  /** Earlier finished workdays on the same calendar day; together they share one daily allowance. */
+  earlierSessions?: Array<{ startedAt: number; endedAt: number }>
 }
 
 export interface RestInterval {
@@ -130,6 +135,8 @@ export interface AppSettings {
   alwaysOnTop: boolean
   autoStart: boolean
   globalShortcut: string
+  /** Offers a notch-style pill at the top centre of the screen in place of the compact window. */
+  notchEnabled: boolean
   workday: {
     startReminder: boolean
     startTime: string
@@ -170,6 +177,9 @@ export interface AppSettings {
     hasApiKey: boolean
   }
 }
+
+/** notch is the collapsed pill at the top centre of the screen; notch-open is it expanded on hover. */
+export type WindowMode = 'compact' | 'expanded' | 'docked' | 'notch' | 'notch-open'
 
 export interface AppSnapshot {
   projects: Project[]
@@ -336,6 +346,7 @@ export interface WorkBuddyApi {
   endWorkday: () => Promise<AppSnapshot>
   updateWorkdayStart: (startedAt: number) => Promise<AppSnapshot>
   resumeWorkday: () => Promise<AppSnapshot>
+  resetWorkday: (workdayId: string) => Promise<AppSnapshot>
   getProjectStats: () => Promise<ProjectStats[]>
   getProjectTasks: (projectId: string) => Promise<ProjectTaskSummary[]>
   deleteProject: (id: string) => Promise<AppSnapshot>
@@ -375,7 +386,9 @@ export interface WorkBuddyApi {
   transcribeVoice: (input: VoiceInput) => Promise<string>
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
-  setWindowMode: (mode: 'compact' | 'expanded' | 'docked', rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
+  setWindowMode: (mode: WindowMode, rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
+  /** Drags the collapsed notch along the top edge; the main process follows the cursor. */
+  dragNotch: (phase: 'start' | 'move' | 'end') => Promise<void>
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>
   fitWindowToContent: (height: number) => Promise<void>

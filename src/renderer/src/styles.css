@@ -52,6 +52,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .app-shell--compact { padding: 2px; }
 .app-shell--loading { align-items: center; justify-content: center; }
+.load-error { display: grid; gap: 10px; justify-items: center; padding: 16px; text-align: center; }
+.form-error.app-action-error { position: fixed; z-index: 1100; left: 12px; right: 12px; bottom: 12px; margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--bg-elevated); border: 1px solid var(--line); }
 .loading-mark { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 16px; color: var(--accent); background: var(--bg-elevated); animation: breathe 1.4s ease-in-out infinite; }
 
 .app-header { flex: 0 0 auto; height: 68px; padding: 14px 16px 11px 18px; display: flex; align-items: center; justify-content: space-between; }
@@ -168,6 +170,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .planned-task-add .planned-task-time { padding: 0 6px; color-scheme: dark; font-variant-numeric: tabular-nums; }
 .planned-task-add input:focus { border-color: rgba(123,223,242,.52); }
 .planned-task-list { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+.planned-task-add-project { margin-top: 7px; }
+.planned-task-add-project .custom-select__trigger { min-height: 35px; }
+.planned-task-start { color: var(--accent-ink); background: var(--accent); transition: background .16s ease, transform .16s ease, opacity .16s ease; }
+.planned-task-start:hover { background: var(--accent-strong); }
+.planned-task-start:disabled { opacity: .35; cursor: not-allowed; transform: none; }
 .planned-task-row { min-height: 36px; padding: 6px 7px; border: 1px solid rgba(255,255,255,.055); border-radius: 10px; display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.025); }
 .planned-task-row > span { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 99px; }
 .planned-task-row > div { min-width: 0; flex: 1; }.planned-task-row strong, .planned-task-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.planned-task-row strong { color: var(--text); font-size: 9.5px; }.planned-task-row small { margin-top: 2px; color: var(--muted); font-size: 8px; }
@@ -444,8 +451,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.045); } }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Confirmation dialog */
+.confirm-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 16px; background: rgba(6, 8, 6, .62); backdrop-filter: blur(3px); }
+.confirm-dialog { width: min(100%, 340px); padding: 18px; border-radius: 18px; background: #1b1e1a; border: 1px solid rgba(255, 255, 255, .1); box-shadow: 0 18px 60px rgba(0, 0, 0, .45); }
+.confirm-dialog__icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; color: #ff9d94; background: rgba(255, 138, 128, .1); }
+.confirm-dialog h2 { margin: 12px 0 6px; font-size: 15px; letter-spacing: -.02em; }
+.confirm-dialog__body p { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.confirm-dialog__actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+.confirm-dialog__confirm { min-height: 40px; justify-content: center; border-radius: 12px; font-weight: 750; }
+.reset-day-button { align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; font-size: 10px; cursor: pointer; transition: color .16s ease, background .16s ease; }
+.reset-day-button:hover { color: #ff9d94; background: rgba(255, 138, 128, .08); }
+
+/* Shared animation primitives */
+.animated-number { display: inline-flex; align-items: baseline; font-variant-numeric: tabular-nums; white-space: nowrap; }
+number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .2em; }
+.animated-text { display: inline-grid; overflow: hidden; vertical-align: bottom; }
+.animated-text > span { grid-area: 1 / 1; white-space: nowrap; }
+.collapse { overflow: hidden; }
 
 /* Header stats carousel */
 .brand-copy { min-width: 172px; max-width: 214px; }
@@ -467,7 +492,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-picker__menu small { padding: 1px 6px; width: fit-content; border-radius: 6px; background: rgba(255,255,255,.07); font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
 .project-picker__create { grid-template-columns: auto 1fr !important; color: var(--accent) !important; }
 .project-picker__create strong { color: var(--accent); }
-.project-picker__menu { position: fixed; }
 .project-picker__empty { margin: 0; padding: 10px; color: var(--muted); font-size: 10px; }
 
 /* Continue day */
@@ -528,6 +552,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Edge dock */
 .app-shell--docked { padding: 0; }
+
+/* Notch: a pill hanging from the top edge that grows into the full view in place */
+.app-shell--notch { padding: 0; align-items: center; }
+.notch { position: relative; flex: 0 0 auto; overflow: hidden; display: flex; flex-direction: column; background: #0b0c0b; border: 1px solid rgba(255,255,255,.09); border-top: 0; border-radius: 0 0 18px 18px; box-shadow: 0 10px 28px rgba(0,0,0,.42); }
+.notch--open { border-radius: 0 0 20px 20px; }
+.notch__full { position: absolute; top: 0; left: 50%; width: 100vw; height: 100vh; transform: translateX(-50%); display: flex; flex-direction: column; }
+.app-header--notch { cursor: pointer; }
+.app-header--notch .brand-lockup, .app-header--notch .window-actions { box-shadow: none; }
+.notch-pill { width: 100%; height: 100%; min-width: 0; padding: 0 16px; border: 0; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--text); background: transparent; cursor: grab; font: inherit; touch-action: none; user-select: none; }
+.notch-pill:active { cursor: grabbing; }
+.notch-pill:hover .notch-pill__label { color: var(--text); }
+.notch-pill__slide { min-width: 0; display: flex; align-items: baseline; gap: 7px; font-size: 11px; white-space: nowrap; }
+.notch-pill__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); transition: color .16s ease; }
+.notch-pill__slide b { flex: 0 0 auto; color: var(--accent); font-weight: 750; font-variant-numeric: tabular-nums; }
 .dock-pill { height: 100%; width: 100%; display: flex; align-items: stretch; overflow: hidden; background: var(--surface-readable); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,.35); }
 .dock-pill--left { border-left: 0; border-radius: 0 16px 16px 0; }
 .dock-pill--right { border-right: 0; border-radius: 16px 0 0 16px; }
@@ -666,3 +704,41 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .history-heatmap .history-cell { aspect-ratio: auto; height: 14px; width: 100%; border-radius: 3px; }
 .history-heatmap .history-cell:hover, .history-heatmap .history-cell.selected { transform: none; outline: 1px solid rgba(242,244,236,.85); outline-offset: 0; z-index: 1; }
 .history-weekday { height: 14px; font-size: 9px; }
+
+/* Motion helpers used by components/Animated.tsx */
+.swap { display: inline-grid; place-items: center; }
+.swap > span { grid-area: 1 / 1; display: inline-grid; place-items: center; }
+.fade-wrap { display: inline-flex; }
+.stack-item { flex-shrink: 0; }
+/* Containers whose rows leave with AnimatePresence mode="popLayout" */
+.planned-task-list, .project-cards, .palette-editor { position: relative; }
+
+/* Wrapped content keeps the look it had before it was wrapped for animation */
+.rest-time-editor__error, .workday-start-editor__error { grid-column: 1 / -1; }
+.rest-time-editor__error small, .workday-start-editor__error small { display: block; }
+.day-merge-controls .collapse > small { display: block; margin-top: 6px; color: #efad89; font-size: 8px; }
+.ai-summary-panel > .collapse > p { margin: 12px 0; color: #c0c6bb; font-size: 10px; line-height: 1.55; white-space: pre-line; }
+.ai-summary-panel > .collapse > p.ai-error { color: #efad89; }
+.metric-card strong .animated-number { margin: 0; color: inherit; font-size: inherit; }
+.active-rest__clock small .animated-number { font-size: inherit; font-weight: inherit; letter-spacing: 0; }
+.autosave-indicator .animated-text, .autosave-indicator .animated-text span { width: auto; height: auto; border-radius: 0; background: none; animation: none; }
+
+/* Hover, pressed and selected states ease instead of snapping (never `all`, never transform on motion-driven elements) */
+.primary-button, .secondary-button, .end-day-button { transition: background-color .16s ease, border-color .16s ease, color .16s ease, opacity .16s ease, transform .18s ease, filter .18s ease; }
+.icon-button { transition: background-color .16s ease, color .16s ease, opacity .16s ease, transform .18s ease; }
+.task-control, .compact-task-actions button, .compact-window-actions button, .focus-hero__actions button, .tab-bar button,
+.rest-due__actions button, .active-rest__actions button, .active-rest__clock, .rest-time-editor button, .workday-start-editor button,
+.day-hero__start-time, .day-calendar-button, .history-recent button, .timeline-layout-toggle, .day-task-row, .day-task-row__check,
+.day-merge-toggle, .overtime-redeem-button, .custom-select__trigger, .custom-select__menu button, .color-picker__trigger, .voice-button,
+.segment-control button, .segmented button, .status-chips button, .history-range button, .calendar-range-presets button, .palette-chip,
+.archived-projects-toggle, .project-card__grip, .danger-button, .tp-secondary, .tp-done, .tp-column__list button, .time-picker__trigger,
+.global-shortcut-reset, .global-shortcut-capture, .dock-open, .delete-task-button, .ai-suggest-button, .link-button {
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, opacity .16s ease;
+}
+.color-dots button, .color-picker__menu button { transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.toggle, .toggle span { transition: background-color .18s ease; }
+.status-dot, .autosave-indicator > span, .extension-server-state > span { transition: background-color .2s ease, box-shadow .2s ease; }
+.task-card { transition: border-color .2s ease, box-shadow .2s ease; }
+.projects-search, .planned-task-add input, .status-editor-row input, .project-form > input, .project-form__pair input, .number-field, .tp-typed,
+.calendar-range-dates input, .planned-task-editor > input, .planned-task-editor > textarea { transition: border-color .16s ease, box-shadow .16s ease; }
+.project-card__bar span { transition: width .4s ease, background-color .2s ease; }

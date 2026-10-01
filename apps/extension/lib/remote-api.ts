@@ -31,13 +31,47 @@ function chromeGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve) => chrome.storage.local.get(key, (value) => resolve(value[key] as T | undefined)))
 }
 
-function chromeSet(value: Record<string, string>): Promise<void> {
-  return new Promise((resolve) => chrome.storage.local.set(value, resolve))
+export type RemoteErrorCode = "offline" | "unauthorized" | "invalidated"
+
+export class RemoteApiError extends Error {
+  constructor(message: string, readonly code?: RemoteErrorCode) {
+    super(message)
+  }
 }
 
-async function send<T>(message: { scope: "work-buddy"; kind: "health" } | { scope: "work-buddy"; kind: "invoke"; method: string; args: unknown[] }): Promise<T> {
-  const response = await chrome.runtime.sendMessage(message) as { ok: boolean; result?: T; error?: string }
-  if (!response?.ok) throw new Error(response?.error ?? "Work Buddy is not running")
+export function remoteErrorCode(error: unknown): RemoteErrorCode | undefined {
+  return error instanceof RemoteApiError ? error.code : undefined
+}
+
+// After the extension is reloaded or updated, scripts already injected into
+// open pages lose their runtime and every message throws. Remember that so the
+// pollers stop instead of rejecting every couple of seconds.
+let contextInvalidated = false
+
+function extensionContextAlive(): boolean {
+  if (!contextInvalidated && !chrome.runtime?.id) contextInvalidated = true
+  return !contextInvalidated
+}
+
+type BridgeMessage =
+  | { scope: "work-buddy"; kind: "health" }
+  | { scope: "work-buddy"; kind: "invoke"; method: string; args: unknown[] }
+  | { scope: "work-buddy"; kind: "pair"; key: string }
+
+async function send<T>(message: BridgeMessage): Promise<T> {
+  if (!extensionContextAlive()) throw new RemoteApiError("Extension context invalidated", "invalidated")
+  let response: { ok: boolean; result?: T; error?: string; code?: RemoteErrorCode } | undefined
+  try {
+    response = await chrome.runtime.sendMessage(message) as typeof response
+  } catch (error) {
+    const text = error instanceof Error ? error.message : ""
+    if (!chrome.runtime?.id || text.includes("Extension context invalidated")) {
+      contextInvalidated = true
+      throw new RemoteApiError("Extension context invalidated", "invalidated")
+    }
+    throw new RemoteApiError(text || "Work Buddy is not running", "offline")
+  }
+  if (!response?.ok) throw new RemoteApiError(response?.error ?? "Work Buddy is not running", response ? response.code : "offline")
   return response.result as T
 }
 
@@ -45,8 +79,13 @@ export async function getAccessKey(): Promise<string> {
   return (await chromeGet<string>(accessKeyName)) ?? ""
 }
 
-export async function saveAccessKey(key: string): Promise<void> {
-  await chromeSet({ [accessKeyName]: key.trim() })
+/** Checks the key with the desktop app; the background stores it only if it is accepted. */
+export async function pairWithKey(key: string): Promise<void> {
+  await send<null>({ scope: "work-buddy", kind: "pair", key: key.trim() })
+}
+
+export async function clearAccessKey(): Promise<void> {
+  await new Promise<void>((resolve) => chrome.storage.local.remove(accessKeyName, resolve))
 }
 
 export async function getServerHealth(): Promise<ExtensionServerStatus> {
@@ -62,7 +101,7 @@ function noOp(): Promise<void> { return Promise.resolve() }
 export const remoteApi: WorkBuddyApi = {
   getAppVersion: () => invoke<string>("getAppVersion"),
   getSnapshot: () => invoke<AppSnapshot>("getSnapshot"),
-  getHistory: (days?: number) => invoke<HistoryDay[]>("getHistory", [days]),
+  getHistory: (days?: number) => invoke<HistoryDay[]>("getHistory", days === undefined ? [] : [days]),
   getDaySnapshot: (date) => invoke<AppSnapshot>("getDaySnapshot", [date]),
   getOvertimeOverview: () => invoke<OvertimeOverview>("getOvertimeOverview"),
   setOvertimeRedeemed: (date, redeemed) => invoke<OvertimeOverview>("setOvertimeRedeemed", [date, redeemed]),
@@ -111,11 +150,23 @@ export const remoteApi: WorkBuddyApi = {
   getExtensionServerStatus: getServerHealth,
   getExtensionAccessKey: getAccessKey,
   onExtensionServerStatus: (callback) => {
-    const timer = window.setInterval(() => void getServerHealth().then(callback).catch(() => undefined), 8_000)
+    const timer = window.setInterval(() => {
+      if (!extensionContextAlive()) {
+        window.clearInterval(timer)
+        return
+      }
+      void getServerHealth().then(callback).catch(() => undefined)
+    }, 8_000)
     return () => window.clearInterval(timer)
   },
   onDataChanged: (callback) => {
-    const timer = window.setInterval(callback, 2_000)
+    const timer = window.setInterval(() => {
+      if (!extensionContextAlive()) {
+        window.clearInterval(timer)
+        return
+      }
+      callback()
+    }, 2_000)
     return () => window.clearInterval(timer)
   },
   onOpenSettings: () => () => undefined,

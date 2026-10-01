@@ -34,7 +34,7 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
         '--project-glow': project ? `${project.color}2e` : 'rgba(184, 233, 134, .08)'
       } as React.CSSProperties}
       onDoubleClick={onEdit}
-      onKeyDown={(event) => { if (event.key === 'Enter') onEdit() }}
+      onKeyDown={(event) => { if (event.key === 'Enter' && event.target === event.currentTarget) onEdit() }}
       tabIndex={0}
       title={t('doubleClickEdit')}
     >

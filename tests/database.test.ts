@@ -753,3 +753,203 @@ test('project stats and task summaries pick up new tracked time', async () => {
     assert.equal(tasks[1].lastEndedAt, at(26, 10))
   })
 })
+
+test('project task summaries keep tasks without tracked time last', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-empty-task-test-'))
+  const path = join(directory, 'work-buddy.sqlite')
+  const database = new WorkBuddyDatabase(path)
+  try {
+    const created = await atTime(at(26, 8), () => database.createProject({ name: 'Alpha', color: '#b8e986' }))
+    const projectId = created.projects[0].id
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', projectId, notes: 'Tracked' }))
+    await atTime(at(26, 10), () => database.endWorkday())
+    const raw = new DatabaseSync(path)
+    raw.prepare("INSERT INTO tasks (id, title, project_id, notes, status, created_at, updated_at) VALUES ('empty', '', ?, 'Empty', 'stopped', ?, ?)").run(projectId, at(26, 11), at(26, 11))
+    raw.close()
+
+    const tasks = await atTime(at(26, 12), () => database.getProjectTasks(projectId))
+    assert.deepEqual(tasks.map((task) => task.label), ['Tracked', 'Empty'])
+    assert.equal(tasks[1].lastEndedAt, null)
+    assert.equal(tasks[1].firstStartedAt, null)
+  } finally {
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('project stats refresh after tasks change but ignore unrelated writes', async () => {
+  await withDatabase(async (database) => {
+    const created = await atTime(at(26, 8), () => database.createProject({ name: 'Alpha', color: '#b8e986' }))
+    const projectId = created.projects[0].id
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', projectId, notes: 'One' }))
+    const snapshot = await atTime(at(26, 10), () => database.endWorkday())
+    assert.equal((await atTime(at(26, 12), () => database.getProjectStats()))[0].totalMs, 60 * 60 * 1000)
+    database.createPlannedTask({ title: 'Later' })
+    assert.equal((await atTime(at(26, 12), () => database.getProjectStats()))[0].taskCount, 1)
+    database.deleteTask(snapshot.tasks[0].id)
+    const [stats] = await atTime(at(26, 12), () => database.getProjectStats())
+    assert.equal(stats.totalMs, 0)
+    assert.equal(stats.taskCount, 0)
+    assert.equal(stats.lastWorkedAt, null)
+  })
+})
+
+test('a deliberate rename to the other language default name survives saves', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    const renamed = database.updateSettings({ ...settings, projectStatuses: [{ ...settings.projectStatuses[0], name: 'Active' }, ...settings.projectStatuses.slice(1)] }).settings
+    assert.equal(renamed.projectStatuses[0].name, 'Active')
+    assert.equal(database.updateSettings(renamed).settings.projectStatuses[0].name, 'Active')
+    assert.equal(database.getSettings().projectStatuses[0].name, 'Active')
+    const english = database.updateSettings({ ...renamed, locale: 'en' }).settings
+    assert.equal(english.projectStatuses[0].name, 'Active')
+    assert.equal(english.projectStatuses[1].name, 'On hold')
+  })
+})
+
+test('migrates built-in statuses stored in Ukrainian for an English interface once', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-status-test-'))
+  const path = join(directory, 'work-buddy.sqlite')
+  new WorkBuddyDatabase(path).close()
+  const raw = new DatabaseSync(path)
+  const stored = JSON.parse((raw.prepare('SELECT json FROM app_settings WHERE id = 1').get() as { json: string }).json)
+  raw.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify({ ...stored, locale: 'en' }))
+  raw.exec('PRAGMA user_version = 0')
+  raw.close()
+  let database = new WorkBuddyDatabase(path)
+  try {
+    const settings = database.getSettings()
+    assert.equal(settings.projectStatuses[0].name, 'Active')
+    database.updateSettings({ ...settings, projectStatuses: [{ ...settings.projectStatuses[0], name: 'Активний' }, ...settings.projectStatuses.slice(1)] })
+    database.close()
+    database = new WorkBuddyDatabase(path)
+    assert.equal(database.getSettings().projectStatuses[0].name, 'Активний')
+  } finally {
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('closing a stale workday never ends time that started after midnight before it began', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+    await atTime(at(26, 22), () => database.startTask({ mode: 'parallel', notes: 'Late' }))
+    await atTime(at(27, 1), () => database.startTask({ mode: 'parallel', notes: 'After midnight' }))
+    await atTime(at(27, 1, 30), () => database.startRest('break'))
+    await atTime(at(27, 1, 45), () => database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '09:00', endTime: '18:00' } }))
+
+    const backup = await atTime(at(27, 2), () => database.exportBackup())
+    for (const task of backup.tasks) for (const interval of task.intervals) assert.ok(interval.endedAt !== null && interval.endedAt >= interval.startedAt)
+    for (const rest of backup.rests) {
+      assert.ok(rest.endedAt !== null && rest.endedAt >= rest.createdAt)
+      for (const interval of rest.intervals) assert.ok(interval.endedAt !== null && interval.endedAt >= interval.startedAt)
+    }
+    assert.doesNotThrow(() => database.parseBackup(JSON.stringify(backup)))
+  })
+})
+
+test('a second workday on the same day can move its start up to its own tracked time', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Morning' }))
+    await atTime(at(26, 11), () => database.endWorkday())
+    await atTime(at(26, 13), () => database.startWorkday())
+    await atTime(at(26, 14), () => database.startTask({ mode: 'parallel', notes: 'Afternoon' }))
+
+    const later = await atTime(at(26, 15), () => database.updateWorkdayStart(at(26, 13, 30)))
+    assert.equal(later.workday?.startedAt, at(26, 13, 30))
+    await atTime(at(26, 15), () => assert.throws(() => database.updateWorkdayStart(at(26, 14, 30)), /after tracked time/i))
+    await atTime(at(26, 15), () => assert.throws(() => database.updateWorkdayStart(at(26, 10)), /previous workday/i))
+    const atPreviousEnd = await atTime(at(26, 15), () => database.updateWorkdayStart(at(26, 11)))
+    assert.equal(atPreviousEnd.workday?.startedAt, at(26, 11))
+  })
+})
+
+test('history treats a missing day count from the extension bridge as the default range', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => {
+      assert.equal(database.getHistory(null).length, 182)
+      assert.equal(database.getHistory(Number.NaN).length, 182)
+      assert.equal(database.getHistory(30).length, 30)
+    })
+  })
+})
+
+test('past overtime keeps the schedule its day was worked under', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startWorkday())
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Long day' }))
+    await atTime(at(26, 19), () => database.endWorkday())
+    assert.equal(database.getOvertimeOverview().days[0].overtimeMs, 60 * 60 * 1000)
+
+    const settings = database.getSettings()
+    await atTime(at(27, 8), () => database.updateSettings({ ...settings, workday: { ...settings.workday, endTime: '17:00' } }))
+    const [day] = await atTime(at(27, 8), () => database.getOvertimeOverview().days)
+    assert.equal(day.date, '2026-08-26')
+    assert.equal(day.overtimeMs, 60 * 60 * 1000)
+
+    // Today still follows a schedule change made while it is open.
+    const opened = await atTime(at(27, 9), () => database.startWorkday())
+    assert.equal(opened.workday?.scheduledMinutes, 8 * 60)
+    const longer = await atTime(at(27, 10), () => database.updateSettings({ ...opened.settings, workday: { ...opened.settings.workday, endTime: '19:00' } }))
+    assert.equal(longer.workday?.scheduledMinutes, 10 * 60)
+  })
+})
+
+test('sessions on one day share one allowance and time off between them moves the finish', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Morning' }))
+    await atTime(at(26, 12), () => database.endWorkday())
+    await atTime(at(26, 13), () => database.startTask({ mode: 'parallel', notes: 'Evening' }))
+    const live = await atTime(at(26, 20), () => database.getSnapshot())
+    assert.deepEqual(live.workday?.earlierSessions, [{ startedAt: at(26, 8), endedAt: at(26, 12) }])
+    await atTime(at(26, 23), () => database.endWorkday())
+
+    // 14 hours of work against a 9-hour plan, with an hour off at 12:00.
+    const [day] = database.getOvertimeOverview().days
+    assert.equal(day.overtimeMs, 5 * 60 * 60 * 1000)
+  })
+})
+
+test('a session started after the planned finish counts only its own work as overtime', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Day' }))
+    await atTime(at(26, 17), () => database.endWorkday())
+    await atTime(at(26, 20), () => database.startTask({ mode: 'parallel', notes: 'Hotfix' }))
+    await atTime(at(26, 21), () => database.endWorkday())
+    assert.equal(database.getOvertimeOverview().days[0].overtimeMs, 60 * 60 * 1000)
+  })
+})
+
+test('a short morning and a short evening session make no overtime together', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Morning' }))
+    await atTime(at(26, 12), () => database.endWorkday())
+    await atTime(at(26, 15), () => database.startTask({ mode: 'parallel', notes: 'Afternoon' }))
+    await atTime(at(26, 20), () => database.endWorkday())
+    assert.equal(database.getOvertimeOverview().days.length, 0)
+  })
+})
+
+test('resetting an accidental day removes it and the time tracked in it', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(25, 9), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+    const yesterday = await atTime(at(25, 17), () => database.endWorkday())
+    const oldTask = yesterday.tasks[0]
+    const planned = database.createPlannedTask({ title: 'Plan' }).plannedTasks[0]
+
+    await atTime(at(26, 9), () => database.startWorkday())
+    await atTime(at(26, 9, 5), () => database.resumeTask(oldTask.id, 'parallel'))
+    await atTime(at(26, 9, 10), () => database.startTask({ mode: 'parallel', notes: 'Oops', plannedTaskId: planned.id }))
+    const open = await atTime(at(26, 9, 20), () => database.getSnapshot())
+    assert.equal(open.plannedTasks.length, 0)
+
+    const reset = await atTime(at(26, 9, 30), () => database.resetWorkday(open.workday!.id))
+    assert.equal(reset.workday, null)
+    assert.deepEqual(reset.tasks.map((task) => task.notes), [])
+    assert.equal(reset.plannedTasks[0].id, planned.id)
+    const history = await atTime(at(26, 9, 30), () => database.getHistory(30))
+    assert.equal(history.find((day) => day.date === '2026-08-25')?.workedMs, 8 * 60 * 60 * 1000)
+    assert.equal(history.find((day) => day.date === '2026-08-26')?.workedMs ?? 0, 0)
+  })
+})

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from '../lib/motion-shim'
-import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square } from 'lucide-react'
-import type { AppSnapshot, StartMode, Task } from '../shared/types'
+import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, RotateCw, Settings2, Sparkles, Square, X } from 'lucide-react'
+import type { AppSnapshot, Locale, StartMode, Task } from '../shared/types'
+import { remoteErrorCode } from '../lib/remote-api'
 import { restRemaining } from '../shared/rest'
 import { scheduledWorkdayEndAt } from '../shared/workday'
 import { DaySummary } from './components/DaySummary'
@@ -10,7 +11,8 @@ import { TaskCard } from './components/TaskCard'
 import { TaskEditor } from './components/TaskEditor'
 import { RestControl } from './components/RestControl'
 import { PlannedTasksPanel } from './components/PlannedTasksPanel'
-import { translator } from './lib/i18n'
+import { browserLocale, translator } from './lib/i18n'
+import { errorText } from './lib/errors'
 import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib/time'
 import { playNotificationSound } from './lib/sounds'
 
@@ -20,7 +22,13 @@ function taskTouchesWorkday(task: Task, workdayStartedAt: number, now: number): 
   return task.intervals.some((interval) => interval.startedAt <= now && (interval.endedAt ?? now) >= workdayStartedAt)
 }
 
-export default function App(): React.JSX.Element {
+interface AppProps {
+  /** Called when the desktop app rejects the stored key, e.g. after it was regenerated. */
+  onUnpaired?: () => void
+  onLocale?: (locale: Locale) => void
+}
+
+export default function App({ onUnpaired, onLocale }: AppProps = {}): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [now, setNow] = useState(Date.now())
   const [tab, setTab] = useState<Tab>('focus')
@@ -36,11 +44,31 @@ export default function App(): React.JSX.Element {
   const compactCloseTimer = useRef<number | undefined>(undefined)
   const compactTasksOpen = useRef(false)
   const contentRef = useRef<HTMLDivElement>(null)
+  const [connectionError, setConnectionError] = useState<{ error: unknown } | null>(null)
+  const [actionError, setActionError] = useState<{ error: unknown } | null>(null)
+  const unpairedRef = useRef(onUnpaired)
+  unpairedRef.current = onUnpaired
+  const localeRef = useRef(onLocale)
+  localeRef.current = onLocale
 
-  const reload = async (): Promise<void> => setSnapshot(await window.workBuddy.getSnapshot())
+  /** Returns true when the failure was a rejected key and the pairing card takes over. */
+  const handleUnpaired = (error: unknown): boolean => {
+    if (remoteErrorCode(error) !== 'unauthorized' || !unpairedRef.current) return false
+    unpairedRef.current()
+    return true
+  }
+
+  const reload = async (): Promise<void> => {
+    try {
+      setSnapshot(await window.workBuddy.getSnapshot())
+      setConnectionError(null)
+    } catch (error) {
+      if (!handleUnpaired(error)) setConnectionError({ error })
+    }
+  }
 
   useEffect(() => {
-    reload()
+    void reload()
     const clock = window.setInterval(() => setNow(Date.now()), 1000)
     const unsubscribe = window.workBuddy.onDataChanged(reload)
     const unsubscribeSettings = window.workBuddy.onOpenSettings(() => {
@@ -62,15 +90,17 @@ export default function App(): React.JSX.Element {
     if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
   }, [])
 
+  // The panel lives inside someone else's page, so language and theme are set
+  // on the extension's own container, never on the host <html>.
   useEffect(() => {
-    if (!snapshot) return
-    document.documentElement.lang = snapshot.settings.locale
-    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    const theme = snapshot.settings.theme === 'system' ? (systemDark ? 'dark' : 'light') : snapshot.settings.theme
-    document.documentElement.dataset.theme = theme
-  }, [snapshot?.settings])
+    if (snapshot) localeRef.current?.(snapshot.settings.locale)
+  }, [snapshot?.settings.locale])
 
-  const t = useMemo(() => translator(snapshot?.settings.locale ?? 'uk'), [snapshot?.settings.locale])
+  const locale = snapshot?.settings.locale ?? browserLocale()
+  const t = useMemo(() => translator(locale), [locale])
+  const theme = snapshot
+    ? snapshot.settings.theme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : snapshot.settings.theme
+    : undefined
   const taskLabel = (task: Task): string => task.notes.trim() || task.title.trim()
   const openWorkdayStartedAt = snapshot?.workday?.endedAt === null ? snapshot.workday.startedAt : undefined
   const workdayTasks = snapshot && openWorkdayStartedAt
@@ -101,17 +131,25 @@ export default function App(): React.JSX.Element {
   }, [compact, editorOpen])
 
   if (!snapshot) {
-    return <div className="app-shell app-shell--loading"><div className="loading-mark"><Sparkles size={22} /></div></div>
+    return <div className="app-shell app-shell--loading" lang={locale}>
+      {connectionError
+        ? <div className="extension-load-error" role="alert"><p>{errorText(connectionError.error, t)}</p><button className="secondary-button" onClick={() => void reload()}><RotateCw size={14} />{t('retry')}</button></div>
+        : <div className="loading-mark"><Sparkles size={22} /></div>}
+    </div>
   }
 
-  const startInstant = async (mode: StartMode): Promise<void> => {
-    setSnapshot(await window.workBuddy.startTask({ mode }))
+  const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => {
+    try {
+      setSnapshot(await promise)
+      setActionError(null)
+    } catch (error) {
+      if (!handleUnpaired(error)) setActionError({ error })
+    }
   }
 
-  const startDayWithTask = async (): Promise<void> => {
-    await window.workBuddy.startWorkday()
-    setSnapshot(await window.workBuddy.startTask({ mode: 'parallel' }))
-  }
+  const startInstant = (mode: StartMode): Promise<void> => mutate(window.workBuddy.startTask({ mode }))
+
+  const startDayWithTask = (): Promise<void> => mutate(window.workBuddy.startWorkday().then(() => window.workBuddy.startTask({ mode: 'parallel' })))
 
   const openEdit = async (task: Task, intervalId?: string): Promise<void> => {
     if (compact) {
@@ -135,8 +173,6 @@ export default function App(): React.JSX.Element {
     setCompact(next)
     await window.workBuddy.setWindowMode(next ? 'compact' : 'expanded', compactRows)
   }
-
-  const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => setSnapshot(await promise)
 
   const revealCompactTasks = (immediate = false): void => {
     if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
@@ -175,9 +211,13 @@ export default function App(): React.JSX.Element {
   }
 
   const endDay = async (): Promise<void> => {
-    const result = await window.workBuddy.endWorkday()
-    setSnapshot(result)
-    setTab('day')
+    try {
+      setSnapshot(await window.workBuddy.endWorkday())
+      setActionError(null)
+      setTab('day')
+    } catch (error) {
+      if (!handleUnpaired(error)) setActionError({ error })
+    }
   }
 
   const fitWindowToContent = (): void => {
@@ -202,7 +242,7 @@ export default function App(): React.JSX.Element {
   ]
 
   return (
-    <main className={`app-shell ${compact ? 'app-shell--compact' : ''}`}>
+    <main className={`app-shell ${compact ? 'app-shell--compact' : ''}`} lang={locale} data-theme={theme}>
       {!compact && <header className="app-header drag-region">
         <div className="brand-lockup">
           <div className="brand-mark"><span /></div>
@@ -213,6 +253,11 @@ export default function App(): React.JSX.Element {
           <button className="icon-button icon-button--quiet" onClick={toggleCompact} title={compact ? t('expand') : t('compact')}>{compact ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button>
         </div>
       </header>}
+
+      {!compact && (connectionError || actionError) && <div className="extension-error-banner" role="alert">
+        <span>{errorText((connectionError ?? actionError)!.error, t)}</span>
+        {!connectionError && <button className="icon-button icon-button--quiet" onClick={() => setActionError(null)} title={t('dismiss')} aria-label={t('dismiss')}><X size={13} /></button>}
+      </div>}
 
       <AnimatePresence mode="wait">
         {compact ? (

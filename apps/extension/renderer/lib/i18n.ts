@@ -246,7 +246,26 @@ const messages = {
     friendlyHint: 'Без моралей. Просто дружній копняк у правильний момент.',
     nameBeforeStop: 'Дай цій задачі ім’я, щоб завтра не гадати, що це було.'
     ,nameAtDayEnd: 'Перед фінішем розберімо безіменні задачі.',
-    namingReview: 'Швидка перевірка'
+    namingReview: 'Швидка перевірка',
+    openWorkBuddy: 'Відкрити Work Buddy',
+    extensionOffline: 'Work Buddy недоступний. Перевір, що застосунок запущено на цьому комп’ютері.',
+    extensionReloaded: 'Розширення оновилося. Перезавантаж сторінку, щоб продовжити.',
+    requestFailed: 'Не вдалося виконати дію',
+    retry: 'Спробувати ще',
+    dismiss: 'Закрити',
+    pairingEyebrow: 'Work Buddy у браузері',
+    pairingTitle: 'Підключи extension',
+    pairingOfflineTitle: 'Work Buddy зараз недоступний',
+    pairingBody: 'У Windows-додатку відкрий Налаштування → Chrome extension, скопіюй ключ і встав його сюди один раз.',
+    pairingOfflineBody: 'Запусти Work Buddy. Він має працювати на цьому комп’ютері.',
+    pairingKey: 'Ключ підключення',
+    pairingConnect: 'Підключити Work Buddy',
+    pairingChecking: 'Перевіряю сервер…',
+    pairingOnline: 'Сервер Work Buddy увімкнено',
+    pairingOffline: 'Немає з’єднання з локальним сервером',
+    pairingFailed: 'Не вдалося підключитися',
+    pairingInvalidKey: 'Ключ не підійшов. Скопіюй актуальний ключ у Work Buddy.',
+    pairingExpired: 'Ключ підключення змінився. Встав новий ключ із Work Buddy.'
   },
   en: {
     appName: 'Work Buddy',
@@ -493,12 +512,36 @@ const messages = {
     friendlyHint: 'No lectures. Just a friendly nudge at the right moment.',
     nameBeforeStop: "Give this task a name so tomorrow-you doesn't have to guess."
     ,nameAtDayEnd: "Before we wrap, let's sort out the nameless tasks.",
-    namingReview: 'Quick review'
+    namingReview: 'Quick review',
+    openWorkBuddy: 'Open Work Buddy',
+    extensionOffline: "Can't reach Work Buddy. Make sure the app is running on this computer.",
+    extensionReloaded: 'The extension was updated. Reload this page to continue.',
+    requestFailed: 'Could not complete the action',
+    retry: 'Try again',
+    dismiss: 'Dismiss',
+    pairingEyebrow: 'Work Buddy in your browser',
+    pairingTitle: 'Connect the extension',
+    pairingOfflineTitle: 'Work Buddy is not available right now',
+    pairingBody: 'In the Windows app, open Settings → Chrome extension, copy the key and paste it here once.',
+    pairingOfflineBody: 'Start Work Buddy. It needs to be running on this computer.',
+    pairingKey: 'Connection key',
+    pairingConnect: 'Connect Work Buddy',
+    pairingChecking: 'Checking the server…',
+    pairingOnline: 'Work Buddy server is on',
+    pairingOffline: 'No connection to the local server',
+    pairingFailed: 'Could not connect',
+    pairingInvalidKey: "That key didn't work. Copy the current key from Work Buddy.",
+    pairingExpired: 'The connection key changed. Paste the new key from Work Buddy.'
   }
 } as const
 
 export type MessageKey = keyof typeof messages.uk
 export type Translator = (key: MessageKey) => string
+
+/** The interface language to use before the desktop settings are known. */
+export function browserLocale(): Locale {
+  return navigator.language.toLowerCase().startsWith('uk') ? 'uk' : 'en'
+}
 
 export function translator(locale: Locale): Translator {
   return (key) => messages[locale][key]

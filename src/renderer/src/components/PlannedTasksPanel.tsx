@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Check, ListTodo, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Check, ListTodo, Pencil, Play, Plus, Trash2, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { AppSnapshot } from '@shared/types'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
+import { Collapse, ease, Fade, StackCollapse } from './Animated'
 import { VoiceButton } from './VoiceButton'
 import { CustomSelect } from './CustomSelect'
 import { TimeInput } from './TimeInput'
@@ -22,6 +24,7 @@ function plannedVoiceTitle(transcript: string): string {
 export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanelProps): React.JSX.Element {
   const [title, setTitle] = useState('')
   const [reminderTime, setReminderTime] = useState('')
+  const [projectId, setProjectId] = useState('')
   const [busy, setBusy] = useState(false)
   const [voiceMessage, setVoiceMessage] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -30,14 +33,24 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
   const [editingNotes, setEditingNotes] = useState('')
   const [editingReminderTime, setEditingReminderTime] = useState('')
   const [editError, setEditError] = useState('')
+  const restRunning = snapshot.rests.some((rest) => rest.status === 'running')
+  // Only active projects are offered; a task already tied to an archived one keeps it.
+  const projectOptions = (keepId = '') => [
+    { value: '', label: t('noProject') },
+    ...snapshot.projects.filter((item) => !item.archived || item.id === keepId).map((item) => ({ value: item.id, label: item.name, color: item.color }))
+  ]
 
   const add = async (): Promise<void> => {
     if (!title.trim()) return
     setBusy(true)
     try {
-      onSnapshot(await window.workBuddy.createPlannedTask({ title, reminderTime: reminderTime || null }))
+      onSnapshot(await window.workBuddy.createPlannedTask({ title, projectId: projectId || null, reminderTime: reminderTime || null }))
       setTitle('')
       setReminderTime('')
+      setProjectId('')
+      setVoiceMessage('')
+    } catch (error) {
+      setVoiceMessage(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
@@ -47,6 +60,20 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
     setBusy(true)
     try {
       onSnapshot(await window.workBuddy.deletePlannedTask(id))
+    } catch (error) {
+      setVoiceMessage(errorText(error, t, 'saveFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Starts tracking the planned task right away; attaching it completes the plan entry. */
+  const start = async (task: AppSnapshot['plannedTasks'][number]): Promise<void> => {
+    setBusy(true)
+    try {
+      onSnapshot(await window.workBuddy.startTask({ mode: 'parallel', title: task.title, notes: task.notes, projectId: task.projectId, plannedTaskId: task.id }))
+    } catch (error) {
+      setVoiceMessage(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
@@ -58,7 +85,7 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
     try {
       const transcript = await window.workBuddy.transcribeVoice(voice)
       if (!transcript.trim()) throw new Error(t('voiceNoText'))
-      onSnapshot(await window.workBuddy.createPlannedTask({ title: plannedVoiceTitle(transcript), notes: transcript.trim() }))
+      onSnapshot(await window.workBuddy.createPlannedTask({ title: plannedVoiceTitle(transcript), notes: transcript.trim(), projectId: projectId || null }))
       setVoiceMessage(t('voicePlannedAdded'))
     } finally {
       setBusy(false)
@@ -87,40 +114,44 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
       onSnapshot(await window.workBuddy.updatePlannedTask({ id: editingId, title: editingTitle, projectId: editingProjectId || null, notes: editingNotes, reminderTime: editingReminderTime || null }))
       setEditingId(null)
     } catch (error) {
-      setEditError(error instanceof Error ? error.message : t('saveFailed'))
+      setEditError(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }
   }
 
   return <motion.section className="panel planned-tasks-panel" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
-    <div className="section-heading"><div><span className="eyebrow">Plan</span><h3>{t('plannedTasks')}</h3></div><ListTodo size={16} /></div>
+    <div className="section-heading"><div><span className="eyebrow">{t('planEyebrow')}</span><h3>{t('plannedTasks')}</h3></div><ListTodo size={16} /></div>
     <div className="planned-task-add">
       <input value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void add() }} placeholder={t('plannedTaskPlaceholder')} />
       <TimeInput className="planned-task-time" value={reminderTime} onChange={setReminderTime} ariaLabel={t('plannedTaskReminder')} allowEmpty />
-      {reminderTime && <button className="icon-button icon-button--quiet" type="button" onClick={() => setReminderTime('')} title={t('clearReminder')}><X size={13} /></button>}
+      <Fade show={Boolean(reminderTime)}><button className="icon-button icon-button--quiet" type="button" onClick={() => setReminderTime('')} title={t('clearReminder')}><X size={13} /></button></Fade>
       <button className="icon-button icon-button--accent" disabled={busy || !title.trim()} onClick={add} title={t('add')}><Plus size={16} /></button>
       {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <VoiceButton t={t} disabled={busy} onVoice={addVoice} onError={setVoiceMessage} />}
     </div>
-    {voiceMessage && <p className="planned-voice-status">{voiceMessage}</p>}
-    <AnimatePresence initial={false}>
-      {snapshot.plannedTasks.length > 0 && <div className="planned-task-list">
+    <div className="planned-task-add-project"><CustomSelect value={projectId} ariaLabel={t('project')} onChange={setProjectId} options={projectOptions()} /></div>
+    <Collapse open={Boolean(voiceMessage)}><p className="planned-voice-status">{voiceMessage}</p></Collapse>
+    {/* Not Collapse: its permanent overflow clip would cut off the inline project select while editing. */}
+    <StackCollapse open={snapshot.plannedTasks.length > 0} gap={0}>
+      <div className="planned-task-list">
+        <AnimatePresence initial={false} mode="popLayout">
         {snapshot.plannedTasks.map((task) => {
           const project = snapshot.projects.find((item) => item.id === task.projectId)
           const editing = editingId === task.id
-          return <motion.div key={task.id} className={`planned-task-row ${editing ? 'planned-task-row--editing' : ''}`} layout initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: 10 }}>
+          return <motion.div key={task.id} className={`planned-task-row ${editing ? 'planned-task-row--editing' : ''}`} layout="position" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: 10 }} transition={{ duration: 0.2, ease }}>
             <span style={{ background: project?.color ?? 'var(--accent)' }} />
-            {editing ? <div className="planned-task-editor">
+            {editing ? <motion.div className="planned-task-editor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18, ease }}>
               <input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveEdit(); if (event.key === 'Escape') cancelEdit() }} placeholder={t('plannedTaskPlaceholder')} />
-              <CustomSelect value={editingProjectId} ariaLabel={t('project')} onChange={setEditingProjectId} options={[{ value: '', label: t('noProject') }, ...snapshot.projects.filter((item) => !item.archived).map((item) => ({ value: item.id, label: item.name, color: item.color }))]} />
-              <div className="planned-task-reminder"><span>{t('plannedTaskReminder')}</span><TimeInput value={editingReminderTime} onChange={setEditingReminderTime} ariaLabel={t('plannedTaskReminder')} allowEmpty />{editingReminderTime && <button className="icon-button icon-button--quiet" type="button" onClick={() => setEditingReminderTime('')} title={t('clearReminder')}><X size={12} /></button>}</div>
+              <CustomSelect value={editingProjectId} ariaLabel={t('project')} onChange={setEditingProjectId} options={projectOptions(task.projectId ?? '')} />
+              <div className="planned-task-reminder"><span>{t('plannedTaskReminder')}</span><TimeInput value={editingReminderTime} onChange={setEditingReminderTime} ariaLabel={t('plannedTaskReminder')} allowEmpty /><Fade show={Boolean(editingReminderTime)}><button className="icon-button icon-button--quiet" type="button" onClick={() => setEditingReminderTime('')} title={t('clearReminder')}><X size={12} /></button></Fade></div>
               <textarea value={editingNotes} onChange={(event) => setEditingNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={2} />
-              {editError && <small className="form-error">{editError}</small>}
+              <AnimatePresence initial={false}>{editError && <motion.small key="error" className="form-error" initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18, ease }}>{editError}</motion.small>}</AnimatePresence>
               <div className="planned-task-editor-actions"><button className="icon-button icon-button--accent" disabled={busy || !editingTitle.trim()} onClick={() => void saveEdit()} title={t('save')}><Check size={14} /></button><button className="icon-button icon-button--quiet" disabled={busy} onClick={cancelEdit} title={t('cancel')}><X size={14} /></button></div>
-            </div> : <><div><strong>{task.title}</strong>{task.reminderTime && <small>{t('plannedTaskReminder')} · {task.reminderTime}</small>}{project && <small>{project.name}</small>}{task.notes && <small>{task.notes}</small>}</div><div className="planned-task-row-actions"><button className="icon-button icon-button--quiet" disabled={busy} onClick={() => beginEdit(task)} title={t('edit')}><Pencil size={13} /></button><button className="icon-button icon-button--quiet" disabled={busy} onClick={() => void remove(task.id)} title={t('deleteTask')}><Trash2 size={13} /></button></div></>}
+            </motion.div> : <><div><strong>{task.title}</strong>{task.reminderTime && <small>{t('plannedTaskReminder')} · {task.reminderTime}</small>}{project && <small>{project.name}</small>}{task.notes && <small>{task.notes}</small>}</div><div className="planned-task-row-actions"><button className="icon-button planned-task-start" disabled={busy || restRunning} onClick={() => void start(task)} title={t('startPlannedTask')} aria-label={t('startPlannedTask')}><Play size={12} fill="currentColor" /></button><button className="icon-button icon-button--quiet" disabled={busy} onClick={() => beginEdit(task)} title={t('edit')}><Pencil size={13} /></button><button className="icon-button icon-button--quiet" disabled={busy} onClick={() => void remove(task.id)} title={t('deleteTask')}><Trash2 size={13} /></button></div></>}
           </motion.div>
         })}
-      </div>}
-    </AnimatePresence>
+        </AnimatePresence>
+      </div>
+    </StackCollapse>
   </motion.section>
 }

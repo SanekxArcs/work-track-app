@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { motion, Reorder, useDragControls } from 'motion/react'
+import { AnimatePresence, motion, Reorder, useDragControls } from 'motion/react'
 import { Archive, ArchiveRestore, CalendarClock, Check, CheckCheck, GitMerge, GripVertical, Pencil, Plus, Search, Target, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, Project, ProjectStats, ProjectStatus, ProjectTaskSummary, ProjectType } from '@shared/types'
-import { localDayBounds } from '@shared/local-date'
+import { localDateKey, localDayBounds } from '@shared/local-date'
 import type { Translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { formatClock, formatDuration } from '../lib/time'
+import { AnimatedDuration, AnimatedNumber, ease, StackCollapse } from './Animated'
+import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
 import { randomProjectColor } from './ProjectPicker'
 
@@ -32,6 +35,11 @@ interface Draft {
 
 const DAY = 86_400_000
 const emptyStats = (projectId: string): ProjectStats => ({ projectId, totalMs: 0, todayMs: 0, weekMs: 0, taskCount: 0, lastWorkedAt: null })
+
+/** Budgets are whole minutes, so 20 minutes reads as 0.33 instead of 0.333333… */
+function formatBudgetHours(hours: number | null | undefined, locale: 'uk' | 'en'): string {
+  return Number((hours ?? 0).toFixed(2)).toLocaleString(locale === 'uk' ? 'uk-UA' : 'en-US')
+}
 
 function shortDate(timestamp: number, locale: 'uk' | 'en'): string {
   return new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', { day: 'numeric', month: 'short' }).format(timestamp)
@@ -105,11 +113,17 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
   const [mergeTarget, setMergeTarget] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [confirm, setConfirm] = useState<{ kind: 'delete' | 'merge'; project: Project; target?: Project } | null>(null)
+  // Keeps the dialog's text while it fades out after `confirm` is cleared.
+  const lastConfirm = useRef(confirm)
+  if (confirm) lastConfirm.current = confirm
+  const shownConfirm = confirm ?? lastConfirm.current
   const chips = useDragScroll<HTMLDivElement>()
   const typeChips = useDragScroll<HTMLDivElement>()
   const statuses = snapshot.settings.projectStatuses
   const types = snapshot.settings.projectTypes
   const locale = snapshot.settings.locale
+  const dayKey = localDateKey(now)
 
   useEffect(() => {
     let cancelled = false
@@ -119,13 +133,14 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       }).catch(() => undefined)
     }
     load()
-    // Totals only move on their own while something is running; otherwise a snapshot change triggers the reload.
+    // Totals only move on their own while something is running; otherwise a snapshot change
+    // or a new calendar day (today and week windows shift) triggers the reload.
     const timer = snapshot.tasks.some((task) => task.status === 'running') ? window.setInterval(load, 15_000) : undefined
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [snapshot])
+  }, [snapshot, dayKey])
 
   useEffect(() => {
     setProjectTasks(null)
@@ -186,7 +201,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       onSnapshot(await action())
       return true
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t('timeUpdateError'))
+      setError(errorText(caught, t, 'timeUpdateError'))
       return false
     } finally {
       setBusy(false)
@@ -207,14 +222,19 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       statusId: statuses.some((status) => status.id === project.statusId) ? project.statusId ?? '' : '',
       typeId: types.some((type) => type.id === project.typeId) ? project.typeId ?? '' : '',
       deadline: project.deadline ?? '',
-      budget: project.budgetHours ? String(project.budgetHours) : ''
+      budget: project.budgetHours ? String(Number(project.budgetHours.toFixed(2))) : ''
     })
   }
 
   const saveDraft = async (): Promise<void> => {
     if (!draft || !draft.name.trim()) return
-    const budget = Number(draft.budget.replace(',', '.'))
-    const budgetHours = draft.budget.trim() && Number.isFinite(budget) && budget > 0 ? budget : null
+    const budget = Number(draft.budget.trim().replace(',', '.'))
+    // Budgets are stored in whole minutes; reject anything that would round to zero.
+    if (draft.budget.trim() && !(Number.isFinite(budget) && Math.round(budget * 60) >= 1)) {
+      setError(t('budgetInvalid'))
+      return
+    }
+    const budgetHours = draft.budget.trim() ? budget : null
     const common = { name: draft.name, color: draft.color, statusId: draft.statusId || null, typeId: draft.typeId || null, deadline: draft.deadline || null, budgetHours }
     const saved = await run(() => draft.id
       ? window.workBuddy.updateProject({ id: draft.id, ...common })
@@ -231,15 +251,30 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
     void run(() => window.workBuddy.reorderProjects(ids))
   }
 
-  const deleteProject = async (project: Project): Promise<void> => {
-    if (!window.confirm(`${t('deleteProjectConfirm')} «${project.name}»`)) return
-    if (await run(() => window.workBuddy.deleteProject(project.id))) setExpandedId(null)
+  const askDelete = (project: Project): void => {
+    setError('')
+    setConfirm({ kind: 'delete', project })
   }
 
-  const mergeProject = async (project: Project): Promise<void> => {
+  const askMerge = (project: Project): void => {
     const target = snapshot.projects.find((item) => item.id === mergeTarget)
-    if (!target || !window.confirm(`${t('mergeConfirm')} «${project.name}» → «${target.name}»`)) return
-    if (await run(() => window.workBuddy.mergeProjects(project.id, target.id))) setExpandedId(target.id)
+    if (!target) return
+    setError('')
+    setConfirm({ kind: 'merge', project, target })
+  }
+
+  const confirmAction = async (): Promise<void> => {
+    if (!confirm) return
+    const { kind, project, target } = confirm
+    if (kind === 'delete') {
+      if (await run(() => window.workBuddy.deleteProject(project.id))) {
+        setExpandedId(null)
+        setConfirm(null)
+      }
+    } else if (target && await run(() => window.workBuddy.mergeProjects(project.id, target.id))) {
+      setExpandedId(target.id)
+      setConfirm(null)
+    }
   }
 
   const renderForm = (): React.JSX.Element | null => draft && (
@@ -262,7 +297,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       />}
       <div className="project-form__pair">
         <label><span><CalendarClock size={12} />{t('deadlineLabel')}</span><input type="date" value={draft.deadline} onChange={(event) => setDraft({ ...draft, deadline: event.target.value })} /></label>
-        <label><span><Target size={12} />{t('budgetLabel')}</span><input type="number" min="0" step="0.5" inputMode="decimal" value={draft.budget} placeholder="—" onChange={(event) => setDraft({ ...draft, budget: event.target.value })} /></label>
+        <label><span><Target size={12} />{t('budgetLabel')}</span><input type="text" inputMode="decimal" value={draft.budget} placeholder="—" onChange={(event) => setDraft({ ...draft, budget: event.target.value })} /></label>
       </div>
       <div className="project-form__actions">
         <button className="icon-button icon-button--quiet" disabled={busy} onClick={() => setDraft(null)} title={t('cancel')}><X size={15} /></button>
@@ -272,7 +307,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
   )
 
   const renderCard = (project: Project, handle?: ReturnType<typeof useDragControls>): React.JSX.Element => {
-    if (draft?.id === project.id) return <div className="project-card project-card--editing">{renderForm()}</div>
+    if (draft?.id === project.id) return <motion.div key="editing" className="project-card project-card--editing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18, ease }}>{renderForm()}</motion.div>
     const status = statusOf(project)
     const projectType = typeOf(project)
     const projectStats = statsOf(project)
@@ -313,26 +348,26 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
           </div>
         </header>
         <div className="project-card__time">
-          <strong>{formatDuration(projectStats.totalMs, true)}</strong>
+          <strong><AnimatedDuration ms={projectStats.totalMs} compact /></strong>
           {budgetMs > 0 ? (
             <div className="project-card__budget">
               <div className={`project-card__bar ${overBudget ? 'project-card__bar--over' : ''}`}><span style={{ width: `${Math.min(100, budgetPct)}%` }} /></div>
-              <small>{Math.round(budgetPct)}% · {t('budgetLabel')} {project.budgetHours}{t('hoursShort')}</small>
+              <small><AnimatedNumber value={Math.round(budgetPct)} suffix="%" /> · {t('budgetLabel')} {formatBudgetHours(project.budgetHours, locale)}{t('hoursShort')}</small>
             </div>
           ) : (
             <div className="project-card__bar"><span style={{ width: `${Math.max(projectStats.totalMs > 0 ? 3 : 0, (projectStats.totalMs / maxTotal) * 100)}%` }} /></div>
           )}
         </div>
-        <dl className="project-card__stats">
-          <div><dt>{t('trackedToday')}</dt><dd>{formatDuration(projectStats.todayMs, true)}</dd></div>
-          <div><dt>{t('trackedWeek')}</dt><dd>{formatDuration(projectStats.weekMs, true)}</dd></div>
-          <div><dt>{t('taskCountLabel')}</dt><dd>{projectStats.taskCount}</dd></div>
-          <div><dt>{t('lastWorkedLabel')}</dt><dd>{lastWorkedLabel(projectStats.lastWorkedAt, now, locale, t('neverWorked'))}</dd></div>
-        </dl>
-        {expanded && (
-          <motion.div className="project-details no-toggle" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
+        <StackCollapse open={expanded} gap={10}>
+          <div className="project-details no-toggle">
+            <dl className="project-card__stats">
+              <div><dt>{t('trackedToday')}</dt><dd><AnimatedDuration ms={projectStats.todayMs} compact /></dd></div>
+              <div><dt>{t('trackedWeek')}</dt><dd><AnimatedDuration ms={projectStats.weekMs} compact /></dd></div>
+              <div><dt>{t('taskCountLabel')}</dt><dd><AnimatedNumber value={projectStats.taskCount} /></dd></div>
+              <div><dt>{t('lastWorkedLabel')}</dt><dd>{lastWorkedLabel(projectStats.lastWorkedAt, now, locale, t('neverWorked'))}</dd></div>
+            </dl>
             {project.deadline && <p className="project-details__meta"><CalendarClock size={12} />{t('deadlineLabel')}: {shortDate(new Date(`${project.deadline}T12:00:00`).getTime(), locale)} · {deadlineText}</p>}
-            {budgetMs > 0 && <p className="project-details__meta"><Target size={12} />{formatDuration(projectStats.totalMs, true)} / {project.budgetHours}{t('hoursShort')}{overBudget ? ` · +${formatDuration(projectStats.totalMs - budgetMs, true)}` : ` · ${formatDuration(budgetMs - projectStats.totalMs, true)} ${t('budgetLeft')}`}</p>}
+            {budgetMs > 0 && <p className="project-details__meta"><Target size={12} />{formatDuration(projectStats.totalMs, true)} / {formatBudgetHours(project.budgetHours, locale)}{t('hoursShort')}{overBudget ? ` · +${formatDuration(projectStats.totalMs - budgetMs, true)}` : ` · ${formatDuration(budgetMs - projectStats.totalMs, true)} ${t('budgetLeft')}`}</p>}
             <h4>{t('projectTasksTitle')}</h4>
             {projectTasks === null ? <p className="empty-copy">…</p> : projectTasks.length === 0 ? <p className="empty-copy">{t('noTasksYet')}</p> : (
               <ul className="project-task-list">
@@ -348,12 +383,14 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
             <div className="project-details__manage">
               {others.length > 0 && <div className="project-merge">
                 <CustomSelect value={mergeTarget} ariaLabel={t('mergeInto')} onChange={setMergeTarget} options={[{ value: '', label: t('mergeInto') }, ...others.map((item) => ({ value: item.id, label: item.name, color: item.color }))]} />
-                <button className="secondary-button" disabled={busy || !mergeTarget} onClick={() => void mergeProject(project)}><GitMerge size={14} />{t('mergeAction')}</button>
+                <AnimatePresence initial={false}>
+                  {mergeTarget && <motion.button key="merge" className="secondary-button" disabled={busy} onClick={() => askMerge(project)} initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }} transition={{ duration: 0.16, ease }}><GitMerge size={14} />{t('mergeAction')}</motion.button>}
+                </AnimatePresence>
               </div>}
-              <button className="danger-button" disabled={busy} onClick={() => void deleteProject(project)}><Trash2 size={14} />{t('deleteProject')}</button>
+              <button className="danger-button" disabled={busy} onClick={() => askDelete(project)}><Trash2 size={14} />{t('deleteProject')}</button>
             </div>
-          </motion.div>
-        )}
+          </div>
+        </StackCollapse>
       </article>
     )
   }
@@ -365,7 +402,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
         <button className="icon-button icon-button--accent" onClick={beginCreate} title={t('newProject')} aria-label={t('newProject')}><Plus size={16} /></button>
       </div>
 
-      {draft && draft.id === null && <div className="project-card project-card--editing">{renderForm()}</div>}
+      <StackCollapse open={Boolean(draft && draft.id === null)}><div className="project-card project-card--editing">{renderForm()}</div></StackCollapse>
 
       <div className="projects-filters">
         <div className="segmented">
@@ -389,20 +426,38 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
         <button className={typeFilter === 'none' ? 'active' : ''} onClick={() => setTypeFilter(typeFilter === 'none' ? 'all' : 'none')}>{t('noType')}</button>
       </div>}
 
-      {error && <p className="form-error">{error}</p>}
-      {view === 'archive' && !searching && <p className="empty-copy projects-note">{t('completedProjectNote')}</p>}
+      <StackCollapse open={Boolean(error) && !confirm}><p className="form-error">{error}</p></StackCollapse>
+      <StackCollapse open={view === 'archive' && !searching}><p className="empty-copy projects-note">{t('completedProjectNote')}</p></StackCollapse>
 
       {listed.length === 0 ? (
         <p className="empty-copy projects-empty">{snapshot.projects.length === 0 ? t('noProjectsYetTab') : t('noProjectsMatch')}</p>
       ) : canReorder ? (
         <Reorder.Group as="div" axis="y" className="project-cards" values={dragOrder} onReorder={(ids: string[]) => { dragOrderRef.current = ids; setDragOrder(ids) }}>
-          {listed.map((project) => <ReorderCard key={project.id} id={project.id} onDrop={persistOrder} render={(controls) => renderCard(project, controls)} />)}
+          <AnimatePresence initial={false}>
+            {listed.map((project) => <ReorderCard key={project.id} id={project.id} onDrop={persistOrder} render={(controls) => renderCard(project, controls)} />)}
+          </AnimatePresence>
         </Reorder.Group>
       ) : (
         <div className="project-cards">
-          {listed.map((project) => <div key={project.id}>{renderCard(project)}</div>)}
+          <AnimatePresence initial={false} mode="popLayout">
+            {listed.map((project) => <motion.div key={project.id} layout="position" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2, ease }}>{renderCard(project)}</motion.div>)}
+          </AnimatePresence>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirm !== null}
+        title={shownConfirm?.kind === 'merge' ? t('mergeProjectTitle') : t('deleteProjectTitle')}
+        body={<p>{shownConfirm?.kind === 'merge'
+          ? t('mergeProjectBody').replaceAll('{from}', shownConfirm.project.name).replaceAll('{to}', shownConfirm.target?.name ?? '')
+          : t('deleteProjectBody').replace('{name}', shownConfirm?.project.name ?? '')}</p>}
+        confirmLabel={shownConfirm?.kind === 'merge' ? t('mergeAction') : t('confirmDelete')}
+        cancelLabel={t('cancel')}
+        busy={busy}
+        error={confirm ? error : undefined}
+        onConfirm={() => void confirmAction()}
+        onCancel={() => { setConfirm(null); setError('') }}
+      />
     </motion.div>
   )
 }
@@ -410,7 +465,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
 function ReorderCard({ id, onDrop, render }: { id: string; onDrop: () => void; render: (controls: ReturnType<typeof useDragControls>) => React.JSX.Element }): React.JSX.Element {
   const controls = useDragControls()
   return (
-    <Reorder.Item as="div" value={id} dragListener={false} dragControls={controls} onDragEnd={onDrop} whileDrag={{ scale: 1.015, zIndex: 5 }} layout="position">
+    <Reorder.Item as="div" value={id} dragListener={false} dragControls={controls} onDragEnd={onDrop} whileDrag={{ scale: 1.015, zIndex: 5 }} layout="position" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2, ease }}>
       {render(controls)}
     </Reorder.Item>
   )
