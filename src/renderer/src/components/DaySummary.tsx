@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, Sparkles, X } from 'lucide-react'
+import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, Sparkles, Undo2, X } from 'lucide-react'
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
 import { scheduledWorkdayDurationMs, workdayOvertimeMs } from '@shared/workday'
-import { localDateKey, localDayBounds } from '@shared/local-date'
+import { localDateKey, localDayBounds, localDaysBefore } from '@shared/local-date'
 import { HistoryPanel } from './HistoryPanel'
 import { TimeInput } from './TimeInput'
 
@@ -14,6 +14,7 @@ interface DaySummaryProps {
   now: number
   t: Translator
   onStartDay: () => void
+  onContinueDay: () => void
   onEndDay: () => void
   onEdit: (task: Task, intervalId?: string) => void
   onSnapshot: (snapshot: AppSnapshot) => void
@@ -74,12 +75,13 @@ function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs
   }
 }
 
-export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onSnapshot }: DaySummaryProps): React.JSX.Element {
+export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndDay, onEdit, onSnapshot }: DaySummaryProps): React.JSX.Element {
   const [aiSummary, setAiSummary] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
   const [calendarExporting, setCalendarExporting] = useState(false)
   const [calendarExportStatus, setCalendarExportStatus] = useState('')
+  const [exportRange, setExportRange] = useState<{ from: string; to: string } | null>(null)
   const todayKey = localDateKey(now)
   const [selectedDate, setSelectedDate] = useState(todayKey)
   const [history, setHistory] = useState<HistoryDay[]>([])
@@ -95,7 +97,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const [workdayStartError, setWorkdayStartError] = useState('')
   const isHistorical = selectedDate !== todayKey
 
-  useEffect(() => { void window.workBuddy.getHistory().then(setHistory).catch(() => undefined) }, [snapshot])
+  useEffect(() => { void window.workBuddy.getHistory(365).then(setHistory).catch(() => undefined) }, [snapshot])
   useEffect(() => { void window.workBuddy.getOvertimeOverview().then(setOvertimeOverview).catch(() => undefined) }, [snapshot])
   useEffect(() => {
     if (!isHistorical) {
@@ -142,7 +144,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     : overtimeDay?.overtimeMs ?? 0
   const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
-  const canExportCalendar = Boolean(reportSnapshot.workday?.endedAt)
+  const canContinueDay = Boolean(snapshot.workday && snapshot.workday.endedAt !== null && snapshot.workday.startedAt >= todayStart)
+  const exportFrom = exportRange?.from ?? selectedDate
+  const exportTo = exportRange?.to ?? selectedDate
+  const exportInvalid = !exportFrom || !exportTo || exportTo < exportFrom
 
   useEffect(() => { setCalendarExportStatus('') }, [selectedDate])
 
@@ -193,7 +198,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     setCalendarExporting(true)
     setCalendarExportStatus('')
     try {
-      const result = await window.workBuddy.exportDayCalendar(selectedDate)
+      const result = await window.workBuddy.exportRangeCalendar(exportFrom, exportTo)
       if (result) setCalendarExportStatus(t('calendarExportReady'))
     } catch (error) {
       setCalendarExportStatus(error instanceof Error ? error.message : t('calendarExportError'))
@@ -352,15 +357,31 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         </section>
       )}
 
-      {!isHistorical && <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
-        {hasOpenDay ? t('endDay') : t('startDay')}
-      </button>}
+      {!isHistorical && <div className="day-actions">
+        <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
+          {hasOpenDay ? t('endDay') : t('startDay')}
+        </button>
+        {!hasOpenDay && canContinueDay && <button className="secondary-button" onClick={onContinueDay} title={t('continueDayHint')}><Undo2 size={15} />{t('continueDay')}</button>}
+      </div>}
 
       <HistoryPanel days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
-      {canExportCalendar && <section className="history-calendar-export">
-        <button className="day-calendar-button" disabled={calendarExporting} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>
+      <section className="panel calendar-range-export">
+        <div className="section-heading"><div><span className="eyebrow">.ics</span><h3>{t('calendarRangeTitle')}</h3></div><Download size={16} /></div>
+        <div className="calendar-range-presets">
+          {([['presetDay', 0, 0], ['presetLast7', -6, 0], ['presetLast30', -29, 0]] as const).map(([label, fromOffset]) => {
+            const from = localDateKey(localDaysBefore(now, -fromOffset))
+            return <button key={label} type="button" className={exportFrom === from && exportTo === todayKey && label !== 'presetDay' ? 'active' : ''} onClick={() => setExportRange(label === 'presetDay' ? null : { from, to: todayKey })}>{t(label)}</button>
+          })}
+          <button type="button" onClick={() => { const monday = localDaysBefore(now, (new Date(now).getDay() + 6) % 7); setExportRange({ from: localDateKey(monday), to: localDateKey(localDaysBefore(monday, -6)) }) }}>{t('presetWeek')}</button>
+          <button type="button" onClick={() => { const date = new Date(now); setExportRange({ from: localDateKey(new Date(date.getFullYear(), date.getMonth(), 1).getTime()), to: localDateKey(new Date(date.getFullYear(), date.getMonth() + 1, 0).getTime()) }) }}>{t('presetMonth')}</button>
+        </div>
+        <div className="calendar-range-dates">
+          <label><span>{t('calendarFrom')}</span><input type="date" value={exportFrom} onChange={(event) => setExportRange({ from: event.target.value, to: exportTo < event.target.value ? event.target.value : exportTo })} /></label>
+          <label><span>{t('calendarTo')}</span><input type="date" min={exportFrom} value={exportTo} onChange={(event) => setExportRange({ from: exportFrom, to: event.target.value })} /></label>
+        </div>
+        <button className="day-calendar-button" disabled={calendarExporting || exportInvalid} onClick={() => void exportCalendar()}><Download size={14} />{calendarExporting ? t('calendarExporting') : t('calendarExport')}</button>
         {calendarExportStatus && <p className="calendar-export-status">{calendarExportStatus}</p>}
-      </section>}
+      </section>
     </motion.div>
   )
 }

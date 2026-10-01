@@ -554,3 +554,133 @@ test('backdating a break also removes the overlapping auto-paused task time', as
     assert.equal(rest?.intervals[0].startedAt, at(26, 14))
   })
 })
+
+test('continuing a day reopens it without counting the gap as work', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Morning' }))
+    await atTime(at(26, 11), () => database.endWorkday())
+
+    const resumed = await atTime(at(26, 12), () => database.resumeWorkday())
+    assert.equal(resumed.workday?.endedAt, null)
+    assert.equal(resumed.workday?.startedAt, at(26, 9))
+    assert.equal(resumed.tasks.length, 1)
+    assert.equal(resumed.tasks[0].status, 'paused')
+    assert.equal(await atTime(at(26, 13), () => database.getWorkedCoverageToday()), 2 * 60 * 60 * 1000)
+  })
+})
+
+test('a finished workday from a previous day cannot be continued', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Yesterday' }))
+    await atTime(at(26, 11), () => database.endWorkday())
+    await atTime(at(27, 9), () => assert.throws(() => database.resumeWorkday()))
+  })
+})
+
+test('project stats count overlapping tasks once and support statuses', async () => {
+  await withDatabase(async (database) => {
+    const created = await atTime(at(26, 8), () => database.createProject({ name: 'Alpha', color: '#b8e986', statusId: 'status-active' }))
+    const project = created.projects[0]
+    assert.equal(project.statusId, 'status-active')
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', projectId: project.id, notes: 'One' }))
+    await atTime(at(26, 9, 30), () => database.startTask({ mode: 'parallel', projectId: project.id, notes: 'Two' }))
+    await atTime(at(26, 10), () => database.endWorkday())
+
+    const [stats] = await atTime(at(26, 12), () => database.getProjectStats())
+    assert.equal(stats.totalMs, 60 * 60 * 1000)
+    assert.equal(stats.todayMs, 60 * 60 * 1000)
+    assert.equal(stats.taskCount, 2)
+
+    const updated = await atTime(at(26, 12), () => database.updateProject({ id: project.id, name: 'Alpha', color: '#b8e986', archived: true }))
+    assert.equal(updated.projects[0].archived, true)
+    assert.equal(updated.projects[0].statusId, 'status-active')
+    const cleared = await atTime(at(26, 12), () => database.updateProject({ id: project.id, name: 'Alpha', color: '#b8e986', statusId: null }))
+    assert.equal(cleared.projects[0].statusId, null)
+  })
+})
+
+test('projects support priority order, budget, deadline, merge and delete', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.createProject({ name: 'A', color: '#b8e986', deadline: '2026-09-01', budgetHours: 2.5 }))
+    await atTime(at(26, 8), () => database.createProject({ name: 'B', color: '#7bdff2' }))
+    let snapshot = await atTime(at(26, 8), () => database.createProject({ name: 'C', color: '#f7a072' }))
+    assert.deepEqual(snapshot.projects.map((project) => project.name), ['A', 'B', 'C'])
+    assert.equal(snapshot.projects[0].deadline, '2026-09-01')
+    assert.equal(snapshot.projects[0].budgetHours, 2.5)
+
+    const [a, b, c] = snapshot.projects
+    snapshot = database.reorderProjects([c.id, a.id, b.id])
+    assert.deepEqual(snapshot.projects.map((project) => project.name), ['C', 'A', 'B'])
+    assert.throws(() => database.updateProject({ id: a.id, name: 'A', color: a.color, deadline: 'tomorrow' }))
+    snapshot = database.updateProject({ id: a.id, name: 'A', color: a.color, deadline: null, budgetHours: null })
+    assert.equal(snapshot.projects.find((project) => project.id === a.id)?.budgetHours, null)
+
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', projectId: a.id, notes: 'Work' }))
+    assert.equal(database.getProjectTasks(a.id).length, 1)
+    snapshot = database.mergeProjects(a.id, b.id)
+    assert.equal(snapshot.projects.some((project) => project.id === a.id), false)
+    assert.equal(database.getProjectTasks(b.id).length, 1)
+    snapshot = database.deleteProject(b.id)
+    assert.equal(database.getProjectTasks(b.id).length, 0)
+  })
+})
+
+test('exports a calendar file for a range of days', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(24, 9), () => database.startTask({ mode: 'parallel', notes: 'Day one' }))
+    await atTime(at(24, 10), () => database.endWorkday())
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Day three' }))
+    await atTime(at(26, 10), () => database.endWorkday())
+    const ics = await atTime(at(27, 9), () => database.createCalendarIcs('2026-08-24', '2026-08-26'))
+    assert.equal((ics.match(/BEGIN:VEVENT/g) ?? []).length, 2)
+    await atTime(at(27, 9), () => assert.throws(() => database.createCalendarIcs('2026-08-26', '2026-08-24')))
+    await atTime(at(27, 9), () => assert.throws(() => database.createCalendarIcs('2026-08-25', '2026-08-25')))
+  })
+})
+
+test('projects can carry a type and clear it again', async () => {
+  await withDatabase(async (database) => {
+    const created = database.createProject({ name: 'Typed', color: '#b8e986', typeId: 'type-x' })
+    const project = created.projects[0]
+    assert.equal(project.typeId, 'type-x')
+    assert.equal(database.updateProject({ id: project.id, name: 'Typed', color: project.color }).projects[0].typeId, 'type-x')
+    assert.equal(database.updateProject({ id: project.id, name: 'Typed', color: project.color, typeId: null }).projects[0].typeId, null)
+    const settings = database.getSettings()
+    const saved = database.updateSettings({ ...settings, projectTypes: [{ id: 'type-x', name: 'Client', color: '#7bdff2' }] })
+    assert.equal(saved.settings.projectTypes[0].name, 'Client')
+  })
+})
+
+test('a backup restore keeps the manual project order', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 8), () => database.createProject({ name: 'A', color: '#b8e986' }))
+    await atTime(at(26, 8, 1), () => database.createProject({ name: 'B', color: '#7bdff2' }))
+    const created = await atTime(at(26, 8, 2), () => database.createProject({ name: 'C', color: '#f7a072' }))
+    const [a, b, c] = created.projects
+    database.reorderProjects([c.id, a.id, b.id])
+
+    const restored = database.importBackup(database.exportBackup(), 'replace')
+    assert.deepEqual(restored.projects.map((project) => project.name), ['C', 'A', 'B'])
+  })
+})
+
+test('the workday start cannot move past already tracked time', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Work' }))
+    await atTime(at(26, 12), () => assert.throws(() => database.updateWorkdayStart(at(26, 11)), /after tracked time/i))
+    const earlier = await atTime(at(26, 12), () => database.updateWorkdayStart(at(26, 8, 30)))
+    assert.equal(earlier.workday?.startedAt, at(26, 8, 30))
+  })
+})
+
+test('project stats close a running interval left over from the previous day', async () => {
+  await withDatabase(async (database) => {
+    const created = await atTime(at(26, 8), () => database.createProject({ name: 'Night', color: '#b8e986' }))
+    await atTime(at(26, 22), () => database.startTask({ mode: 'parallel', projectId: created.projects[0].id, notes: 'Late' }))
+
+    const [stats] = await atTime(at(27, 9), () => database.getProjectStats())
+    assert.equal(stats.totalMs, 2 * 60 * 60 * 1000)
+    assert.equal(stats.todayMs, 0)
+    assert.equal(stats.lastWorkedAt, at(27, 0))
+  })
+})

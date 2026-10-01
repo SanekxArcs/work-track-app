@@ -11,12 +11,52 @@ export type GeminiModel =
   | 'gemini-3.5-flash-lite'
   | 'gemini-3.1-flash-lite'
 
+export interface ProjectStatus {
+  id: string
+  name: string
+  color: string
+}
+
+export interface ProjectType {
+  id: string
+  name: string
+  color: string
+}
+
 export interface Project {
   id: string
   name: string
   color: string
+  /** A completed project. Archived projects are hidden from pickers until searched for. */
   archived: boolean
+  statusId?: string | null
+  typeId?: string | null
+  /** Optional due date as a local YYYY-MM-DD string. */
+  deadline?: string | null
+  /** Optional time budget in hours. */
+  budgetHours?: number | null
+  /** Priority position (lower first); carried in backups so manual ordering survives a restore. */
+  sortOrder?: number
   createdAt: number
+}
+
+export interface ProjectTaskSummary {
+  id: string
+  label: string
+  status: TaskStatus
+  totalMs: number
+  intervalCount: number
+  firstStartedAt: number | null
+  lastEndedAt: number | null
+}
+
+export interface ProjectStats {
+  projectId: string
+  totalMs: number
+  todayMs: number
+  weekMs: number
+  taskCount: number
+  lastWorkedAt: number | null
 }
 
 export interface PlannedTask {
@@ -122,6 +162,8 @@ export interface AppSettings {
   wellnessEnabled: boolean
   wellnessActions: WellnessAction[]
   projectColors: string[]
+  projectStatuses: ProjectStatus[]
+  projectTypes: ProjectType[]
   ai: {
     enabled: boolean
     model: GeminiModel
@@ -190,6 +232,10 @@ export interface TaskMergeInput {
 export interface ProjectInput {
   name: string
   color: string
+  statusId?: string | null
+  typeId?: string | null
+  deadline?: string | null
+  budgetHours?: number | null
 }
 
 export interface ProjectUpdateInput {
@@ -197,6 +243,12 @@ export interface ProjectUpdateInput {
   name: string
   color: string
   archived?: boolean
+  /** Undefined keeps the current status; null clears it. */
+  statusId?: string | null
+  typeId?: string | null
+  /** Undefined keeps the current value; null clears it. */
+  deadline?: string | null
+  budgetHours?: number | null
 }
 
 export interface PlannedTaskInput {
@@ -283,6 +335,12 @@ export interface WorkBuddyApi {
   startWorkday: () => Promise<AppSnapshot>
   endWorkday: () => Promise<AppSnapshot>
   updateWorkdayStart: (startedAt: number) => Promise<AppSnapshot>
+  resumeWorkday: () => Promise<AppSnapshot>
+  getProjectStats: () => Promise<ProjectStats[]>
+  getProjectTasks: (projectId: string) => Promise<ProjectTaskSummary[]>
+  deleteProject: (id: string) => Promise<AppSnapshot>
+  mergeProjects: (sourceId: string, targetId: string) => Promise<AppSnapshot>
+  reorderProjects: (ids: string[]) => Promise<AppSnapshot>
   startTask: (input: StartTaskInput) => Promise<AppSnapshot>
   pauseTask: (id: string) => Promise<AppSnapshot>
   resumeTask: (id: string, mode: StartMode) => Promise<AppSnapshot>
@@ -311,12 +369,13 @@ export interface WorkBuddyApi {
   chooseBackupImport: () => Promise<BackupPreview | null>
   applyBackupImport: (mode: BackupImportMode) => Promise<AppSnapshot>
   exportDayCalendar: (date: string) => Promise<{ path: string } | null>
+  exportRangeCalendar: (from: string, to: string) => Promise<{ path: string } | null>
   suggestTask: (taskId: string) => Promise<AiTaskSuggestion>
   interpretVoiceTask: (input: VoiceInput, taskId?: string) => Promise<VoiceTaskDraft>
   transcribeVoice: (input: VoiceInput) => Promise<string>
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
-  setWindowMode: (mode: 'compact' | 'expanded', rows?: number) => Promise<'top' | 'bottom' | null>
+  setWindowMode: (mode: 'compact' | 'expanded' | 'docked', rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>
   fitWindowToContent: (height: number) => Promise<void>
@@ -329,5 +388,6 @@ export interface WorkBuddyApi {
   onExtensionServerStatus: (callback: (status: ExtensionServerStatus) => void) => () => void
   onDataChanged: (callback: () => void) => () => void
   onOpenSettings: (callback: () => void) => () => void
+  onDockSide: (callback: (side: 'left' | 'right') => void) => () => void
   onPlaySound: (callback: (sound: NotificationSound, volume: number) => void) => () => void
 }

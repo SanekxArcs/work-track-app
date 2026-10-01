@@ -158,7 +158,7 @@ export class WorkBuddyLocalServer {
           return
         }
         const result = await this.invoke(payload.method, payload.args)
-        if (!['getAppVersion', 'getSnapshot', 'getHistory', 'getDaySnapshot', 'getOvertimeOverview', 'getCustomSoundData'].includes(payload.method)) {
+        if (!['getAppVersion', 'getSnapshot', 'getHistory', 'getDaySnapshot', 'getOvertimeOverview', 'getCustomSoundData', 'getProjectStats'].includes(payload.method)) {
           this.onDataChanged()
         }
         writeJson(response, 200, { result })

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { Archive, ArchiveRestore, BellRing, BriefcaseBusiness, Check, ChevronDown, ChevronUp, Coffee, Copy, Download, Dumbbell, Eye, EyeOff, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Pencil, Play, PlugZap, Plus, Sparkles, Trash2, Upload, Volume2, X } from 'lucide-react'
-import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, Project, WellnessAction } from '@shared/types'
+import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2 } from 'lucide-react'
+import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { playNotificationSound } from '../lib/sounds'
+import { ColorPicker } from './ColorPicker'
 import { CustomSelect } from './CustomSelect'
 import { TimeInput } from './TimeInput'
 
@@ -19,6 +20,34 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (checked: b
 
 function NumberField({ value, onChange, suffix, min = 1 }: { value: number; onChange: (value: number) => void; suffix: string; min?: number }): React.JSX.Element {
   return <label className="number-field"><input type="number" min={min} value={value} onChange={(event) => onChange(Math.max(min, Number(event.target.value)))} /><span>{suffix}</span></label>
+}
+
+/**
+ * Status/type name field. Keeps its own draft so an emptied name stays on screen while
+ * being retyped: settings only receive non-empty names (the main process drops nameless
+ * entries), and the row is removed only if the field is left empty on blur.
+ */
+function NameField({ value, ariaLabel, onChange, onEmptyBlur }: { value: string; ariaLabel: string; onChange: (value: string) => void; onEmptyBlur: () => void }): React.JSX.Element {
+  const [draft, setDraft] = useState(value)
+  const focused = useRef(false)
+  useEffect(() => {
+    if (!focused.current) setDraft(value)
+  }, [value])
+  return <input
+    value={draft}
+    maxLength={40}
+    aria-label={ariaLabel}
+    onFocus={() => { focused.current = true }}
+    onChange={(event) => {
+      setDraft(event.target.value)
+      if (event.target.value.trim()) onChange(event.target.value)
+    }}
+    onBlur={() => {
+      focused.current = false
+      if (draft.trim()) setDraft(value)
+      else onEmptyBlur()
+    }}
+  />
 }
 
 function shiftTime(value: string, minutes: number): string {
@@ -50,13 +79,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const [aiKey, setAiKey] = useState('')
   const [aiKeyStatus, setAiKeyStatus] = useState('')
   const [customPreviewData, setCustomPreviewData] = useState('')
-  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
-  const [editingProjectName, setEditingProjectName] = useState('')
-  const [editingProjectColor, setEditingProjectColor] = useState('')
-  const [projectBusy, setProjectBusy] = useState(false)
-  const [projectError, setProjectError] = useState('')
-  const [projectsExpanded, setProjectsExpanded] = useState(false)
-  const [showArchivedProjects, setShowArchivedProjects] = useState(false)
+  const [newStatusName, setNewStatusName] = useState('')
+  const [newTypeName, setNewTypeName] = useState('')
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
   const [backupBusy, setBackupBusy] = useState(false)
   const [backupStatus, setBackupStatus] = useState('')
@@ -207,41 +231,28 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     await playNotificationSound(settings.notifications.sound, settings.notifications.sound === 'custom' ? customPreviewData : undefined, settings.notifications.volume)
   }
 
-  const beginProjectEdit = (project: Project): void => {
-    setEditingProjectId(project.id)
-    setEditingProjectName(project.name)
-    setEditingProjectColor(project.color)
-    setProjectError('')
+  const addStatus = (): void => {
+    const name = newStatusName.trim()
+    if (!name) return
+    const color = settings.projectColors[settings.projectStatuses.length % settings.projectColors.length]
+    patch('projectStatuses', [...settings.projectStatuses, { id: crypto.randomUUID(), name, color }])
+    setNewStatusName('')
   }
 
-  const saveProject = async (): Promise<void> => {
-    if (!editingProjectId || !editingProjectName.trim()) return
-    setProjectBusy(true)
-    setProjectError('')
-    try {
-      const result = await window.workBuddy.updateProject({ id: editingProjectId, name: editingProjectName, color: editingProjectColor })
-      onSnapshot(result)
-      setEditingProjectId(null)
-    } catch (error) {
-      setProjectError(error instanceof Error ? error.message : t('timeUpdateError'))
-    } finally {
-      setProjectBusy(false)
-    }
+  const addType = (): void => {
+    const name = newTypeName.trim()
+    if (!name) return
+    const color = settings.projectColors[(settings.projectTypes.length + 3) % settings.projectColors.length]
+    patch('projectTypes', [...settings.projectTypes, { id: crypto.randomUUID(), name, color }])
+    setNewTypeName('')
   }
 
-  const toggleProjectArchive = async (project: Project): Promise<void> => {
-    setProjectBusy(true)
-    try {
-      const result = await window.workBuddy.updateProject({
-        id: project.id,
-        name: project.name,
-        color: project.color,
-        archived: !project.archived
-      })
-      onSnapshot(result)
-    } finally {
-      setProjectBusy(false)
-    }
+  const updateType = (id: string, change: Partial<AppSettings['projectTypes'][number]>): void => {
+    patch('projectTypes', settings.projectTypes.map((type) => type.id === id ? { ...type, ...change } : type))
+  }
+
+  const updateStatus = (id: string, change: Partial<AppSettings['projectStatuses'][number]>): void => {
+    patch('projectStatuses', settings.projectStatuses.map((status) => status.id === id ? { ...status, ...change } : status))
   }
 
   const exportBackup = async (): Promise<void> => {
@@ -379,29 +390,34 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         </div>
       </section>
 
-      <section className="settings-section projects-settings">
-        <div className="settings-title"><BriefcaseBusiness size={17} /><div><h3>{t('projects')}</h3><p>{t('projectsBody')}</p></div><button className="icon-button icon-button--quiet" onClick={() => setProjectsExpanded((expanded) => !expanded)} title={projectsExpanded ? t('collapseProjects') : t('expandProjects')}>{projectsExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button></div>
-        {projectsExpanded && <>
-          {snapshot.projects.some((project) => project.archived) && <button className={`archived-projects-toggle ${showArchivedProjects ? 'archived-projects-toggle--active' : ''}`} onClick={() => setShowArchivedProjects((show) => !show)}>{showArchivedProjects ? <EyeOff size={13} /> : <Eye size={13} />}{showArchivedProjects ? t('hideArchivedProjects') : t('showArchivedProjects')}</button>}
-          {snapshot.projects.length === 0 ? <p className="empty-copy">{t('noProjectsYet')}</p> : <div className="project-manager-list">
-          {snapshot.projects.filter((project) => showArchivedProjects || !project.archived).map((project) => editingProjectId === project.id ? (
-            <div className="project-editor" key={project.id}>
-              <input autoFocus value={editingProjectName} onChange={(event) => setEditingProjectName(event.target.value)} aria-label={t('projectName')} />
-              <div className="color-dots">
-                {settings.projectColors.map((color) => <button key={color} aria-label={color} className={editingProjectColor === color ? 'selected' : ''} style={{ background: color }} onClick={() => setEditingProjectColor(color)} />)}
-              </div>
-              <button className="icon-button icon-button--accent" disabled={projectBusy || !editingProjectName.trim()} onClick={saveProject} title={t('save')}><Check size={15} /></button>
-              <button className="icon-button icon-button--quiet" disabled={projectBusy} onClick={() => setEditingProjectId(null)} title={t('cancel')}><X size={15} /></button>
-            </div>
-          ) : (
-            <div className={`project-manager-row ${project.archived ? 'project-manager-row--archived' : ''}`} key={project.id}>
-              <span style={{ background: project.color }} /><strong>{project.name}</strong><button className="icon-button icon-button--quiet" disabled={projectBusy} onClick={() => beginProjectEdit(project)} title={t('editProject')}><Pencil size={14} /></button><button className="icon-button icon-button--quiet project-archive-button" disabled={projectBusy} onClick={() => void toggleProjectArchive(project)} title={project.archived ? t('restoreProject') : t('archiveProject')}>{project.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
+      <section className="settings-section project-statuses-settings">
+        <div className="settings-title"><Tags size={17} /><div><h3>{t('projectStatuses')}</h3><p>{t('projectStatusesBody')}</p></div></div>
+        <div className="status-editor-list">
+          {settings.projectStatuses.map((status) => (
+            <div className="status-editor-row" key={status.id}>
+              <ColorPicker value={status.color} colors={settings.projectColors} onChange={(color) => updateStatus(status.id, { color })} ariaLabel={t('projectPalette')} />
+              <NameField value={status.name} ariaLabel={t('statusName')} onChange={(name) => updateStatus(status.id, { name })} onEmptyBlur={() => patch('projectStatuses', settings.projectStatuses.filter((item) => item.id !== status.id))} />
+              <button className="icon-button icon-button--quiet" onClick={() => patch('projectStatuses', settings.projectStatuses.filter((item) => item.id !== status.id))} title={t('deleteStatus')}><Trash2 size={14} /></button>
             </div>
           ))}
-          {snapshot.projects.length > 0 && snapshot.projects.filter((project) => showArchivedProjects || !project.archived).length === 0 && <p className="empty-copy">{t('noActiveProjects')}</p>}
-          </div>}
-          {projectError && <p className="form-error">{projectError}</p>}
-        </>}
+          {settings.projectStatuses.length === 0 && <p className="empty-copy">{t('noStatusesYet')}</p>}
+        </div>
+        <div className="action-inputs status-add-row"><input value={newStatusName} maxLength={40} onChange={(event) => setNewStatusName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addStatus() }} placeholder={t('statusName')} /><button className="icon-button icon-button--accent" onClick={addStatus} title={t('addStatus')}><Plus size={16} /></button></div>
+      </section>
+
+      <section className="settings-section project-types-settings">
+        <div className="settings-title"><Shapes size={17} /><div><h3>{t('projectTypes')}</h3><p>{t('projectTypesBody')}</p></div></div>
+        <div className="status-editor-list">
+          {settings.projectTypes.map((type) => (
+            <div className="status-editor-row" key={type.id}>
+              <ColorPicker value={type.color} colors={settings.projectColors} onChange={(color) => updateType(type.id, { color })} ariaLabel={t('projectPalette')} />
+              <NameField value={type.name} ariaLabel={t('typeName')} onChange={(name) => updateType(type.id, { name })} onEmptyBlur={() => patch('projectTypes', settings.projectTypes.filter((item) => item.id !== type.id))} />
+              <button className="icon-button icon-button--quiet" onClick={() => patch('projectTypes', settings.projectTypes.filter((item) => item.id !== type.id))} title={t('deleteType')}><Trash2 size={14} /></button>
+            </div>
+          ))}
+          {settings.projectTypes.length === 0 && <p className="empty-copy">{t('noTypesYet')}</p>}
+        </div>
+        <div className="action-inputs status-add-row"><input value={newTypeName} maxLength={40} onChange={(event) => setNewTypeName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addType() }} placeholder={t('typeName')} /><button className="icon-button icon-button--accent" onClick={addType} title={t('addType')}><Plus size={16} /></button></div>
       </section>
 
       <section className="settings-section settings-section--ai">

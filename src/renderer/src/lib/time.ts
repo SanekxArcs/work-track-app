@@ -17,6 +17,11 @@ export function formatDuration(milliseconds: number, compact = false): string {
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
 }
 
+export function formatHm(milliseconds: number): string {
+  const totalMinutes = Math.max(0, Math.floor(milliseconds / 60_000))
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`
+}
+
 export function formatClock(timestamp: number, locale: string): string {
   return new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', {
     hour: '2-digit',

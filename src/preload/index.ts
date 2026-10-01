@@ -12,6 +12,17 @@ const api: WorkBuddyApi = {
   startWorkday: () => ipcRenderer.invoke(channels.startWorkday),
   endWorkday: () => ipcRenderer.invoke(channels.endWorkday),
   updateWorkdayStart: (startedAt: number) => ipcRenderer.invoke(channels.updateWorkdayStart, startedAt),
+  resumeWorkday: () => ipcRenderer.invoke(channels.resumeWorkday),
+  getProjectStats: () => ipcRenderer.invoke(channels.projectStats),
+  getProjectTasks: (projectId: string) => ipcRenderer.invoke(channels.projectTasks, projectId),
+  deleteProject: (id: string) => ipcRenderer.invoke(channels.deleteProject, id),
+  mergeProjects: (sourceId: string, targetId: string) => ipcRenderer.invoke(channels.mergeProjects, sourceId, targetId),
+  reorderProjects: (ids: string[]) => ipcRenderer.invoke(channels.reorderProjects, ids),
+  onDockSide: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, side: 'left' | 'right'): void => callback(side)
+    ipcRenderer.on(channels.dockSide, listener)
+    return () => ipcRenderer.removeListener(channels.dockSide, listener)
+  },
   startTask: (input: StartTaskInput) => ipcRenderer.invoke(channels.startTask, input),
   pauseTask: (id: string) => ipcRenderer.invoke(channels.pauseTask, id),
   resumeTask: (id: string, mode: StartMode) => ipcRenderer.invoke(channels.resumeTask, id, mode),
@@ -40,6 +51,7 @@ const api: WorkBuddyApi = {
   chooseBackupImport: (): Promise<BackupPreview | null> => ipcRenderer.invoke(channels.backupChoose),
   applyBackupImport: (mode: BackupImportMode): Promise<AppSnapshot> => ipcRenderer.invoke(channels.backupApply, mode),
   exportDayCalendar: (date: string): Promise<{ path: string } | null> => ipcRenderer.invoke(channels.calendarExportDay, date),
+  exportRangeCalendar: (from: string, to: string): Promise<{ path: string } | null> => ipcRenderer.invoke(channels.calendarExportRange, from, to),
   suggestTask: (taskId: string) => ipcRenderer.invoke(channels.suggestTask, taskId),
   interpretVoiceTask: (input: VoiceInput, taskId?: string): Promise<VoiceTaskDraft> => ipcRenderer.invoke(channels.interpretVoiceTask, input, taskId),
   transcribeVoice: (input: VoiceInput): Promise<string> => ipcRenderer.invoke(channels.transcribeVoice, input),

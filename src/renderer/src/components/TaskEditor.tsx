@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, FolderPlus, Sparkles, Trash2, X } from 'lucide-react'
-import type { AppSnapshot, Project, StartMode, Task } from '@shared/types'
+import { Sparkles, Trash2, X } from 'lucide-react'
+import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { CustomSelect } from './CustomSelect'
-import { ColorPicker } from './ColorPicker'
+import { ProjectPicker } from './ProjectPicker'
 import { TimeInput } from './TimeInput'
 import { VoiceButton } from './VoiceButton'
 
@@ -30,9 +30,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
   const [notes, setNotes] = useState('')
-  const [newProject, setNewProject] = useState('')
-  const [projectColor, setProjectColor] = useState(snapshot.settings.projectColors[0])
-  const [addingProject, setAddingProject] = useState(false)
   const [busy, setBusy] = useState(false)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiMessage, setAiMessage] = useState('')
@@ -45,14 +42,28 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
     setNotes(task?.notes ?? '')
-    setAddingProject(false)
     setAiMessage('')
-    setProjectColor(snapshot.settings.projectColors[0])
     const interval = editableInterval(task, intervalId)
     setStartTime(interval ? `${String(new Date(interval.startedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.startedAt).getMinutes()).padStart(2, '0')}` : '')
     setEndTime(interval?.endedAt ? `${String(new Date(interval.endedAt).getHours()).padStart(2, '0')}:${String(new Date(interval.endedAt).getMinutes()).padStart(2, '0')}` : '')
     setSaveError('')
   }, [open, task, intervalId])
+
+  // End of the closest interval (of any other task) that finished at or before this one started.
+  const previousEndTime = (() => {
+    const current = editableInterval(task, intervalId)
+    if (!task || !current) return undefined
+    let closest = 0
+    for (const other of snapshot.tasks) {
+      for (const interval of other.intervals) {
+        if (interval.id === current.id || !interval.endedAt || interval.endedAt > current.startedAt) continue
+        closest = Math.max(closest, interval.endedAt)
+      }
+    }
+    if (!closest) return undefined
+    const date = new Date(closest)
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  })()
 
   const saveTask = async (mode: StartMode): Promise<void> => {
     setBusy(true)
@@ -77,24 +88,6 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd ?? undefined })
         : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const createProject = async (): Promise<void> => {
-    if (!newProject.trim()) return
-    setBusy(true)
-    setSaveError('')
-    try {
-      const result = await window.workBuddy.createProject({ name: newProject, color: projectColor })
-      const created = result.projects.find((project: Project) => project.name.toLowerCase() === newProject.trim().toLowerCase())
-      if (created) setProjectId(created.id)
-      setNewProject('')
-      setAddingProject(false)
-      onSnapshot(result)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : t('timeUpdateError'))
     } finally {
@@ -171,35 +164,26 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         <motion.div className="modal-backdrop no-drag" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <motion.section className="modal-sheet" initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }} transition={{ type: 'spring', damping: 26, stiffness: 300 }}>
             <div className="modal-header">
-              <div>
-                <span className="eyebrow">{task ? t('edit') : t('startTask')}</span>
-                <h2>{task ? t('editTask') : t('newTask')}</h2>
-              </div>
-              <button className="icon-button" onClick={onClose}><X size={18} /></button>
+              <button className="icon-button" onClick={onClose} aria-label={t('cancel')}><X size={18} /></button>
             </div>
 
-            <label className="field">
+            <div className="field">
               <span>{t('project')}</span>
-              <CustomSelect
-                value={projectId}
-                ariaLabel={t('project')}
-                onChange={setProjectId}
-                options={[{ value: '', label: t('noProject') }, ...snapshot.projects.filter((project) => !project.archived).map((project) => ({ value: project.id, label: project.name, color: project.color }))]}
-              />
-            </label>
+              <ProjectPicker value={projectId} snapshot={snapshot} ariaLabel={t('project')} autoFocus={!task} t={t} onChange={setProjectId} onSnapshot={onSnapshot} onError={setSaveError} />
+            </div>
 
             {task && startTime && (
               <div className={`task-time-fields ${task.status !== 'running' && endTime ? 'task-time-fields--complete' : ''}`}>
                 <label className="field time-edit-field">
                   <span>{t('firstStartTime')}</span>
-                  <TimeInput value={startTime} onChange={setStartTime} ariaLabel={t('firstStartTime')} />
+                  <TimeInput value={startTime} onChange={setStartTime} ariaLabel={t('firstStartTime')} previousTime={previousEndTime} />
                 </label>
                 {task.status !== 'running' && endTime && <label className="field time-edit-field"><span>{t('finishedAt')}</span><TimeInput value={endTime} onChange={setEndTime} ariaLabel={t('finishedAt')} /></label>}
                 <small>{task.status !== 'running' && endTime ? t('taskTimeRangeBody') : t('firstStartTimeBody')}</small>
               </div>
             )}
 
-            <label className="field">
+            {snapshot.plannedTasks.length > 0 && <label className="field">
               <span>{t('plannedTask')}</span>
               <CustomSelect
                 value={plannedTaskId}
@@ -207,21 +191,11 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
                 onChange={selectPlannedTask}
                 options={[{ value: '', label: t('noPlannedTask') }, ...snapshot.plannedTasks.map((item) => ({ value: item.id, label: item.title, description: snapshot.projects.find((project) => project.id === item.projectId)?.name }))]}
               />
-            </label>
-
-            {!addingProject ? (
-              <button className="link-button" onClick={() => setAddingProject(true)}><FolderPlus size={15} />{t('newProject')}</button>
-            ) : (
-              <div className="new-project-row">
-                <input value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder={t('projectName')} />
-                <ColorPicker value={projectColor} colors={snapshot.settings.projectColors} onChange={setProjectColor} ariaLabel={t('projectPalette')} />
-                <button className="icon-button icon-button--accent" onClick={createProject}><Check size={16} /></button>
-              </div>
-            )}
+            </label>}
 
             <label className="field">
               <span>{t('notes')}</span>
-              <textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
+              <textarea autoFocus={Boolean(task)} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
             </label>
 
             {aiMessage && <p className="ai-note">{aiMessage}</p>}

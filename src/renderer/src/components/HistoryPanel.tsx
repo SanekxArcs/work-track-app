@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { CalendarDays } from 'lucide-react'
 import type { HistoryDay, OvertimeDay } from '@shared/types'
 import type { Translator } from '../lib/i18n'
@@ -25,15 +26,47 @@ function level(milliseconds: number): number {
   return 4
 }
 
+const RANGES = [30, 60, 90, 180, 365] as const
+type Range = (typeof RANGES)[number]
+
+function storedRange(): Range {
+  try {
+    const value = Number(window.localStorage.getItem('workBuddyHistoryRange'))
+    return (RANGES as readonly number[]).includes(value) ? value as Range : 180
+  } catch {
+    return 180
+  }
+}
+
+/** Monday = 0 … Sunday = 6 */
+function weekdayIndex(date: string): number {
+  const [year, month, day] = date.split('-').map(Number)
+  return (new Date(year, month - 1, day, 12).getDay() + 6) % 7
+}
+
 export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSelect }: HistoryPanelProps): React.JSX.Element {
-  const visibleDays = days.slice(-182)
+  const [range, setRange] = useState<Range>(storedRange)
+  const visibleDays = days.slice(-range)
+  // Rows are weekdays with Monday on top, so pad the first column up to the first day's weekday.
+  const leadingBlanks = visibleDays.length ? weekdayIndex(visibleDays[0].date) : 0
+  const columns = Math.ceil((leadingBlanks + visibleDays.length) / 7)
+  const weekdayLabels = Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', { weekday: 'short' }).format(new Date(2024, 0, 1 + index, 12)))
+  const chooseRange = (next: Range): void => {
+    setRange(next)
+    try { window.localStorage.setItem('workBuddyHistoryRange', String(next)) } catch { /* the choice just is not remembered */ }
+  }
   const recentDays = [...days].reverse().filter((day) => day.workedMs > 0).slice(0, 6)
   const unredeemedOvertime = new Map(overtimeDays.filter((day) => !day.redeemed && day.overtimeMs > 0).map((day) => [day.date, day.overtimeMs]))
 
   return <section className="panel history-panel">
     <div className="section-heading"><div><span className="eyebrow">History</span><h3>{t('workHistory')}</h3></div><CalendarDays size={16} /></div>
     <p>{t('workHistoryBody')}</p>
-    <div className="history-heatmap" aria-label={t('workHistory')}>
+    <div className="history-range" role="group" aria-label={t('historyRange')}>
+      {RANGES.map((item) => <button key={item} type="button" className={range === item ? 'active' : ''} onClick={() => chooseRange(item)}>{item}</button>)}
+    </div>
+    <div className="history-heatmap" aria-label={t('workHistory')} style={{ gridTemplateColumns: `auto repeat(${columns}, minmax(0, 1fr))` }}>
+      {weekdayLabels.map((label, index) => <span key={label} className="history-weekday">{label}</span>)}
+      {Array.from({ length: leadingBlanks }, (_, index) => <span key={`blank-${index}`} className="history-cell history-cell--blank" aria-hidden="true" />)}
       {visibleDays.map((day) => {
         const overtimeMs = unredeemedOvertime.get(day.date)
         const overtimeLabel = overtimeMs ? ` · +${formatDuration(overtimeMs, true)} · ${t('unredeemedOvertime')}` : ''

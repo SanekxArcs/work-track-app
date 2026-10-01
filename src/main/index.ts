@@ -29,6 +29,12 @@ let programmaticHeight: number | undefined
 let compactBottomAnchored = false
 let editorRestoreBounds: Electron.Rectangle | null = null
 let registeredToggleShortcut: string | null = null
+let dockedSide: 'left' | 'right' | null = null
+let dockRestoreBounds: Electron.Rectangle | null = null
+let dockRestoreSide: 'left' | 'right' | null = null
+
+const WINDOW_WIDTH = 430
+const DOCK_SIZE = { width: 104, height: 46 }
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -45,7 +51,15 @@ function snapWindowToScreen(): void {
   screen.getDisplayNearestPoint({ x: bounds.x + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) }))
   const area = display.workArea
   const magnet = 16
-  let x = Math.min(Math.max(bounds.x, area.x), area.x + area.width - bounds.width)
+  if (dockedSide) {
+    // A docked pill can be dragged anywhere; on release it sticks to the nearer side edge.
+    const side = bounds.x + bounds.width / 2 < area.x + area.width / 2 ? 'left' : 'right'
+    if (side !== dockedSide) {
+      dockedSide = side
+      mainWindow.webContents.send(channels.dockSide, side)
+    }
+  }
+  let x = dockedSide === 'left' ? area.x : dockedSide === 'right' ? area.x + area.width - bounds.width : Math.min(Math.max(bounds.x, area.x), area.x + area.width - bounds.width)
   let y = Math.min(Math.max(bounds.y, area.y), area.y + area.height - bounds.height)
   if (Math.abs(bounds.x - area.x) <= magnet) x = area.x
   if (Math.abs(bounds.x + bounds.width - (area.x + area.width)) <= magnet) x = area.x + area.width - bounds.width
@@ -153,7 +167,7 @@ function updateTrayMenu(): void {
 function createWindow(): void {
   const display = screen.getPrimaryDisplay()
   const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea
-  const width = 430
+  const width = WINDOW_WIDTH
   const height = Math.min(760, areaHeight - 40)
   manualHeight = height
 
@@ -253,6 +267,8 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'setOvertimeRedeemed': return database.setOvertimeRedeemed(first as string, second as boolean)
     case 'startWorkday': return database.startWorkday()
     case 'endWorkday': return database.endWorkday()
+    case 'resumeWorkday': return database.resumeWorkday()
+    case 'getProjectStats': return database.getProjectStats()
     case 'startTask': return database.startTask(first as StartTaskInput)
     case 'pauseTask': return database.pauseTask(first as string)
     case 'resumeTask': return database.resumeTask(first as string, second as StartMode)
@@ -381,6 +397,28 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.endWorkday, () => {
     const result = database.endWorkday()
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.resumeWorkday, () => {
+    const result = database.resumeWorkday()
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.projectStats, () => database.getProjectStats())
+  ipcMain.handle(channels.projectTasks, (_, projectId: string) => database.getProjectTasks(projectId))
+  ipcMain.handle(channels.deleteProject, (_, id: string) => {
+    const result = database.deleteProject(id)
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.mergeProjects, (_, sourceId: string, targetId: string) => {
+    const result = database.mergeProjects(sourceId, targetId)
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.reorderProjects, (_, ids: string[]) => {
+    const result = database.reorderProjects(ids)
     emitChanged()
     return result
   })
@@ -539,6 +577,18 @@ function registerIpc(): void {
     emitChanged()
     return result
   })
+  ipcMain.handle(channels.calendarExportRange, async (_, from: string, to: string) => {
+    if (!mainWindow) return null
+    const ics = database.createCalendarIcs(from, to)
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: database.getSettings().locale === 'uk' ? 'Експортувати період у календар' : 'Export period to calendar',
+      defaultPath: join(app.getPath('downloads'), from === to ? `work-buddy-${from}.ics` : `work-buddy-${from}_${to}.ics`),
+      filters: [{ name: 'Calendar file', extensions: ['ics'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, ics, 'utf8')
+    return { path: result.filePath }
+  })
   ipcMain.handle(channels.calendarExportDay, async (_, date: string) => {
     if (!mainWindow) return null
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -557,9 +607,55 @@ function registerIpc(): void {
   ipcMain.handle(channels.notify, (_, input: NotificationInput) => {
     if (Notification.isSupported()) new Notification(input).show()
   })
-  ipcMain.handle(channels.windowMode, (_, mode: 'compact' | 'expanded', rows = 1) => {
+  ipcMain.handle(channels.windowMode, (_, mode: 'compact' | 'expanded' | 'docked', rows = 1) => {
     if (!mainWindow) return null
     const current = mainWindow.getBounds()
+    if (mode === 'docked') {
+      const area = screen.getDisplayMatching(current).workArea
+      const centerX = current.x + current.width / 2
+      // Stick to whichever side edge of the screen is closer.
+      const side = centerX - area.x < area.x + area.width - centerX ? 'left' : 'right'
+      if (!dockedSide) {
+        dockRestoreBounds = current
+        dockRestoreSide = side
+      }
+      dockedSide = side
+      compactWindow = true
+      editorRestoreBounds = null
+      mainWindow.setResizable(false)
+      mainWindow.setMinimumSize(DOCK_SIZE.width, DOCK_SIZE.height)
+      mainWindow.setMaximumSize(DOCK_SIZE.width, DOCK_SIZE.height)
+      const y = Math.min(Math.max(current.y, area.y), area.y + area.height - DOCK_SIZE.height)
+      programmaticHeight = DOCK_SIZE.height
+      mainWindow.setBounds({ x: side === 'left' ? area.x : area.x + area.width - DOCK_SIZE.width, y, ...DOCK_SIZE }, true)
+      return side
+    }
+    if (dockedSide) {
+      const area = screen.getDisplayMatching(current).workArea
+      const wasRight = dockedSide === 'right'
+      // The pill may have been dragged to the other edge or another screen since docking;
+      // only reuse the pre-dock x while it is still on the same edge of the same screen.
+      const restore = dockRestoreBounds && dockRestoreSide === dockedSide && overlapArea(dockRestoreBounds, area) > 0 ? dockRestoreBounds : null
+      dockedSide = null
+      dockRestoreBounds = null
+      dockRestoreSide = null
+      const nextCompact = mode === 'compact'
+      const height = nextCompact
+        ? Math.min(24 + Math.max(1, rows) * 50, area.height - 24)
+        : Math.min(manualHeight, area.height - 24)
+      compactWindow = nextCompact
+      mainWindow.setMinimumSize(WINDOW_WIDTH, 64)
+      mainWindow.setMaximumSize(WINDOW_WIDTH, area.height)
+      mainWindow.setResizable(!nextCompact)
+      // Reopen where the window came from horizontally, but at the height the dock was dragged to.
+      const preferredX = restore?.x ?? (wasRight ? area.x + area.width - WINDOW_WIDTH - 22 : area.x + 22)
+      const x = Math.min(Math.max(preferredX, area.x), area.x + area.width - WINDOW_WIDTH)
+      const y = Math.min(Math.max(current.y, area.y), area.y + area.height - height)
+      compactBottomAnchored = false
+      programmaticHeight = height
+      mainWindow.setBounds({ x, y, width: WINDOW_WIDTH, height }, true)
+      return nextCompact ? 'top' : null
+    }
     const display = screen.getDisplayMatching(current)
     const area = display.workArea
     const wasCompact = compactWindow

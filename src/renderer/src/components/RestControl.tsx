@@ -82,7 +82,7 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
   return (
     <motion.section className={`active-rest active-rest--${rest.type}`} layout initial={{ opacity: 0, scale: .98 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="active-rest__top">
-        <div className="active-rest__identity"><span><Icon size={18} /></span><div><small>{paused ? t('restPaused') : t('nowResting')}</small><strong>{copy.title}</strong></div></div>
+        <div className="active-rest__identity"><span><Icon size={18} /></span>{paused && <div><small>{t('restPaused')}</small></div>}</div>
         <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}><span>{remaining === 0 ? t('restTimeUp') : formatDuration(remaining)}</span>{overtime > 0 && <small>+{formatDuration(overtime, true)}</small>}<Pencil size={11} /></button>
       </div>
       {editingTime && (

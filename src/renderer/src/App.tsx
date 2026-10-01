@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { BarChart3, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
@@ -10,12 +10,13 @@ import { TaskCard } from './components/TaskCard'
 import { TaskEditor } from './components/TaskEditor'
 import { RestControl } from './components/RestControl'
 import { PlannedTasksPanel } from './components/PlannedTasksPanel'
+import { ProjectsPage } from './components/ProjectsPage'
 import { translator } from './lib/i18n'
-import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib/time'
+import { dayIntervals, formatDuration, formatHm, taskDuration, unionDuration } from './lib/time'
 import { playNotificationSound } from './lib/sounds'
 import { localDayBounds } from '@shared/local-date'
 
-type Tab = 'focus' | 'day' | 'settings'
+type Tab = 'focus' | 'day' | 'projects' | 'settings'
 
 function taskTouchesWorkday(task: Task, workdayStartedAt: number, now: number): boolean {
   return task.intervals.some((interval) => interval.startedAt <= now && (interval.endedAt ?? now) >= workdayStartedAt)
@@ -33,6 +34,8 @@ export default function App(): React.JSX.Element {
   const [showPlannedTasks, setShowPlannedTasks] = useState(false)
   const [compactHovered, setCompactHovered] = useState(false)
   const [compactAnchor, setCompactAnchor] = useState<'top' | 'bottom'>('top')
+  const [dockSide, setDockSide] = useState<'left' | 'right' | null>(null)
+  const [slideIndex, setSlideIndex] = useState(0)
   const compactOpenTimer = useRef<number | undefined>(undefined)
   const compactCloseTimer = useRef<number | undefined>(undefined)
   const compactTasksOpen = useRef(false)
@@ -46,16 +49,24 @@ export default function App(): React.JSX.Element {
     const unsubscribe = window.workBuddy.onDataChanged(reload)
     const unsubscribeSettings = window.workBuddy.onOpenSettings(() => {
       setCompact(false)
+      setDockSide(null)
       window.workBuddy.setWindowMode('expanded')
       setTab('settings')
     })
+    const unsubscribeDockSide = window.workBuddy.onDockSide(setDockSide)
     const unsubscribeSound = window.workBuddy.onPlaySound((sound, volume) => { void playNotificationSound(sound, undefined, volume).catch(() => undefined) })
     return () => {
       window.clearInterval(clock)
       unsubscribe()
       unsubscribeSettings()
+      unsubscribeDockSide()
       unsubscribeSound()
     }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setSlideIndex((index) => index + 1), 5000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => () => {
@@ -104,18 +115,45 @@ export default function App(): React.JSX.Element {
     ? Math.max(focusTimelineStart + 60_000, ...focusTimelineSegments.map((segment) => segment.endedAt))
     : now
   const focusTimelineSpan = focusTimelineEnd - focusTimelineStart
+  const canContinueDay = Boolean(snapshot?.workday && snapshot.workday.endedAt !== null && snapshot.workday.startedAt >= todayStart)
+
+  const headerSlides = ((): Array<{ id: string; label: string; value: string }> => {
+    if (!snapshot) return []
+    const todayTasks = snapshot.tasks.filter((task) => task.intervals.some((interval) => interval.startedAt < todayEnd && (interval.endedAt ?? now) > todayStart))
+    const workedToday = unionDuration(dayIntervals(todayTasks, now), now)
+    if (todayTasks.length === 0 && !openWorkdayStartedAt) return [{ id: 'hello', label: t('hello'), value: '' }]
+    const slides = [{ id: 'worked', label: t('statWorked'), value: formatDuration(workedToday) }]
+    const running = todayTasks.filter((task) => task.status === 'running').length
+    if (running > 0) slides.push({ id: 'live', label: t('statLive'), value: String(running) })
+    if (todayTasks.length > 0) slides.push({ id: 'tasks', label: t('statTasks'), value: String(todayTasks.length) })
+    const byProject = new Map<string, Task[]>()
+    for (const task of todayTasks) if (task.projectId) byProject.set(task.projectId, [...(byProject.get(task.projectId) ?? []), task])
+    const top = [...byProject.entries()]
+      .map(([projectId, projectTasks]) => ({ projectId, ms: unionDuration(dayIntervals(projectTasks, now), now) }))
+      .sort((first, second) => second.ms - first.ms)[0]
+    const topProject = top ? snapshot.projects.find((project) => project.id === top.projectId) : undefined
+    if (topProject && top.ms > 0) slides.push({ id: 'top', label: `${t('statTopProject')} ${topProject.name}`, value: formatDuration(top.ms, true) })
+    const breakMs = snapshot.rests.filter((rest) => rest.type === 'break').flatMap((rest) => rest.intervals)
+      .reduce((total, interval) => total + Math.max(0, Math.min(interval.endedAt ?? now, todayEnd) - Math.max(interval.startedAt, todayStart)), 0)
+    if (breakMs > 0) slides.push({ id: 'breaks', label: t('statBreaks'), value: formatDuration(breakMs, true) })
+    if (openWorkdayStartedAt && scheduledEndAt !== null && scheduledEndAt > now) slides.push({ id: 'until-end', label: t('statUntilEnd'), value: formatDuration(scheduledEndAt - now, true) })
+    return slides
+  })()
+  const headerSlide = headerSlides.length ? headerSlides[slideIndex % headerSlides.length] : undefined
+
+  const docked = dockSide !== null
 
   useEffect(() => {
-    if (!compact) return
+    if (!compact || docked) return
     void window.workBuddy.setWindowMode('compact', compactRows).then((anchor) => {
-      if (anchor) setCompactAnchor(anchor)
+      if (anchor === 'top' || anchor === 'bottom') setCompactAnchor(anchor)
     })
-  }, [compact, compactRows])
+  }, [compact, compactRows, docked])
 
   useEffect(() => {
-    if (compact) return
+    if (compact || docked) return
     void window.workBuddy.setWindowEditor(editorOpen)
-  }, [compact, editorOpen])
+  }, [compact, docked, editorOpen])
 
   if (!snapshot) {
     return <div className="app-shell app-shell--loading"><div className="loading-mark"><Sparkles size={22} /></div></div>
@@ -123,6 +161,25 @@ export default function App(): React.JSX.Element {
 
   const startInstant = async (mode: StartMode): Promise<void> => {
     setSnapshot(await window.workBuddy.startTask({ mode }))
+  }
+
+  const continueDay = async (): Promise<void> => {
+    setSnapshot(await window.workBuddy.resumeWorkday())
+  }
+
+  const dock = async (): Promise<void> => {
+    if (editorOpen) return
+    if (compactOpenTimer.current) window.clearTimeout(compactOpenTimer.current)
+    if (compactCloseTimer.current) window.clearTimeout(compactCloseTimer.current)
+    compactTasksOpen.current = false
+    setCompactHovered(false)
+    const side = await window.workBuddy.setWindowMode('docked')
+    setDockSide(side === 'left' ? 'left' : 'right')
+  }
+
+  const undock = async (): Promise<void> => {
+    setDockSide(null)
+    await window.workBuddy.setWindowMode(compact ? 'compact' : 'expanded', compactRows)
   }
 
   const startDayWithTask = async (): Promise<void> => {
@@ -215,19 +272,46 @@ export default function App(): React.JSX.Element {
   const navItems: Array<{ id: Tab; label: string; icon: typeof Clock3 }> = [
     { id: 'focus', label: t('focus'), icon: Clock3 },
     { id: 'day', label: t('day'), icon: BarChart3 },
+    { id: 'projects', label: t('projectsTab'), icon: BriefcaseBusiness },
     { id: 'settings', label: t('settings'), icon: Settings2 }
   ]
+
+  if (dockSide) {
+    const DockIcon = dockSide === 'left' ? ArrowRightToLine : ArrowLeftToLine
+    const drag = (
+      <div className="dock-drag drag-region" title={formatDuration(workedMs)}>
+        <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
+        <strong>{formatHm(workedMs)}</strong>
+      </div>
+    )
+    const open = <button className="dock-open no-drag" onClick={() => void undock()} title={t('dockedOpen')} aria-label={t('dockedOpen')}><DockIcon size={15} /></button>
+    return (
+      <main className="app-shell app-shell--docked">
+        <div className={`dock-pill dock-pill--${dockSide}`}>
+          {dockSide === 'left' ? <>{drag}{open}</> : <>{open}{drag}</>}
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className={`app-shell ${compact ? 'app-shell--compact' : ''}`}>
       {!compact && <header className="app-header drag-region">
         <div className="brand-lockup">
           <div className="brand-mark"><span /></div>
-          <div><strong>{t('appName')}</strong><small>{t('hello')}</small></div>
+          <div className="brand-copy">
+            <strong>{t('appName')}</strong>
+            <AnimatePresence mode="wait" initial={false}>
+              {headerSlide && <motion.small key={headerSlide.id} className="brand-slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22 }}>
+                {headerSlide.label}{headerSlide.value && <b>{headerSlide.value}</b>}
+              </motion.small>}
+            </AnimatePresence>
+          </div>
         </div>
         <div className="window-actions no-drag">
           <button className="icon-button icon-button--quiet" onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={15} /></button>
           <button className="icon-button icon-button--quiet" onClick={toggleCompact} title={compact ? t('expand') : t('compact')}>{compact ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button>
+          <button className="icon-button icon-button--quiet" onClick={() => void dock()} title={t('dockToEdge')} aria-label={t('dockToEdge')}><ArrowRightToLine size={15} /></button>
         </div>
       </header>}
 
@@ -262,6 +346,7 @@ export default function App(): React.JSX.Element {
                 <div className="compact-window-actions no-drag">
                   <button disabled={restRunning} onClick={() => startInstant('parallel')} title={t('addParallel')}><Plus size={17} /></button>
                   <button onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={17} /></button>
+                  <button onClick={() => void dock()} title={t('dockToEdge')}><ArrowRightToLine size={17} /></button>
                   <button onMouseEnter={() => revealCompactTasks(true)} onClick={toggleCompact} title={t('expand')}><ChevronDown size={17} /></button>
                 </div>
               </div>
@@ -282,6 +367,7 @@ export default function App(): React.JSX.Element {
                 <div className="compact-window-actions no-drag">
                   <button disabled={restRunning} onClick={() => startInstant('parallel')} title={t('addParallel')}><Plus size={17} /></button>
                   <button onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={17} /></button>
+                  <button onClick={() => void dock()} title={t('dockToEdge')}><ArrowRightToLine size={17} /></button>
                   <button onMouseEnter={() => revealCompactTasks(true)} onClick={toggleCompact} title={t('expand')}><ChevronDown size={17} /></button>
                 </div>
               </div>}
@@ -303,9 +389,9 @@ export default function App(): React.JSX.Element {
           <motion.div key="expanded" className="expanded-view" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <nav className="tab-bar no-drag">
               {navItems.map(({ id, label, icon: Icon }) => (
-                <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+                <button key={id} className={`${tab === id ? 'active' : ''} ${id === 'settings' ? 'tab-icon-only' : ''}`} onClick={() => setTab(id)} title={id === 'settings' ? label : undefined} aria-label={label}>
                   {tab === id && <motion.span layoutId="tab-pill" className="tab-pill" />}
-                  <Icon size={15} /><span>{label}</span>
+                  <Icon size={15} />{id !== 'settings' && <span>{label}</span>}
                 </button>
               ))}
             </nav>
@@ -338,6 +424,7 @@ export default function App(): React.JSX.Element {
                       {!lunchActive && <div className="focus-actions__primary">
                         <button className="primary-button" disabled={restRunning} onClick={() => snapshot.workday?.endedAt === null ? startInstant('parallel') : startDayWithTask()}><Plus size={17} />{snapshot.workday?.endedAt === null ? (liveTasks.length ? t('addParallel') : t('startTask')) : t('startDay')}</button>
                         {liveTasks.length > 0 && <button className="secondary-button" disabled={restRunning} onClick={() => startInstant('switch')}>{t('switchTask')}</button>}
+                        {!openWorkdayStartedAt && canContinueDay && <button className="secondary-button" onClick={() => void continueDay()} title={t('continueDayHint')}><Undo2 size={15} />{t('continueDay')}</button>}
                       </div>}
                       <div className={`focus-actions__tools ${openWorkdayStartedAt && !lunchActive ? '' : 'focus-actions__tools--planned-only'}`}>
                         {!lunchActive && snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
@@ -384,11 +471,14 @@ export default function App(): React.JSX.Element {
                     now={now}
                     t={t}
                     onStartDay={() => mutate(window.workBuddy.startWorkday())}
+                    onContinueDay={continueDay}
                     onEndDay={endDay}
                     onEdit={openEdit}
                     onSnapshot={setSnapshot}
                   />
                 )}
+
+                {tab === 'projects' && <ProjectsPage key="projects" snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />}
 
                 {tab === 'settings' && <SettingsPage key="settings" snapshot={snapshot} t={t} onSnapshot={setSnapshot} />}
               </AnimatePresence>
