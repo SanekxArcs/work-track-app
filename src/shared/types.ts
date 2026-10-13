@@ -98,6 +98,7 @@ export interface Workday {
   /** Schedule length and lunch allowance captured for this day, so later settings changes leave it alone. */
   scheduledMinutes?: number | null
   lunchMinutes?: number | null
+  breakMinutes?: number | null
   /** Earlier finished workdays on the same calendar day; together they share one daily allowance. */
   earlierSessions?: Array<{ startedAt: number; endedAt: number }>
 }
@@ -137,6 +138,8 @@ export interface AppSettings {
   globalShortcut: string
   /** Offers a notch-style pill at the top centre of the screen in place of the compact window. */
   notchEnabled: boolean
+  /** Resizes the window to fit the page whenever its content changes. */
+  autoFitHeight: boolean
   workday: {
     startReminder: boolean
     startTime: string
@@ -147,6 +150,7 @@ export interface AppSettings {
     enabled: boolean
     everyMinutes: number
     durationMinutes: number
+    dailyMinutes: number
   }
   lunch: {
     enabled: boolean
@@ -223,6 +227,7 @@ export interface StartTaskInput {
 
 export interface TaskUpdateInput {
   id: string
+  intervalUpdates?: Array<{ id: string; startedAt?: number; endedAt?: number }>
   intervalId?: string
   title?: string
   projectId?: string | null
@@ -387,8 +392,9 @@ export interface WorkBuddyApi {
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
   setWindowMode: (mode: WindowMode, rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
-  /** Drags the collapsed notch along the top edge; the main process follows the cursor. */
+  /** Drags the notch along the top edge; the main process follows the cursor. */
   dragNotch: (phase: 'start' | 'move' | 'end') => Promise<void>
+  onNotchTravel: (callback: (hidden: boolean) => void) => () => void
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>
   fitWindowToContent: (height: number) => Promise<void>

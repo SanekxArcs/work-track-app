@@ -52,6 +52,7 @@ export const channels = {
   notify: 'notification:show',
   windowMode: 'window:mode',
   notchDrag: 'window:notch-drag',
+  notchTravel: 'window:notch-travel',
   windowHeight: 'window:height',
   windowEditor: 'window:editor',
   windowFit: 'window:fit',

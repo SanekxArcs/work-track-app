@@ -6,10 +6,50 @@ import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { WorkBuddyDatabase } from '../src/main/database.ts'
 import { scheduledWorkdayEndAt } from '../src/shared/workday.ts'
+import { dailyRestBalance, restElapsed, restRemaining } from '../src/shared/rest.ts'
 
 function at(day: number, hours: number, minutes = 0): number {
   return new Date(2026, 7, day, hours, minutes, 0, 0).getTime()
 }
+
+test('notch positions stay independent for each monitor and survive a restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-notch-'))
+  const path = join(directory, 'work-buddy.sqlite')
+  let database = new WorkBuddyDatabase(path)
+  try {
+    database.setNotchPlacement({ displayId: 1, ratio: 0.25 })
+    database.setNotchPlacement({ displayId: 2, ratio: 0.75 })
+    database.setNotchPlacement({ displayId: 3, ratio: 0.6 })
+    database.setNotchPlacement({ displayId: 2, ratio: 0.8 })
+    database.close()
+    database = new WorkBuddyDatabase(path)
+    assert.deepEqual(database.getNotchPlacement(1), { displayId: 1, ratio: 0.25 })
+    assert.deepEqual(database.getNotchPlacement(2), { displayId: 2, ratio: 0.8 })
+    assert.deepEqual(database.getNotchPlacement(3), { displayId: 3, ratio: 0.6 })
+    assert.equal(database.getNotchPlacement(4), null)
+  } finally {
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('legacy notch position is used only for its original monitor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'work-buddy-notch-legacy-'))
+  const path = join(directory, 'work-buddy.sqlite')
+  const database = new WorkBuddyDatabase(path)
+  const raw = new DatabaseSync(path)
+  try {
+    raw.prepare("INSERT INTO ui_state (key, value) VALUES ('notch_placement', ?)").run(JSON.stringify({ displayId: 7, ratio: 0.7 }))
+    assert.deepEqual(database.getNotchPlacement(7), { displayId: 7, ratio: 0.7 })
+    assert.equal(database.getNotchPlacement(8), null)
+    database.setNotchPlacement({ displayId: 7, ratio: 0.4 })
+    assert.deepEqual(database.getNotchPlacement(7), { displayId: 7, ratio: 0.4 })
+  } finally {
+    raw.close()
+    database.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 async function withDatabase(run: (database: WorkBuddyDatabase) => void | Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'work-buddy-test-'))
@@ -31,6 +71,95 @@ async function atTime<T>(timestamp: number, run: () => T | Promise<T>): Promise<
     Date.now = original
   }
 }
+
+test('paused lunch allows a work call, then resumes only the unused time', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, lunch: { ...settings.lunch, durationMinutes: 60 } })
+    await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', title: 'Before lunch' }))
+    const lunch = await atTime(at(26, 12), () => database.startRest('lunch'))
+    const id = lunch.rests[0].id
+    await atTime(at(26, 12, 30), () => database.pauseRest(id))
+    const call = await atTime(at(26, 12, 31), () => database.startTask({ mode: 'switch', title: 'Work call' }))
+    assert.equal(call.tasks.find((task) => task.title === 'Work call')?.status, 'running')
+    assert.equal(restRemaining(call.rests[0], at(26, 13)), 30 * 60_000)
+    const resumed = await atTime(at(26, 13), () => database.startRest('lunch'))
+    assert.equal(resumed.rests[0].id, id)
+    assert.equal(resumed.rests[0].status, 'running')
+    assert.equal(resumed.tasks.find((task) => task.title === 'Work call')?.status, 'paused')
+    const finished = await atTime(at(26, 13, 30), () => database.completeRest(id))
+    assert.equal(restElapsed(finished.rests[0]), 60 * 60_000)
+    assert.equal(finished.tasks.find((task) => task.title === 'Work call')?.status, 'running')
+    assert.equal(dailyRestBalance(finished.settings, finished.workday, finished.rests)[0].remainingMs, 0)
+  })
+})
+
+test('ending lunch early preserves its allowance when it is started later', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startWorkday())
+    const lunch = await atTime(at(26, 12), () => database.startRest('lunch'))
+    const id = lunch.rests[0].id
+    const ended = await atTime(at(26, 12, 10), () => database.completeRest(id))
+    assert.equal(dailyRestBalance(ended.settings, ended.workday, ended.rests)[0].remainingMs, 20 * 60_000)
+    const resumed = await atTime(at(26, 15), () => database.startRest('lunch'))
+    assert.equal(resumed.rests.length, 1)
+    assert.equal(resumed.rests[0].id, id)
+    assert.equal(restRemaining(resumed.rests[0], at(26, 15)), 20 * 60_000)
+    assert.equal(resumed.rests[0].intervals.length, 2)
+    await atTime(at(26, 15), () => database.parseBackup(JSON.stringify(database.exportBackup())))
+  })
+})
+
+test('taking a short break while lunch is paused keeps both leftovers available', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startWorkday())
+    const lunch = await atTime(at(26, 12), () => database.startRest('lunch'))
+    const id = lunch.rests[0].id
+    await atTime(at(26, 12, 10), () => database.pauseRest(id))
+    const breakSnapshot = await atTime(at(26, 13), () => database.startRest('break'))
+    const shortBreak = breakSnapshot.rests.find((rest) => rest.type === 'break')!
+    const ended = await atTime(at(26, 13, 2), () => database.completeRest(shortBreak.id))
+    const balances = dailyRestBalance(ended.settings, ended.workday, ended.rests)
+    assert.equal(balances[0].remainingMs, 20 * 60_000)
+    assert.equal(balances[1].usedMs, 2 * 60_000)
+    assert.equal(balances[1].remainingMs, 43 * 60_000)
+    const continued = await atTime(at(26, 14), () => database.startRest('break'))
+    assert.equal(continued.rests.find((rest) => rest.status === 'running')?.id, shortBreak.id)
+    assert.equal(restRemaining(continued.rests.find((rest) => rest.id === shortBreak.id)!, at(26, 14)), 3 * 60_000)
+  })
+})
+
+test('a completed short break gives a fresh duration only after its allowance is consumed', async () => {
+  await withDatabase(async (database) => {
+    await atTime(at(26, 9), () => database.startWorkday())
+    const first = await atTime(at(26, 10), () => database.startRest('break'))
+    await atTime(at(26, 10, 5), () => database.completeRest(first.rests[0].id))
+    const next = await atTime(at(26, 11), () => database.startRest('break'))
+    assert.equal(next.rests.length, 2)
+    assert.equal(restRemaining(next.rests[1], at(26, 11)), 5 * 60_000)
+  })
+})
+
+test('break sessions share a daily cap, retain it at day end, and reset on the next day', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, breaks: { ...settings.breaks, dailyMinutes: 7 } })
+    await atTime(at(26, 9), () => database.startWorkday())
+    const first = await atTime(at(26, 10), () => database.startRest('break'))
+    await atTime(at(26, 10, 5), () => database.completeRest(first.rests[0].id))
+    const second = await atTime(at(26, 11), () => database.startRest('break'))
+    assert.equal(restRemaining(second.rests[1], at(26, 11)), 2 * 60_000)
+    const finished = await atTime(at(26, 11, 2), () => database.completeRest(second.rests[1].id))
+    assert.equal(dailyRestBalance(finished.settings, finished.workday, finished.rests)[1].remainingMs, 0)
+    await atTime(at(26, 12), () => assert.throws(() => database.startRest('break'), /No break time remaining/))
+    const ended = await atTime(at(26, 18), () => database.endWorkday())
+    assert.equal(dailyRestBalance(ended.settings, ended.workday, ended.rests)[1].usedMs, 7 * 60_000)
+    const nextDay = await atTime(at(27, 9), () => database.startWorkday())
+    assert.equal(dailyRestBalance(nextDay.settings, nextDay.workday, nextDay.rests)[1].remainingMs, 7 * 60_000)
+    assert.equal(nextDay.workday?.breakMinutes, 7)
+    await atTime(at(27, 9), () => database.parseBackup(JSON.stringify(database.exportBackup())))
+  })
+})
 
 test('migrates an existing planned-task table before creating its completion index', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'work-buddy-legacy-test-'))
@@ -404,11 +533,9 @@ test('does not merge parallel task intervals into a double-counted task', async 
     assert.ok(targetId)
     await atTime(at(26, 11), () => database.endWorkday())
 
-    await atTime(at(26, 11), () => assert.throws(
-      () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }),
-      /overlapping time/i
-    ))
-    assert.equal(database.exportBackup().tasks.length, 2)
+    const merged = await atTime(at(26, 11), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    assert.equal(merged.tasks.length, 1)
+    assert.deepEqual(merged.tasks[0].intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(26, 10), at(26, 11)]])
   })
 })
 
@@ -430,6 +557,92 @@ test('does not merge a task that has no time on the selected Day', async () => {
   })
 })
 
+test('merging into a paused task transfers a running timer without ending the day or unrelated work', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', title: 'Keep me' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 10), () => database.startTask({ mode: 'switch', title: 'Duplicate' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    const third = await atTime(at(26, 10, 30), () => database.startTask({ mode: 'parallel', title: 'Other work' }))
+    const otherId = third.tasks.find((task) => task.title === 'Other work')!.id
+    const merged = await atTime(at(26, 11), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    assert.equal(merged.workday?.endedAt, null)
+    assert.equal(merged.tasks.find((task) => task.id === targetId)?.status, 'running')
+    assert.equal(merged.tasks.find((task) => task.id === otherId)?.status, 'running')
+    assert.equal(merged.tasks.some((task) => task.id === sourceId), false)
+    const target = merged.tasks.find((task) => task.id === targetId)!
+    assert.equal(target.title, 'Keep me')
+    assert.deepEqual(target.intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(26, 9), null]])
+    const later = await atTime(at(26, 11, 30), () => database.pauseTask(targetId))
+    assert.equal(later.tasks.find((task) => task.id === targetId)?.intervals[0].endedAt, at(26, 11, 30))
+  })
+})
+
+test('parallel duplicate timers merge into one live interval with no double counting', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 9, 30), () => database.startTask({ mode: 'parallel' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    const merged = await atTime(at(26, 10), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    assert.equal(merged.tasks.length, 1)
+    assert.equal(merged.tasks[0].status, 'running')
+    assert.deepEqual(merged.tasks[0].intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(26, 9), null]])
+    assert.equal(await atTime(at(26, 10), () => database.getWorkedCoverageToday()), 60 * 60_000)
+    await atTime(at(26, 10), () => database.parseBackup(JSON.stringify(database.exportBackup())))
+  })
+})
+
+test('merging tasks during lunch preserves the task to resume when lunch finishes', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 10), () => database.startTask({ mode: 'switch' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    const lunch = await atTime(at(26, 11), () => database.startRest('lunch'))
+    const merged = await atTime(at(26, 11, 10), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    assert.equal(merged.tasks[0].status, 'paused')
+    const backup = await atTime(at(26, 11, 10), () => database.exportBackup())
+    assert.deepEqual(backup.rests[0].resumeTaskIds, [targetId])
+    await atTime(at(26, 11, 10), () => database.parseBackup(JSON.stringify(database.exportBackup())))
+    const finished = await atTime(at(26, 11, 30), () => database.completeRest(lunch.rests[0].id))
+    assert.equal(finished.tasks[0].status, 'running')
+    assert.equal(finished.tasks[0].intervals.at(-1)?.startedAt, at(26, 11, 30))
+  })
+})
+
+test('merging an earlier date leaves the live overnight source timer on the current date', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+    const first = await atTime(at(26, 22), () => database.startTask({ mode: 'parallel' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 23), () => database.startTask({ mode: 'switch' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    await atTime(at(27, 1), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    const backup = await atTime(at(27, 1), () => database.exportBackup())
+    assert.equal(backup.tasks.find((task) => task.id === sourceId)?.status, 'running')
+    assert.deepEqual(backup.tasks.find((task) => task.id === sourceId)?.intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(27, 0), null]])
+    assert.deepEqual(backup.tasks.find((task) => task.id === targetId)?.intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(26, 22), at(27, 0)]])
+  })
+})
+
+test('merging an earlier date preserves a paused source with time on the current date', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+    const first = await atTime(at(26, 22), () => database.startTask({ mode: 'parallel' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 23), () => database.startTask({ mode: 'switch' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    await atTime(at(27, 1), () => database.pauseTask(sourceId))
+    await atTime(at(27, 1), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    const backup = await atTime(at(27, 1), () => database.exportBackup())
+    assert.equal(backup.tasks.find((task) => task.id === sourceId)?.status, 'paused')
+    assert.deepEqual(backup.tasks.find((task) => task.id === sourceId)?.intervals.map((interval) => [interval.startedAt, interval.endedAt]), [[at(27, 0), at(27, 1)]])
+  })
+})
+
 test('rejects task interval edits that would double-count the same task', async () => {
   await withDatabase(async (database) => {
     const first = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel' }))
@@ -444,6 +657,41 @@ test('rejects task interval edits that would double-count the same task', async 
       () => database.updateTask({ id: taskId, intervalId: secondIntervalId, startedAt: at(26, 10, 30), endedAt: at(26, 13) }),
       /cannot overlap/i
     ))
+  })
+})
+
+test('saves multiple interval corrections together and rejects invalid batches without partial edits', async () => {
+  await withDatabase(async (database) => {
+    const initial = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Original' }))
+    const id = initial.tasks[0].id
+    await atTime(at(26, 11), () => database.pauseTask(id))
+    await atTime(at(26, 12), () => database.resumeTask(id, 'parallel'))
+    const paused = await atTime(at(26, 13), () => database.pauseTask(id))
+    const [first, second] = paused.tasks[0].intervals
+    // The first change alone would overlap; the complete batch has a shared boundary.
+    const saved = await atTime(at(26, 14), () => database.updateTask({ id, intervalUpdates: [
+      { id: first.id, endedAt: at(26, 12, 30) },
+      { id: second.id, startedAt: at(26, 12, 30) }
+    ] }))
+    assert.equal(saved.tasks[0].intervals[0].endedAt, at(26, 12, 30))
+    assert.equal(saved.tasks[0].intervals[1].startedAt, at(26, 12, 30))
+    await atTime(at(26, 14), () => {
+      assert.throws(() => database.updateTask({ id, notes: 'Must not save', intervalUpdates: [
+        { id: first.id, startedAt: at(26, 9) },
+        { id: second.id, startedAt: at(26, 12) }
+      ] }), /cannot overlap/i)
+      const unchanged = database.getSnapshot().tasks[0]
+      assert.equal(unchanged.notes, 'Original')
+      assert.equal(unchanged.intervals[0].startedAt, at(26, 10))
+      assert.throws(() => database.updateTask({ id, intervalUpdates: [{ id: 'another-task-interval', startedAt: at(26, 9) }] }), /interval not found/i)
+    })
+    const running = await atTime(at(26, 14), () => database.resumeTask(id, 'parallel'))
+    const live = running.tasks[0].intervals.find((range) => range.endedAt === null)!
+    await atTime(at(26, 15), () => {
+      assert.throws(() => database.updateTask({ id, intervalUpdates: [{ id: live.id, endedAt: at(26, 15) }] }), /end was not found/i)
+      const corrected = database.updateTask({ id, intervalUpdates: [{ id: live.id, startedAt: at(26, 14, 30) }] })
+      assert.equal(corrected.tasks[0].intervals.find((range) => range.id === live.id)?.endedAt, null)
+    })
   })
 })
 

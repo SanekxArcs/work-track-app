@@ -112,8 +112,8 @@ export default function App({ onUnpaired, onLocale }: AppProps = {}): React.JSX.
   const workedMs = unionDuration(dayIntervals(workdayTasks, now), now)
   const activeRest = snapshot?.rests.find((rest) => rest.status !== 'completed')
   const restRunning = activeRest?.status === 'running'
-  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : 1
-  const compactPrimaryTask = activeRest ? null : liveTasks[0] ?? focusTasks[0] ?? null
+  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : activeRest && !restRunning ? 2 : 1
+  const compactPrimaryTask = restRunning ? null : liveTasks[0] ?? focusTasks[0] ?? null
   const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
   const scheduledEndAt = snapshot ? scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, now) : null
   const showFocusEndDay = scheduledEndAt !== null && now >= scheduledEndAt
@@ -294,7 +294,7 @@ export default function App({ onUnpaired, onLocale }: AppProps = {}): React.JSX.
                 </div>
               </div>
             )}
-            {!activeRest && <div className="compact-task-row">
+            {!restRunning && <div className="compact-task-row">
                 <div className="compact-task-info drag-region">
                   <span className={`status-dot ${compactPrimaryTask?.status === 'running' ? 'status-dot--live' : ''}`} />
                   <div>
@@ -359,7 +359,7 @@ export default function App({ onUnpaired, onLocale }: AppProps = {}): React.JSX.
                         {liveTasks.length > 0 && <button className="secondary-button" disabled={restRunning} onClick={() => startInstant('switch')}>{t('switchTask')}</button>}
                       </div>
                       <div className={`focus-actions__tools ${openWorkdayStartedAt ? '' : 'focus-actions__tools--planned-only'}`}>
-                        {snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
+                        {snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={restRunning} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
                         <button className={`secondary-button planned-toggle ${showPlannedTasks ? 'active' : ''}`} onClick={() => setShowPlannedTasks((current) => !current)}><ListTodo size={15} />{t('plannedTasks')}</button>
                       </div>
                     </div>

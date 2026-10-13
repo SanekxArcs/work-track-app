@@ -106,7 +106,7 @@ function run() {
     // The extension has its own version line; bump it alongside the app and
     // rebuild it so Chrome sees an update. An explicit x.y.z applies only to
     // the app; the extension then gets a patch bump.
-    if (existsSync(extensionPackagePath)) {
+    if (existsSync(extensionPackagePath) && process.env.WORK_BUDDY_DESKTOP_ONLY !== '1') {
       const extensionPackage = JSON.parse(readFileSync(extensionPackagePath, 'utf8'))
       const extensionVersion = nextVersion(extensionPackage.version, /^\d+\.\d+\.\d+$/.test(releaseType) ? 'patch' : releaseType)
       extensionPackage.version = extensionVersion
@@ -116,7 +116,12 @@ function run() {
       build = npm('build', dirname(extensionPackagePath))
     }
 
-    if (!build || (!build.error && build.status === 0)) build = npm('dist:win', root)
+    if (!build || (!build.error && build.status === 0)) {
+      const desktopBuild = process.env.WORK_BUDDY_LOCAL_ELECTRON === '1'
+        ? 'dist:win -- --config.electronDist=node_modules/electron/dist'
+        : 'dist:win'
+      build = npm(desktopBuild, root)
+    }
   } catch (error) {
     restoreVersions()
     throw error

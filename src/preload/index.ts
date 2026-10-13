@@ -60,6 +60,11 @@ const api: WorkBuddyApi = {
   notify: (input: NotificationInput) => ipcRenderer.invoke(channels.notify, input),
   setWindowMode: (mode, rows) => ipcRenderer.invoke(channels.windowMode, mode, rows),
   dragNotch: (phase) => ipcRenderer.invoke(channels.notchDrag, phase),
+  onNotchTravel: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, hidden: boolean): void => callback(hidden)
+    ipcRenderer.on(channels.notchTravel, listener)
+    return () => ipcRenderer.removeListener(channels.notchTravel, listener)
+  },
   setWindowHeight: (height: number) => ipcRenderer.invoke(channels.windowHeight, height),
   setWindowEditor: (open: boolean) => ipcRenderer.invoke(channels.windowEditor, open),
   fitWindowToContent: (height: number) => ipcRenderer.invoke(channels.windowFit, height),

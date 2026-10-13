@@ -372,6 +372,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
         <div className="setting-line"><span>{t('autoStart')}</span><Toggle checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
         <div className="setting-line"><div><strong>{t('notchLook')}</strong><p>{t('notchLookBody')}</p></div><Toggle checked={settings.notchEnabled} onChange={(value) => patch('notchEnabled', value)} /></div>
+        <div className="setting-line"><div><strong>{t('autoFitHeight')}</strong><p>{t('autoFitHeightBody')}</p></div><Toggle checked={settings.autoFitHeight} onChange={(value) => patch('autoFitHeight', value)} /></div>
         <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
         {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
       </section>
@@ -412,6 +413,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="two-fields">
           <div><span>{t('every')}</span><NumberField value={settings.breaks.everyMinutes} onChange={(value) => nested('breaks', { everyMinutes: value })} suffix={t('minutes')} /></div>
           <div><span>{t('forMinutes')}</span><NumberField value={settings.breaks.durationMinutes} onChange={(value) => nested('breaks', { durationMinutes: value })} suffix={t('minutes')} /></div>
+          <div><span>{t('dailyBreakLimit')}</span><NumberField value={settings.breaks.dailyMinutes} onChange={(value) => nested('breaks', { dailyMinutes: value })} suffix={t('minutes')} /></div>
         </div>
       </section>
 

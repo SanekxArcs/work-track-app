@@ -31,6 +31,7 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
 
   // Due cards and the running rest grow in and shrink out, so the page below glides instead of jumping.
   return (
+    <>
     <AnimatePresence initial={false}>
       {active ? (
         <StackItem key={`rest-${active.id}`}><ActiveRest rest={active} now={now} t={t} mutate={mutate} /></StackItem>
@@ -59,6 +60,7 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
         </StackItem>
       ) : null}
     </AnimatePresence>
+    </>
   )
 }
 

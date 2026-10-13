@@ -7,6 +7,7 @@ import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDur
 import { dayPlannedEndAt, dayStartedAt, workdayLunchAllowanceMs, workdayOvertimeMs, workdayPlannedDurationMs } from '../../shared/workday'
 import { localDateKey, localDayBounds } from '../../shared/local-date'
 import { HistoryPanel } from './HistoryPanel'
+import { RestSummary } from './RestSummary'
 
 interface DaySummaryProps {
   snapshot: AppSnapshot
@@ -139,11 +140,16 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
     : overtimeDay?.overtimeMs ?? 0
-  const canMergeTasks = !isHistorical && !hasOpenDay && tasks.length > 1
+  const canMergeTasks = tasks.length > 1
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
   const canExportCalendar = Boolean(reportSnapshot.workday?.endedAt)
 
-  useEffect(() => { setCalendarExportStatus('') }, [selectedDate])
+  useEffect(() => {
+    setCalendarExportStatus('')
+    setMergeMode(false)
+    setMergeTaskIds([])
+    setMergeError('')
+  }, [selectedDate])
 
   const toggleMergeTask = (id: string): void => {
     setMergeTaskIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
@@ -205,9 +211,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
     { label: t('workedToday'), value: formatDuration(coverage, true), icon: Clock3, tone: 'green' },
     { label: t('summedTime'), value: formatDuration(summed, true), icon: Layers3, tone: 'blue' },
     { label: t('overlap'), value: formatDuration(overlap, true), icon: GitBranch, tone: 'purple' },
-    { label: t('contextSwitches'), value: String(switches), icon: ArrowRightLeft, tone: 'orange' },
-    { label: t('breakTime'), value: formatDuration(breakTime, true), icon: Dumbbell, tone: 'blue' },
-    { label: t('lunchTime'), value: formatDuration(lunchTime, true), icon: Coffee, tone: 'orange' }
+    { label: t('contextSwitches'), value: String(switches), icon: ArrowRightLeft, tone: 'orange' }
   ]
 
   return (
@@ -220,6 +224,20 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         </div>
         <div className="day-hero__tools"><div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div></div>
       </section>}
+
+      {!isHistorical && <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
+        {hasOpenDay ? t('endDay') : t('startDay')}
+      </button>}
+
+      {hasDayDetails && <div className="metrics-grid">
+        {metrics.map(({ label, value, icon: Icon, tone }, index) => (
+          <motion.div className={`metric-card metric-card--${tone}`} key={label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }}>
+            <Icon size={16} />
+            <strong>{value}</strong>
+            <span>{label}</span>
+          </motion.div>
+        ))}
+      </div>}
 
       {hasDayDetails && <section className="panel schedule-panel">
         <div className="section-heading"><div><span className="eyebrow">{t('workSchedule')}</span><h3>{t('dayProgress')}</h3></div><strong>{Math.round(scheduleProgress)}%</strong></div>
@@ -235,25 +253,25 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
       </section>}
 
-      {overtime > 0 && (
-        <motion.section className="overtime-card" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
-          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+{formatDuration(overtime, true)}</strong><p>{t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} />{overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')}</button>}
-        </motion.section>
-      )}
+      {hasDayDetails && <RestSummary snapshot={reportSnapshot} now={reportNow} t={t} onSnapshot={onSnapshot} allowActions={!isHistorical} />}
 
-      {hasDayDetails && <div className="metrics-grid">
-        {metrics.map(({ label, value, icon: Icon, tone }, index) => (
-          <motion.div className={`metric-card metric-card--${tone}`} key={label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }}>
-            <Icon size={16} />
-            <strong>{value}</strong>
-            <span>{label}</span>
-          </motion.div>
-        ))}
-      </div>}
-
-      <section className="overtime-balance-card">
-        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
-      </section>
+      {tasks.length > 0 && <section className="panel day-tasks-panel">
+        <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{isHistorical ? t('dayTasks') : t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        {mergeMode && <div className="day-merge-controls"><p>{t('mergeTasksHint')}</p>{mergeError && <small>{mergeError}</small>}<div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div>}
+        <div className="day-task-list">
+          {tasks.map((task) => {
+            const project = getProject(reportSnapshot.projects, task)
+            const selected = mergeTaskIds.includes(task.id)
+            const taskIntervals = visibleTimelineIntervals(task, todayStart, todayEnd, reportNow)
+            const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
+              <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
+              <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></>
+            return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} disabled={mergeBusy} aria-pressed={selected} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task, taskIntervals[taskIntervals.length - 1]?.id)} title={t('editTaskHint')}>
+              {taskRow}
+            </button>
+          })}
+        </div>
+      </section>}
 
       {tasks.length > 0 && <section className="panel timeline-panel">
         <div className="section-heading">
@@ -300,23 +318,15 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
         }
       </section>}
 
-      {tasks.length > 0 && <section className="panel day-tasks-panel">
-        <div className="section-heading"><div><span className="eyebrow">Tasks</span><h3>{t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
-        {mergeMode && <div className="day-merge-controls"><p>{t('mergeTasksHint')}</p>{mergeError && <small>{mergeError}</small>}<div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div>}
-        <div className="day-task-list">
-          {tasks.map((task) => {
-            const project = getProject(reportSnapshot.projects, task)
-            const selected = mergeTaskIds.includes(task.id)
-            const taskIntervals = visibleTimelineIntervals(task, todayStart, todayEnd, reportNow)
-            const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
-              <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
-              <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></>
-            return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task, taskIntervals[taskIntervals.length - 1]?.id)} title={t('editTaskHint')}>
-              {taskRow}
-            </button>
-          })}
-        </div>
-      </section>}
+      {overtime > 0 && (
+        <motion.section className="overtime-card" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
+          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+{formatDuration(overtime, true)}</strong><p>{t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} />{overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')}</button>}
+        </motion.section>
+      )}
+
+      <section className="overtime-balance-card">
+        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+{formatDuration(overtimeOverview.balanceMs, true)}</strong><p>{t('overtimeBalanceBody')}</p></div>
+      </section>
 
       {canShowAiSummary && (
         <section className="panel ai-summary-panel">
@@ -326,10 +336,6 @@ export function DaySummary({ snapshot, now, t, onStartDay, onEndDay, onEdit, onS
           <button className="secondary-button wide" disabled={aiBusy || tasks.length === 0} onClick={generateSummary}>{aiBusy ? t('aiThinking') : t('generateSummary')}</button>
         </section>
       )}
-
-      {!isHistorical && <button className={hasOpenDay ? 'end-day-button' : 'primary-button wide'} onClick={hasOpenDay ? onEndDay : onStartDay}>
-        {hasOpenDay ? t('endDay') : t('startDay')}
-      </button>}
 
       <HistoryPanel days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
       {canExportCalendar && <section className="history-calendar-export">

@@ -26,6 +26,9 @@ export function fitWindowHeight(
   }
 }
 
+/** True when the window sits on the bottom edge; a window touching both edges counts as top-anchored. */
 export function isBottomAnchored(bounds: WindowRect, workArea: WindowRect, tolerance = 16): boolean {
-  return Math.abs(bounds.y + bounds.height - (workArea.y + workArea.height)) <= tolerance
+  const bottomGap = Math.abs(bounds.y + bounds.height - (workArea.y + workArea.height))
+  const topGap = Math.abs(bounds.y - workArea.y)
+  return bottomGap <= tolerance && bottomGap < topGap
 }

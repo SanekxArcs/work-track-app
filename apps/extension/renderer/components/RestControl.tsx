@@ -21,7 +21,7 @@ function restCopy(type: RestType, t: Translator): { title: string; due: string }
     : { title: t('breakInProgress'), due: t('breakDueBody') }
 }
 
-export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
+function RestContent({ snapshot, now, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
   const active = snapshot.rests.find((rest) => rest.status !== 'completed')
   const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
   const [error, setError] = useState('')
@@ -113,4 +113,8 @@ function ActiveRest({ rest, now, t, error, mutate, run }: { rest: RestSession; n
       </div>
     </motion.section>
   )
+}
+
+export function RestControl(props: RestControlProps): React.JSX.Element | null {
+  return <RestContent {...props} />
 }

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, ListTodo, Minus, Pause, Pin, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Pin, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
@@ -23,14 +23,27 @@ type NotchState = 'collapsed' | 'open' | 'closing'
 type HeaderSlide = { id: string; label: string; value?: string; ms?: number; compactMs?: boolean; count?: number }
 
 /** Matches NOTCH_SIZE in the main process: the window is exactly the pill while collapsed. */
-const NOTCH_WIDTH = 300
-const NOTCH_HEIGHT = 40
+const NOTCH_WIDTH = 264
+const NOTCH_HEIGHT = 30
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function SlideValue({ slide }: { slide: HeaderSlide }): React.JSX.Element | null {
   if (slide.ms !== undefined) return <b><AnimatedDuration ms={slide.ms} compact={slide.compactMs} /></b>
   if (slide.count !== undefined) return <b><AnimatedNumber value={slide.count} /></b>
   return slide.value ? <b>{slide.value}</b> : null
+}
+
+/** The window height that shows the whole current page without scrolling. */
+function contentFitHeight(content: HTMLElement): number {
+  // The scroll container fills all spare window space, so its scrollHeight
+  // cannot tell us whether a short page should shrink the window. Measure
+  // the actual page inside it instead.
+  const page = Array.from(content.children).find((element) => element.classList.contains('page-stack')) as HTMLElement | undefined
+  const styles = window.getComputedStyle(content)
+  const chromeHeight = window.innerHeight - content.clientHeight
+  const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom)
+  const pageHeight = page ? Math.ceil(page.getBoundingClientRect().height) : content.scrollHeight
+  return chromeHeight + pageHeight + verticalPadding + 8
 }
 
 function taskTouchesWorkday(task: Task, workdayStartedAt: number, now: number): boolean {
@@ -52,17 +65,31 @@ export default function App(): React.JSX.Element {
   const [dockSide, setDockSide] = useState<'left' | 'right' | null>(null)
   const [slideIndex, setSlideIndex] = useState(0)
   const [notch, setNotchState] = useState<NotchState | null>(null)
+  const [notchTravelHidden, setNotchTravelHidden] = useState(false)
+  const notchTravelling = useRef(false)
+  useEffect(() => window.workBuddy.onNotchTravel((hidden) => {
+    notchTravelling.current = hidden
+    setNotchTravelHidden(hidden)
+    if (hidden) window.clearTimeout(notchOpenTimer.current)
+  }), [])
   const [windowLeaving, setWindowLeaving] = useState(false)
   const notchRef = useRef<NotchState | null>(null)
   const notchOpenTimer = useRef<number | undefined>(undefined)
   const notchCloseTimer = useRef<number | undefined>(undefined)
   const notchDrag = useRef<{ startX: number; moved: boolean; pending: boolean } | null>(null)
   const notchHoverBlocked = useRef(false)
+  const notchHovered = useRef(false)
+  const notchCloseFinishing = useRef(false)
   const notchSuppressClick = useRef(false)
   const compactOpenTimer = useRef<number | undefined>(undefined)
   const compactCloseTimer = useRef<number | undefined>(undefined)
   const compactTasksOpen = useRef(false)
-  const contentRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null)
+  const attachContent = useCallback((element: HTMLDivElement | null) => {
+    contentRef.current = element
+    setContentElement(element)
+  }, [])
 
   const setNotch = (next: NotchState | null): void => {
     notchRef.current = next
@@ -150,9 +177,9 @@ export default function App(): React.JSX.Element {
   const workedMs = unionDuration(dayIntervals(workdayTasks, now), now)
   const activeRest = snapshot?.rests.find((rest) => rest.status !== 'completed')
   const restRunning = activeRest?.status === 'running'
-  const lunchActive = activeRest?.type === 'lunch'
-  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : 1
-  const compactPrimaryTask = activeRest ? null : liveTasks[0] ?? focusTasks[0] ?? null
+  const lunchActive = restRunning && activeRest?.type === 'lunch'
+  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : activeRest && !restRunning ? 2 : 1
+  const compactPrimaryTask = restRunning ? null : liveTasks[0] ?? focusTasks[0] ?? null
   const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
   const scheduledEndAt = snapshot ? scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, now) : null
   const showFocusEndDay = scheduledEndAt !== null && now >= scheduledEndAt
@@ -217,6 +244,35 @@ export default function App(): React.JSX.Element {
     if (!notch || (notchEnabled && !(editorOpen && notch === 'open'))) return
     void window.workBuddy.setWindowMode('expanded').then(() => setNotch(null))
   }, [notch, notchEnabled, editorOpen])
+
+  // With auto height on, every change in the page's size (a tab switch, a new or edited task,
+  // a panel opening) refits the window, after the motion settles. The task editor sizes the
+  // window itself, so fitting waits until it closes.
+  const autoFitHeight = snapshot?.settings.autoFitHeight ?? false
+  useEffect(() => {
+    const content = contentElement
+    // The open notch always fits its content, including expanding planned-task panels.
+    if ((!autoFitHeight && notch !== 'open') || !content || compact || docked || (notch && notch !== 'open') || editorOpen) return
+    let timer: number | undefined
+    const schedule = (): void => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void window.workBuddy.fitWindowToContent(contentFitHeight(content)), 140)
+    }
+    const resize = new ResizeObserver(schedule)
+    const observePages = (): void => {
+      resize.disconnect()
+      for (const child of Array.from(content.children)) resize.observe(child)
+      schedule()
+    }
+    const pages = new MutationObserver(observePages)
+    pages.observe(content, { childList: true })
+    observePages()
+    return () => {
+      window.clearTimeout(timer)
+      resize.disconnect()
+      pages.disconnect()
+    }
+  }, [autoFitHeight, contentElement, compact, docked, notch, editorOpen])
 
   if (!snapshot) {
     const loadingT = translator(navigator.language.toLowerCase().startsWith('uk') ? 'uk' : 'en')
@@ -294,26 +350,37 @@ export default function App(): React.JSX.Element {
   }
 
   const openNotch = async (): Promise<void> => {
-    if (notchRef.current !== 'collapsed') return
+    if (notchRef.current !== 'collapsed' || notchTravelling.current) return
     await window.workBuddy.setWindowMode('notch-open')
     if (notchRef.current === 'collapsed') setNotch('open')
   }
 
   const finishNotchClose = async (): Promise<void> => {
-    if (notchRef.current !== 'closing') return
-    await window.workBuddy.setWindowMode('notch')
-    if (notchRef.current === 'closing') setNotch('collapsed')
+    if (notchRef.current !== 'closing' || notchCloseFinishing.current) return
+    notchCloseFinishing.current = true
+    try {
+      await window.workBuddy.setWindowMode('notch')
+      if (notchRef.current === 'closing') {
+        // Re-entry during the exit cannot queue an opening. Leave the pill first.
+        notchHoverBlocked.current = notchHovered.current
+        setNotch('collapsed')
+      }
+    } finally {
+      notchCloseFinishing.current = false
+    }
   }
 
   const hoverNotch = (inside: boolean): void => {
+    notchHovered.current = inside
     window.clearTimeout(notchOpenTimer.current)
     window.clearTimeout(notchCloseTimer.current)
+    // Once the exit starts it must finish, even if the pointer comes back.
+    if (notchRef.current === 'closing') return
     // A pill being dragged, or just dropped under the cursor, must not spring open.
-    if (inside && (notchDrag.current || notchHoverBlocked.current)) return
+    if (notchTravelling.current || notchDrag.current || (inside && notchHoverBlocked.current)) return
     if (!inside) notchHoverBlocked.current = false
     if (inside) {
-      if (notchRef.current === 'closing') setNotch('open')
-      else if (notchRef.current === 'collapsed') notchOpenTimer.current = window.setTimeout(() => void openNotch(), 260)
+      if (notchRef.current === 'collapsed') notchOpenTimer.current = window.setTimeout(() => void openNotch(), 260)
     } else if (notchRef.current === 'open') {
       notchCloseTimer.current = window.setTimeout(() => {
         if (notchRef.current === 'open' && !editorOpen) setNotch('closing')
@@ -327,6 +394,7 @@ export default function App(): React.JSX.Element {
       if (event.button !== 0) return
       event.currentTarget.setPointerCapture(event.pointerId)
       window.clearTimeout(notchOpenTimer.current)
+      window.clearTimeout(notchCloseTimer.current)
       notchDrag.current = { startX: event.screenX, moved: false, pending: false }
       void window.workBuddy.dragNotch('start')
     },
@@ -354,6 +422,19 @@ export default function App(): React.JSX.Element {
     }
   }
   const { onPointerUp: endNotchDrag } = notchPointer
+  const notchDragButton = (
+    <button
+      className="icon-button icon-button--quiet notch-drag-handle no-drag"
+      {...notchPointer}
+      onPointerCancel={endNotchDrag}
+      onLostPointerCapture={endNotchDrag}
+      onClick={(event) => { event.stopPropagation(); notchSuppressClick.current = false }}
+      onMouseEnter={() => { window.clearTimeout(notchOpenTimer.current); notchHoverBlocked.current = true }}
+      onMouseLeave={() => { if (!notchDrag.current) { notchHoverBlocked.current = false; hoverNotch(true) } }}
+      title={t('notchDrag')}
+      aria-label={t('notchDrag')}
+    ><GripVertical size={16} /></button>
+  )
 
   const startDayWithTask = (): Promise<void> => attempt(async () => {
     await window.workBuddy.startWorkday()
@@ -429,16 +510,7 @@ export default function App(): React.JSX.Element {
   const fitWindowToContent = (): void => {
     const content = contentRef.current
     if (!content || compact) return
-    // The scroll container fills all spare window space, so its scrollHeight
-    // cannot tell us whether a short page should shrink the window. Measure
-    // the actual page inside it instead.
-    const page = Array.from(content.children).find((element) => element.classList.contains('page-stack')) as HTMLElement | undefined
-    const styles = window.getComputedStyle(content)
-    const chromeHeight = window.innerHeight - content.clientHeight
-    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom)
-    const pageHeight = page ? Math.ceil(page.getBoundingClientRect().height) : content.scrollHeight
-    const requestedHeight = chromeHeight + pageHeight + verticalPadding + 8
-    void window.workBuddy.fitWindowToContent(requestedHeight)
+    void window.workBuddy.fitWindowToContent(contentFitHeight(content))
   }
 
   const navItems: Array<{ id: Tab; label: string; icon: typeof Clock3 }> = [
@@ -489,6 +561,7 @@ export default function App(): React.JSX.Element {
       </div>
       <div className="window-actions no-drag">
         {notch ? <>
+          {notchDragButton}
           <button className="icon-button icon-button--quiet" onClick={() => void pinNotch()} title={t('notchPin')} aria-label={t('notchPin')}><Pin size={15} /></button>
           <button className="icon-button icon-button--quiet" onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={15} /></button>
         </> : <>
@@ -512,7 +585,7 @@ export default function App(): React.JSX.Element {
               ))}
             </nav>
 
-            <div ref={contentRef} className="content-scroll no-drag">
+            <div ref={attachContent} className="content-scroll no-drag">
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
                   <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
@@ -543,7 +616,7 @@ export default function App(): React.JSX.Element {
                         {!openWorkdayStartedAt && canContinueDay && <button className="secondary-button" onClick={() => void continueDay()} title={t('continueDayHint')}><Undo2 size={15} />{t('continueDay')}</button>}
                       </div>}
                       <div className={`focus-actions__tools ${openWorkdayStartedAt && !lunchActive ? '' : 'focus-actions__tools--planned-only'}`}>
-                        {!lunchActive && snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={Boolean(activeRest)} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
+                        {!lunchActive && snapshot.workday?.endedAt === null && <button className="secondary-button" disabled={restRunning} onClick={() => mutate(window.workBuddy.startRest('break'))}><Dumbbell size={15} />{t('takeBreak')}</button>}
                         <button className={`secondary-button planned-toggle ${showPlannedTasks ? 'active' : ''}`} onClick={() => setShowPlannedTasks((current) => !current)}><ListTodo size={15} />{t('plannedTasks')}</button>
                       </div>
                     </div>
@@ -611,9 +684,11 @@ export default function App(): React.JSX.Element {
   if (notch) {
     // A dark pill hanging from the top edge; hovering grows it into the full view in place.
     return (
-      <motion.main className="app-shell app-shell--notch" {...stage} onMouseEnter={() => hoverNotch(true)} onMouseLeave={() => hoverNotch(false)}>
+      <motion.main className="app-shell app-shell--notch" {...stage}>
         <motion.div
-          className={`notch ${notchOpen ? 'notch--open' : ''}`}
+          className={`notch ${notchOpen ? 'notch--open' : ''} ${notchTravelHidden ? 'notch--travelling' : ''}`}
+          onMouseEnter={() => hoverNotch(true)}
+          onMouseLeave={() => hoverNotch(false)}
           initial={false}
           animate={notchOpen ? { width: '100%', height: '100%' } : { width: NOTCH_WIDTH, height: NOTCH_HEIGHT }}
           transition={{ type: 'spring', stiffness: 380, damping: 38, mass: 0.9 }}
@@ -625,14 +700,17 @@ export default function App(): React.JSX.Element {
                 {appHeader}
                 {expandedView}
               </motion.div>
-              : <motion.button key="pill" className="notch-pill" {...notchPointer} onPointerCancel={endNotchDrag} title={t('notchPillHint')} initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12, duration: 0.18 } }} exit={{ opacity: 0, transition: { duration: 0.08 } }}>
+              : <motion.div key="pill" className="notch-pill-row" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12, duration: 0.18 } }} exit={{ opacity: 0, transition: { duration: 0.08 } }}>
+                {notchDragButton}
+                <button className="notch-pill" {...notchPointer} onPointerCancel={endNotchDrag} title={t('notchPillHint')}>
                 <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
                 <AnimatePresence mode="wait" initial={false}>
                   {headerSlide && <motion.span key={headerSlide.id} className="notch-pill__slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
                     <span className="notch-pill__label">{headerSlide.label}</span><SlideValue slide={headerSlide} />
                   </motion.span>}
                 </AnimatePresence>
-              </motion.button>}
+                </button>
+              </motion.div>}
           </AnimatePresence>
         </motion.div>
         {actionErrorToast}
@@ -682,7 +760,7 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
             )}
-            {!activeRest && <div className="compact-task-row">
+            {!restRunning && <div className="compact-task-row">
                 <div className="compact-task-info drag-region">
                   <span className={`status-dot ${compactPrimaryTask?.status === 'running' ? 'status-dot--live' : ''}`} />
                   <div>

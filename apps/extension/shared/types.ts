@@ -55,6 +55,7 @@ export interface Workday {
   endedAt: number | null
   scheduledMinutes?: number | null
   lunchMinutes?: number | null
+  breakMinutes?: number | null
   earlierSessions?: Array<{ startedAt: number; endedAt: number }>
 }
 
@@ -100,6 +101,7 @@ export interface AppSettings {
     enabled: boolean
     everyMinutes: number
     durationMinutes: number
+    dailyMinutes: number
   }
   lunch: {
     enabled: boolean
@@ -171,6 +173,7 @@ export interface StartTaskInput {
 
 export interface TaskUpdateInput {
   id: string
+  intervalUpdates?: Array<{ id: string; startedAt?: number; endedAt?: number }>
   intervalId?: string
   title?: string
   projectId?: string | null

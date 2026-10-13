@@ -7,6 +7,7 @@ import { GeminiService } from './gemini'
 import { ReminderService } from './reminders'
 import { WORK_BUDDY_LOCAL_PORT, WorkBuddyLocalServer } from './local-server'
 import { fitWindowHeight, isBottomAnchored } from './window-layout'
+import { syncWindowTopmost } from './window-topmost'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
 import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
@@ -28,17 +29,25 @@ let manualHeight = 760
 let programmaticHeight: number | undefined
 let compactBottomAnchored = false
 let editorRestoreBounds: Electron.Rectangle | null = null
+/** Where content fitting keeps the window: the spot the user chose, not wherever a tall page pushed it. */
+let fitAnchor: { y: number; bottom: boolean; last: Electron.Rectangle } | null = null
 let registeredToggleShortcut: string | null = null
 let dockedSide: 'left' | 'right' | null = null
 let dockRestoreBounds: Electron.Rectangle | null = null
 let dockRestoreSide: 'left' | 'right' | null = null
 let notchState: 'collapsed' | 'open' | null = null
 let notchGrabOffset = 0
+let notchDisplayId: number | null = null
+let notchDragging = false
+let notchFollowTimer: NodeJS.Timeout | undefined
+let topmostTimer: NodeJS.Timeout | undefined
+let notchTravelTimer: NodeJS.Timeout | undefined
+let notchCandidate: { id: number; since: number } | null = null
 const chosenSoundPaths = new Set<string>()
 
 const WINDOW_WIDTH = 430
 const DOCK_SIZE = { width: 104, height: 46 }
-const NOTCH_SIZE = { width: 300, height: 40 }
+const NOTCH_SIZE = { width: 264, height: 30 }
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -56,14 +65,81 @@ function clampNotchCenter(center: number, area: Electron.Rectangle): number {
 
 /** The saved notch spot, or the top centre of the screen the window is on. */
 function notchAnchor(): { area: Electron.Rectangle; center: number } {
-  const placement = database.getNotchPlacement()
-  const saved = placement ? screen.getAllDisplays().find((display) => display.id === placement.displayId) : undefined
-  const area = (saved ?? screen.getDisplayMatching(mainWindow?.getBounds() ?? screen.getPrimaryDisplay().workArea)).workArea
-  return { area, center: clampNotchCenter(saved && placement ? area.x + placement.ratio * area.width : area.x + area.width / 2, area) }
+  const display = screen.getAllDisplays().find((item) => item.id === notchDisplayId)
+    ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  notchDisplayId = display.id
+  const placement = database.getNotchPlacement(display.id)
+  const area = display.workArea
+  return { area, center: clampNotchCenter(area.x + (placement?.ratio ?? 0.5) * area.width, area) }
+}
+
+function cancelNotchTravel(): void {
+  clearTimeout(notchTravelTimer)
+  notchTravelTimer = undefined
+  notchCandidate = null
+  mainWindow?.webContents.send(channels.notchTravel, false)
+}
+
+/** Animate inside the transparent window so the pill cannot spill onto a screen above it. */
+function followNotchCursor(): void {
+  if (!mainWindow || !mainWindow.isVisible() || notchState !== 'collapsed' || notchDragging || notchTravelTimer) {
+    notchCandidate = null
+    return
+  }
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const { area, center } = notchAnchor()
+  if (display.id === notchDisplayId) {
+    notchCandidate = null
+    // Also restore a reachable position after resolution, scale or taskbar changes.
+    const x = Math.round(center - NOTCH_SIZE.width / 2)
+    const current = mainWindow.getBounds()
+    if (current.x !== x || current.y !== area.y) {
+      mainWindow.setPosition(x, area.y, false)
+      restoreWindowTopmost()
+    }
+    return
+  }
+  if (notchCandidate?.id !== display.id) {
+    notchCandidate = { id: display.id, since: Date.now() }
+    return
+  }
+  if (Date.now() - notchCandidate.since < 200) return
+  mainWindow.webContents.send(channels.notchTravel, true)
+  notchTravelTimer = setTimeout(() => {
+    if (!mainWindow || notchState !== 'collapsed' || notchDragging || !mainWindow.isVisible()) {
+      cancelNotchTravel()
+      return
+    }
+    // Use the latest cursor location if it crossed another screen during the exit.
+    notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
+    const target = notchAnchor()
+    mainWindow.setPosition(Math.round(target.center - NOTCH_SIZE.width / 2), target.area.y, false)
+    restoreWindowTopmost()
+    notchTravelTimer = setTimeout(cancelNotchTravel, 50)
+  }, 200)
+}
+
+/** The tallest the normal window may grow: the full height of the screen it is on, not the primary one. */
+function syncWindowMaxHeight(): void {
+  if (!mainWindow) return
+  if (notchState) {
+    cancelNotchTravel()
+    const { area, center } = notchAnchor()
+    const size = notchState === 'collapsed' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+    mainWindow.setMinimumSize(size.width, size.height)
+    mainWindow.setMaximumSize(size.width, size.height)
+    mainWindow.setBounds({ x: Math.round(center - size.width / 2), y: area.y, ...size }, false)
+    return
+  }
+  if (compactWindow) return
+  const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea
+  const [, maxHeight] = mainWindow.getMaximumSize()
+  if (maxHeight !== area.height) mainWindow.setMaximumSize(WINDOW_WIDTH, area.height)
 }
 
 function snapWindowToScreen(): void {
   if (!mainWindow || applyingSnap || notchState) return
+  syncWindowMaxHeight()
   const bounds = mainWindow.getBounds()
   const displays = screen.getAllDisplays()
   const display = displays.reduce((best, candidate) =>
@@ -135,6 +211,14 @@ function toggleWindow(): void {
   }
 }
 
+function restoreWindowTopmost(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) return
+  if (!database.getSettings().alwaysOnTop) return
+  // Keep native file dialogs above their owner while they are open.
+  if (mainWindow.getChildWindows().some((child) => child.isVisible())) return
+  syncWindowTopmost(mainWindow, true)
+}
+
 function registerToggleShortcut(shortcut: string): void {
   if (registeredToggleShortcut === shortcut && globalShortcut.isRegistered(shortcut)) return
   let registered = false
@@ -181,7 +265,7 @@ function applyAppSettings(settings: AppSettings, ensureGlobalShortcut = false): 
   if (current.globalShortcut !== settings.globalShortcut || (ensureGlobalShortcut && !globalShortcut.isRegistered(settings.globalShortcut))) registerToggleShortcut(settings.globalShortcut)
   const result = database.updateSettings(settings)
   app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
-  mainWindow?.setAlwaysOnTop(result.settings.alwaysOnTop, result.settings.alwaysOnTop ? 'pop-up-menu' : 'normal')
+  syncWindowTopmost(mainWindow, result.settings.alwaysOnTop)
   updateTrayMenu()
   return result
 }
@@ -227,7 +311,8 @@ function createWindow(): void {
     minWidth: width,
     minHeight: 64,
     maxWidth: width,
-    maxHeight: areaHeight,
+    // Follows the screen the window is on (see syncWindowMaxHeight), so a taller second monitor can be used.
+    maxHeight: Math.max(...screen.getAllDisplays().map((item) => item.workArea.height)),
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -245,7 +330,7 @@ function createWindow(): void {
     }
   })
 
-  if (database.getSettings().alwaysOnTop) mainWindow.setAlwaysOnTop(true, 'pop-up-menu')
+  syncWindowTopmost(mainWindow, database.getSettings().alwaysOnTop)
 
   // The renderer exposes a deliberately small IPC bridge. Never let an
   // accidental link or popup replace it with untrusted web content.
@@ -253,6 +338,8 @@ function createWindow(): void {
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('show', restoreWindowTopmost)
+  mainWindow.on('restore', restoreWindowTopmost)
   mainWindow.on('move', scheduleSnap)
   mainWindow.on('resize', () => {
     if (!compactWindow && mainWindow) {
@@ -661,8 +748,10 @@ function registerIpc(): void {
   ipcMain.handle(channels.notify, (_, input: NotificationInput) => showNotification(input))
   ipcMain.handle(channels.windowMode, (_, mode: WindowMode, rows = 1) => {
     if (!mainWindow) return null
+    cancelNotchTravel()
     let current = mainWindow.getBounds()
     if (mode === 'notch' || mode === 'notch-open') {
+      if (!notchState) notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
       // The notch hangs from the top edge where the user left it; hovering opens it in place.
       const { area, center } = notchAnchor()
       const size = mode === 'notch' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
@@ -678,6 +767,7 @@ function registerIpc(): void {
       mainWindow.setMaximumSize(size.width, size.height)
       programmaticHeight = size.height
       mainWindow.setBounds({ x: Math.round(center - size.width / 2), y: area.y, ...size }, false)
+      restoreWindowTopmost()
       return null
     }
     if (notchState) {
@@ -757,24 +847,29 @@ function registerIpc(): void {
       ? Math.min(Math.max(currentBottom - height, area.y), area.y + area.height - height)
       : Math.min(Math.max(current.y, area.y), area.y + area.height - height)
     compactWindow = nextCompact
+    syncWindowMaxHeight()
     mainWindow.setResizable(!nextCompact)
     programmaticHeight = height
     mainWindow.setBounds({ ...current, x, y, height }, true)
     return nextCompact ? (keepBottom ? 'bottom' : 'top') : null
   })
   ipcMain.handle(channels.notchDrag, (_, phase: 'start' | 'move' | 'end') => {
-    if (!mainWindow || notchState !== 'collapsed') return
+    if (!mainWindow || !notchState) return
     const cursor = screen.getCursorScreenPoint()
     const bounds = mainWindow.getBounds()
     if (phase === 'start') {
+      cancelNotchTravel()
+      notchDragging = true
       notchGrabOffset = cursor.x - (bounds.x + bounds.width / 2)
       return
     }
     // Slides along the top edge only, onto whichever screen the cursor is over.
     const area = screen.getDisplayNearestPoint(cursor).workArea
+    notchDisplayId = screen.getDisplayNearestPoint(cursor).id
     const center = clampNotchCenter(cursor.x - notchGrabOffset, area)
-    mainWindow.setBounds({ x: Math.round(center - NOTCH_SIZE.width / 2), y: area.y, ...NOTCH_SIZE }, false)
+    mainWindow.setBounds({ x: Math.round(center - bounds.width / 2), y: area.y, width: bounds.width, height: Math.min(bounds.height, area.height) }, false)
     if (phase === 'end') {
+      notchDragging = false
       database.setNotchPlacement({ displayId: screen.getDisplayNearestPoint(cursor).id, ratio: (center - area.x) / area.width })
     }
   })
@@ -808,10 +903,29 @@ function registerIpc(): void {
     mainWindow.setBounds(next, false)
   })
   ipcMain.handle(channels.windowFit, (_, requestedHeight: number) => {
-    if (!mainWindow || compactWindow || !Number.isFinite(requestedHeight)) return
+    if (!mainWindow || !Number.isFinite(requestedHeight)) return
+    if (notchState === 'open') {
+      const { area, center } = notchAnchor()
+      const current = mainWindow.getBounds()
+      const next = fitWindowHeight({ ...current, x: Math.round(center - WINDOW_WIDTH / 2), y: area.y }, area, requestedHeight, false, 230)
+      // Opening the notch fixes its native size; release those constraints before fitting.
+      mainWindow.setMinimumSize(WINDOW_WIDTH, 230)
+      mainWindow.setMaximumSize(WINDOW_WIDTH, Math.max(230, area.height - 16))
+      programmaticHeight = next.height
+      mainWindow.setBounds(next, false)
+      return
+    }
+    if (compactWindow) return
     const current = mainWindow.getBounds()
     const area = screen.getDisplayMatching(current).workArea
-    const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
+    // Re-read the anchor only after the user moved or resized the window (a snap nudges it by
+    // at most the magnet distance). Otherwise a page that grew the window up against the bottom
+    // edge would make every shorter page shrink towards the bottom of the screen.
+    const last = fitAnchor?.last
+    const userMoved = !last || last.x !== current.x || last.height !== current.height || Math.abs(last.y - current.y) > 16
+    if (!fitAnchor || userMoved) fitAnchor = { y: current.y, bottom: isBottomAnchored(current, area), last: current }
+    const next = fitWindowHeight({ ...current, y: fitAnchor.bottom ? current.y : fitAnchor.y }, area, requestedHeight, fitAnchor.bottom, 230)
+    fitAnchor.last = next
     manualHeight = next.height
     programmaticHeight = next.height
     mainWindow.setBounds(next, false)
@@ -865,6 +979,12 @@ else {
       console.error('Extension server could not start', error)
     }
     createWindow()
+    notchFollowTimer = setInterval(followNotchCursor, 80)
+    // Other applications can change the native z-order after our window loses focus.
+    topmostTimer = setInterval(restoreWindowTopmost, 2000)
+    screen.on('display-added', syncWindowMaxHeight)
+    screen.on('display-removed', syncWindowMaxHeight)
+    screen.on('display-metrics-changed', syncWindowMaxHeight)
     mainWindow?.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'media'))
     tray = new Tray(createTrayIcon())
     tray.setToolTip('Work Buddy')
@@ -890,6 +1010,9 @@ else {
 
 app.on('before-quit', () => {
   isQuitting = true
+  clearInterval(notchFollowTimer)
+  clearInterval(topmostTimer)
+  clearTimeout(notchTravelTimer)
   reminders?.stop()
   void localServer?.stop()
   database?.close()

@@ -328,6 +328,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="two-fields">
           <div><span>{t('every')}</span><NumberField value={settings.breaks.everyMinutes} onChange={(value) => nested('breaks', { everyMinutes: value })} suffix={t('minutes')} /></div>
           <div><span>{t('forMinutes')}</span><NumberField value={settings.breaks.durationMinutes} onChange={(value) => nested('breaks', { durationMinutes: value })} suffix={t('minutes')} /></div>
+          <div><span>{t('dailyBreakLimit')}</span><NumberField value={settings.breaks.dailyMinutes} onChange={(value) => nested('breaks', { dailyMinutes: value })} suffix={t('minutes')} /></div>
         </div>
       </section>
 

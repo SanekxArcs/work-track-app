@@ -53,7 +53,7 @@ export function AnimatedText({ text, className }: { text: string; className?: st
 export function Collapse({ open, children, className }: { open: boolean; children: ReactNode; className?: string }): React.JSX.Element {
   return <AnimatePresence initial={false}>
     {open && <motion.div
-      className={`collapse ${className ?? ''}`}
+      className={`collapse-panel ${className ?? ''}`}
       initial={{ height: 0, opacity: 0 }}
       animate={{ height: 'auto', opacity: 1 }}
       exit={{ height: 0, opacity: 0 }}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultSettings } from '../src/main/database.ts'
-import { dueRestTypes } from '../src/shared/rest.ts'
+import { dailyRestBalance, dueRestTypes } from '../src/shared/rest.ts'
 import type { AppSettings, RestSession, Task, Workday } from '../src/shared/types.ts'
 
 const MINUTE = 60_000
@@ -55,4 +55,21 @@ test('a skipped lunch suppresses lunch reminders without suppressing breaks', ()
   snapshotSettings.breaks.everyMinutes = 30
   const skippedLunch: RestSession = { ...rest('skip-lunch', 'lunch', base, base), plannedMinutes: 0 }
   assert.deepEqual(dueRestTypes(snapshotSettings, workday, [skippedLunch], [task('work', base, null)], base + 31 * MINUTE), ['break'])
+})
+
+test('used-up daily break allowance suppresses reminders even after more work', () => {
+  const snapshotSettings = settings()
+  snapshotSettings.breaks.dailyMinutes = 5
+  const taken = rest('taken', 'break', base + 55 * MINUTE, base + 60 * MINUTE)
+  assert.deepEqual(dueRestTypes(snapshotSettings, workday, [taken], [task('work', base, null)], base + 120 * MINUTE), [])
+})
+
+test('rest balance uses the saved day allowance and counts only actual rest intervals', () => {
+  const taken = rest('lunch', 'lunch', base + 60 * MINUTE, base + 90 * MINUTE)
+  const shortBreak = rest('short', 'break', base + 100 * MINUTE, base + 102 * MINUTE)
+  const day = { ...workday, lunchMinutes: 60, breakMinutes: 15 }
+  assert.deepEqual(dailyRestBalance(settings(), day, [taken, shortBreak], base + 180 * MINUTE), [
+    { type: 'lunch', usedMs: 30 * MINUTE, remainingMs: 30 * MINUTE },
+    { type: 'break', usedMs: 2 * MINUTE, remainingMs: 13 * MINUTE }
+  ])
 })

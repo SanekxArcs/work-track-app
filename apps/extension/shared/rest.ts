@@ -1,4 +1,5 @@
 import type { AppSettings, RestSession, RestType, Task, TimeInterval, Workday } from './types'
+import { workdayLunchAllowanceMs } from './workday'
 
 const MINUTE = 60_000
 
@@ -18,6 +19,19 @@ export function restElapsed(rest: RestSession, now = Date.now()): number {
 
 export function restRemaining(rest: RestSession, now = Date.now()): number {
   return Math.max(0, rest.plannedMinutes * MINUTE - restElapsed(rest, now))
+}
+
+/** Each rest type shares one allowance across all of today's sessions. */
+export function dailyRestBalance(settings: AppSettings, workday: Workday | null, rests: RestSession[], now = Date.now()): Array<{ type: RestType; usedMs: number; remainingMs: number }> {
+  const end = workday?.endedAt ?? now
+  return (['lunch', 'break'] as const).map((type) => {
+    const sessions = rests.filter((rest) => rest.type === type)
+    const usedMs = sessions.reduce((total, rest) => total + restElapsed(rest, end), 0)
+    const allowanceMs = type === 'lunch' ? workdayLunchAllowanceMs(settings, workday)
+      : (workday?.breakMinutes ?? settings.breaks.dailyMinutes) * MINUTE
+    const remainingMs = Math.max(0, allowanceMs - usedMs)
+    return { type, usedMs, remainingMs }
+  })
 }
 
 function unionDuration(intervals: TimeInterval[], startAt: number, now: number): number {
@@ -64,6 +78,7 @@ export function dueRestTypes(settings: AppSettings, workday: Workday | null, res
   if (lunchDue) due.push('lunch')
 
   const activeWorkSinceRest = unionDuration(workIntervals, breakStreakStartedAt(workday, rests), now)
-  if (!breakSkipped && settings.breaks.enabled && activeWorkSinceRest >= settings.breaks.everyMinutes * MINUTE) due.push('break')
+  const breakBalance = dailyRestBalance(settings, workday, rests, now).find((item) => item.type === 'break')!
+  if (!breakSkipped && settings.breaks.enabled && breakBalance.remainingMs > 0 && activeWorkSinceRest >= settings.breaks.everyMinutes * MINUTE) due.push('break')
   return due
 }

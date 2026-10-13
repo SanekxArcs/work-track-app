@@ -6,6 +6,7 @@ import type { Translator } from '../lib/i18n'
 import { CustomSelect } from './CustomSelect'
 import { ColorPicker } from './ColorPicker'
 import { TimeInput } from './TimeInput'
+import { formatDuration } from '../lib/time'
 import { VoiceButton } from './VoiceButton'
 
 interface TaskEditorProps {
@@ -53,6 +54,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
   const [saveError, setSaveError] = useState('')
+  const [advancedTime, setAdvancedTime] = useState(false)
+  const [rangeTimes, setRangeTimes] = useState<Record<string, { start: string; end: string }>>({})
 
   useEffect(() => {
     if (!open) return
@@ -62,6 +65,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setAddingProject(false)
     setAiMessage('')
     setProjectColor(snapshot.settings.projectColors[0])
+    setAdvancedTime(false)
+    setRangeTimes(Object.fromEntries((task?.intervals ?? []).map((range) => [range.id, { start: clockValue(range.startedAt), end: range.endedAt === null ? '' : clockValue(range.endedAt) }])))
     const interval = editableInterval(task, intervalId)
     setStartTime(interval ? clockValue(interval.startedAt) : '')
     setEndTime(interval?.endedAt ? clockValue(interval.endedAt) : '')
@@ -73,12 +78,12 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setSaveError('')
     try {
       const interval = editableInterval(task, intervalId)
-      // Untouched times are not sent: rebuilding them from HH:MM would drop
-      // the seconds and could collide with the neighbouring interval.
-      const adjustedStart = interval ? editedTimestamp(interval.startedAt, startTime) : undefined
-      const adjustedEnd = interval?.endedAt ? editedTimestamp(interval.endedAt, endTime) : undefined
+      const intervalUpdates = (task?.intervals ?? []).map((range) => {
+        const draft = range.id === interval?.id ? { start: startTime, end: endTime } : rangeTimes[range.id]
+        return { id: range.id, startedAt: draft ? editedTimestamp(range.startedAt, draft.start) : undefined, endedAt: range.endedAt !== null && draft ? editedTimestamp(range.endedAt, draft.end) : undefined }
+      }).filter((range) => range.startedAt !== undefined || range.endedAt !== undefined)
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalId: interval?.id, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], startedAt: adjustedStart, endedAt: adjustedEnd })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalUpdates, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [] })
         : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
@@ -192,7 +197,31 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
               />
             </label>
 
-            {task && startTime && (
+            {task && task.intervals.length > 0 && <div className="advanced-time-toggle">
+              <button type="button" className="secondary-button" disabled={busy} aria-expanded={advancedTime} aria-controls="task-time-ranges" onClick={() => setAdvancedTime(!advancedTime)}>{advancedTime ? t('basicTime') : t('advancedTime')}</button>
+            </div>}
+            {task && advancedTime && <div id="task-time-ranges" className="task-time-ranges">
+              <p className="time-ranges-description">{t('allTimeRangesBody')}</p>
+              {task.intervals.slice().sort((a, b) => a.startedAt - b.startedAt).map((range, index) => {
+                const selected = range.id === editableInterval(task, intervalId)?.id
+                const draft = selected ? { start: startTime, end: endTime } : rangeTimes[range.id]
+                if (!draft) return null
+                const change = (part: 'start' | 'end', value: string): void => {
+                  setRangeTimes((previous) => ({ ...previous, [range.id]: { ...draft, [part]: value } }))
+                  if (selected) { if (part === 'start') setStartTime(value); else setEndTime(value) }
+                }
+                const start = editedTimestamp(range.startedAt, draft.start) ?? range.startedAt
+                const end = range.endedAt === null ? Date.now() : editedTimestamp(range.endedAt, draft.end) ?? range.endedAt
+                return <section key={range.id} className="task-time-range">
+                  <div className="task-time-range__heading"><strong>{t('timeRange')} {index + 1}</strong><span>{formatDuration(Math.max(0, end - start))}</span></div>
+                  <div className="task-time-fields task-time-fields--complete">
+                    <label className="field time-edit-field"><span>{t('firstStartTime')} · {new Date(range.startedAt).toLocaleDateString(snapshot.settings.locale === 'uk' ? 'uk-UA' : 'en-GB')}</span><TimeInput value={draft.start} onChange={(value) => change('start', value)} ariaLabel={t('firstStartTime') + ' ' + (index + 1)} /></label>
+                    {range.endedAt !== null ? <label className="field time-edit-field"><span>{t('finishedAt')} · {new Date(range.endedAt).toLocaleDateString(snapshot.settings.locale === 'uk' ? 'uk-UA' : 'en-GB')}</span><TimeInput value={draft.end} onChange={(value) => change('end', value)} ariaLabel={t('finishedAt') + ' ' + (index + 1)} /></label> : <div className="time-range-running">{t('running')}</div>}
+                  </div>
+                </section>
+              })}
+            </div>}
+            {task && !advancedTime && startTime && (
               <div className={`task-time-fields ${task.status !== 'running' && endTime ? 'task-time-fields--complete' : ''}`}>
                 <label className="field time-edit-field">
                   <span>{t('firstStartTime')}</span>

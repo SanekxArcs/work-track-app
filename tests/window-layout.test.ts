@@ -21,6 +21,13 @@ test('restoring a manually sized window keeps the saved size and bottom anchor',
   assert.deepEqual(restored, initial)
 })
 
+test('a window filling the screen from the top is not treated as bottom-anchored', () => {
+  const tall = { x: 1490, y: 0, width: 430, height: area.height - 16 }
+  assert.equal(isBottomAnchored(tall, area), false)
+  const shrunk = fitWindowHeight(tall, area, 600, isBottomAnchored(tall, area), 230)
+  assert.equal(shrunk.y, 0)
+})
+
 test('content fitting clamps an oversized request to the visible work area', () => {
   const initial = { x: 1490, y: 740, width: 430, height: 300 }
   const fitted = fitWindowHeight(initial, area, 5000, true, 230)

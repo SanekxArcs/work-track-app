@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
+import { dailyRestBalance, restElapsed, restRemaining } from '../shared/rest'
 import type {
   AppSettings,
   AppSnapshot,
@@ -61,6 +62,7 @@ export const defaultSettings: AppSettings = {
   autoStart: true,
   globalShortcut: 'CommandOrControl+Shift+T',
   notchEnabled: false,
+  autoFitHeight: false,
   workday: {
     startReminder: true,
     startTime: '09:00',
@@ -70,7 +72,8 @@ export const defaultSettings: AppSettings = {
   breaks: {
     enabled: true,
     everyMinutes: 55,
-    durationMinutes: 5
+    durationMinutes: 5,
+    dailyMinutes: 45
   },
   lunch: {
     enabled: true,
@@ -120,7 +123,7 @@ type TaskRow = {
 }
 type PlannedTaskRow = { id: string; title: string; project_id: string | null; notes: string; reminder_time: string | null; created_at: number; completed_at: number | null }
 type IntervalRow = { id: string; task_id: string; started_at: number; ended_at: number | null }
-type WorkdayRow = { id: string; started_at: number; ended_at: number | null; stopped_task_ids_json: string | null; scheduled_minutes: number | null; lunch_minutes: number | null }
+type WorkdayRow = { id: string; started_at: number; ended_at: number | null; stopped_task_ids_json: string | null; scheduled_minutes: number | null; lunch_minutes: number | null; break_minutes: number | null }
 type RestRow = {
   id: string
   type: RestType
@@ -246,7 +249,7 @@ function validateBackup(backup: BackupData): void {
   const intervalIds = backup.tasks.flatMap((item) => item.intervals.map((interval) => interval.id))
   const isPlanMinutes = (value: unknown): boolean => value === undefined || value === null || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 24 * 60)
   if (!hasUniqueIds(backup.workdays) || !backup.workdays.every((item) => isTimestamp(item.startedAt) && (item.endedAt === null || (isTimestamp(item.endedAt) && item.endedAt >= item.startedAt))
-    && isPlanMinutes(item.scheduledMinutes) && isPlanMinutes(item.lunchMinutes))) {
+    && isPlanMinutes(item.scheduledMinutes) && isPlanMinutes(item.lunchMinutes) && isPlanMinutes(item.breakMinutes))) {
     throw new Error('The selected backup has invalid workdays')
   }
   if (backup.workdays.filter((item) => item.endedAt === null).length > 1) throw new Error('The selected backup has more than one active workday')
@@ -356,6 +359,7 @@ function deepSettings(raw?: string): AppSettings {
     autoStart: typeof stored.autoStart === 'boolean' ? stored.autoStart : defaultSettings.autoStart,
     globalShortcut: isGlobalShortcut(stored.globalShortcut) ? stored.globalShortcut : defaultSettings.globalShortcut,
     notchEnabled: typeof stored.notchEnabled === 'boolean' ? stored.notchEnabled : defaultSettings.notchEnabled,
+    autoFitHeight: typeof stored.autoFitHeight === 'boolean' ? stored.autoFitHeight : defaultSettings.autoFitHeight,
     workday: {
       startReminder: typeof storedWorkday.startReminder === 'boolean' ? storedWorkday.startReminder : defaultSettings.workday.startReminder,
       startTime: isClockTime(storedWorkday.startTime) ? storedWorkday.startTime : defaultSettings.workday.startTime,
@@ -365,7 +369,8 @@ function deepSettings(raw?: string): AppSettings {
     breaks: {
       enabled: typeof storedBreaks.enabled === 'boolean' ? storedBreaks.enabled : defaultSettings.breaks.enabled,
       everyMinutes: positiveInteger(storedBreaks.everyMinutes, defaultSettings.breaks.everyMinutes),
-      durationMinutes: positiveInteger(storedBreaks.durationMinutes, defaultSettings.breaks.durationMinutes)
+      durationMinutes: positiveInteger(storedBreaks.durationMinutes, defaultSettings.breaks.durationMinutes),
+      dailyMinutes: positiveInteger(storedBreaks.dailyMinutes, defaultSettings.breaks.dailyMinutes)
     },
     lunch: {
       enabled: typeof storedLunch.enabled === 'boolean' ? storedLunch.enabled : defaultSettings.lunch.enabled,
@@ -562,6 +567,7 @@ export class WorkBuddyDatabase {
     if (!workdayColumns.some((column) => column.name === 'stopped_task_ids_json')) this.db.exec('ALTER TABLE workdays ADD COLUMN stopped_task_ids_json TEXT')
     if (!workdayColumns.some((column) => column.name === 'scheduled_minutes')) this.db.exec('ALTER TABLE workdays ADD COLUMN scheduled_minutes INTEGER')
     if (!workdayColumns.some((column) => column.name === 'lunch_minutes')) this.db.exec('ALTER TABLE workdays ADD COLUMN lunch_minutes INTEGER')
+    if (!workdayColumns.some((column) => column.name === 'break_minutes')) this.db.exec('ALTER TABLE workdays ADD COLUMN break_minutes INTEGER')
     const restColumns = this.db.prepare('PRAGMA table_info(rest_sessions)').all() as Array<{ name: string }>
     if (!restColumns.some((column) => column.name === 'alarm_muted')) this.db.exec('ALTER TABLE rest_sessions ADD COLUMN alarm_muted INTEGER NOT NULL DEFAULT 0')
     this.db.exec("DELETE FROM secrets WHERE key IN ('sanity_api_token', 'google_calendar_tokens'); DROP TABLE IF EXISTS processed_remote_commands;")
@@ -598,19 +604,19 @@ export class WorkBuddyDatabase {
   }
 
   /** The schedule length and lunch allowance a workday started now is measured against. */
-  private currentWorkdayPlan(): [scheduledMinutes: number, lunchMinutes: number] {
+  private currentWorkdayPlan(): [scheduledMinutes: number, lunchMinutes: number, breakMinutes: number] {
     const settings = this.getSettings()
-    return [Math.round(scheduledWorkdayDurationMs(settings) / 60_000), settings.lunch.durationMinutes]
+    return [Math.round(scheduledWorkdayDurationMs(settings) / 60_000), settings.lunch.durationMinutes, settings.breaks.dailyMinutes]
   }
 
   private insertWorkday(startedAt: number): void {
-    this.db.prepare('INSERT INTO workdays (id, started_at, ended_at, scheduled_minutes, lunch_minutes) VALUES (?, ?, NULL, ?, ?)').run(randomUUID(), startedAt, ...this.currentWorkdayPlan())
+    this.db.prepare('INSERT INTO workdays (id, started_at, ended_at, scheduled_minutes, lunch_minutes, break_minutes) VALUES (?, ?, NULL, ?, ?, ?)').run(randomUUID(), startedAt, ...this.currentWorkdayPlan())
   }
 
   private backfillWorkdayPlans(): void {
-    const [scheduledMinutes, lunchMinutes] = this.currentWorkdayPlan()
-    this.db.prepare('UPDATE workdays SET scheduled_minutes = COALESCE(scheduled_minutes, ?), lunch_minutes = COALESCE(lunch_minutes, ?) WHERE scheduled_minutes IS NULL OR lunch_minutes IS NULL')
-      .run(scheduledMinutes, lunchMinutes)
+    const [scheduledMinutes, lunchMinutes, breakMinutes] = this.currentWorkdayPlan()
+    this.db.prepare('UPDATE workdays SET scheduled_minutes = COALESCE(scheduled_minutes, ?), lunch_minutes = COALESCE(lunch_minutes, ?), break_minutes = COALESCE(break_minutes, ?) WHERE scheduled_minutes IS NULL OR lunch_minutes IS NULL OR break_minutes IS NULL')
+      .run(scheduledMinutes, lunchMinutes, breakMinutes)
   }
 
   /** A workday with its own plan and the finished sessions before it on the same calendar day. */
@@ -624,6 +630,7 @@ export class WorkBuddyDatabase {
       endedAt: row.ended_at,
       scheduledMinutes: row.scheduled_minutes,
       lunchMinutes: row.lunch_minutes,
+      breakMinutes: row.break_minutes,
       ...(earlier.length ? { earlierSessions: earlier.map((session) => ({ startedAt: session.started_at, endedAt: session.ended_at })) } : {})
     }
   }
@@ -636,8 +643,13 @@ export class WorkBuddyDatabase {
   }
 
   /** Where the user dragged the notch to: a display and the pill centre as a share of its width. */
-  getNotchPlacement(): { displayId: number; ratio: number } | null {
-    const row = this.db.prepare("SELECT value FROM ui_state WHERE key = 'notch_placement'").get() as { value: string } | undefined
+  getNotchPlacement(displayId?: number): { displayId: number; ratio: number } | null {
+    const key = displayId === undefined ? 'notch_placement' : `notch_placement:${displayId}`
+    let row = this.db.prepare('SELECT value FROM ui_state WHERE key = ?').get(key) as { value: string } | undefined
+    if (!row && displayId !== undefined) {
+      const legacy = this.getNotchPlacement()
+      return legacy?.displayId === displayId ? legacy : null
+    }
     try {
       const value = row ? JSON.parse(row.value) as unknown : null
       return isRecord(value) && Number.isFinite(value.displayId) && Number.isFinite(value.ratio) && (value.ratio as number) >= 0 && (value.ratio as number) <= 1
@@ -649,7 +661,7 @@ export class WorkBuddyDatabase {
   }
 
   setNotchPlacement(placement: { displayId: number; ratio: number }): void {
-    this.db.prepare("INSERT INTO ui_state (key, value) VALUES ('notch_placement', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(placement))
+    this.db.prepare('INSERT INTO ui_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`notch_placement:${placement.displayId}`, JSON.stringify(placement))
   }
 
   getSecret(key: string): string | undefined {
@@ -678,7 +690,7 @@ export class WorkBuddyDatabase {
       this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(safe))
       // Today follows a schedule change; finished days keep the plan they were worked under.
       const [todayStart] = localDayBounds(Date.now())
-      this.db.prepare('UPDATE workdays SET scheduled_minutes = ?, lunch_minutes = ? WHERE started_at >= ? OR ended_at IS NULL').run(...this.currentWorkdayPlan(), todayStart)
+      this.db.prepare('UPDATE workdays SET scheduled_minutes = ?, lunch_minutes = ?, break_minutes = ? WHERE started_at >= ? OR ended_at IS NULL').run(...this.currentWorkdayPlan(), todayStart)
     })
     return this.getSnapshot()
   }
@@ -934,7 +946,7 @@ export class WorkBuddyDatabase {
       }))
     }))
     const workdays = (this.db.prepare('SELECT * FROM workdays ORDER BY started_at').all() as WorkdayRow[]).map((row): Workday => ({
-      id: row.id, startedAt: row.started_at, endedAt: row.ended_at, scheduledMinutes: row.scheduled_minutes, lunchMinutes: row.lunch_minutes
+      id: row.id, startedAt: row.started_at, endedAt: row.ended_at, scheduledMinutes: row.scheduled_minutes, lunchMinutes: row.lunch_minutes, breakMinutes: row.break_minutes
     }))
     const restIntervals = this.db.prepare('SELECT * FROM rest_intervals WHERE rest_id = ? ORDER BY started_at')
     const rests = (this.db.prepare('SELECT * FROM rest_sessions ORDER BY created_at').all() as RestRow[]).map((row): RestSession => ({
@@ -1019,8 +1031,8 @@ export class WorkBuddyDatabase {
         ON CONFLICT(id) ${onConflict('title = excluded.title, project_id = excluded.project_id, planned_task_id = excluded.planned_task_id, notes = excluded.notes, tags_json = excluded.tags_json, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at')}`)
       const interval = this.db.prepare(`INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('task_id = excluded.task_id, started_at = excluded.started_at, ended_at = excluded.ended_at')}`)
-      const workday = this.db.prepare(`INSERT INTO workdays (id, started_at, ended_at, scheduled_minutes, lunch_minutes) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) ${onConflict('started_at = excluded.started_at, ended_at = excluded.ended_at, scheduled_minutes = COALESCE(excluded.scheduled_minutes, workdays.scheduled_minutes), lunch_minutes = COALESCE(excluded.lunch_minutes, workdays.lunch_minutes)')}`)
+      const workday = this.db.prepare(`INSERT INTO workdays (id, started_at, ended_at, scheduled_minutes, lunch_minutes, break_minutes) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) ${onConflict('started_at = excluded.started_at, ended_at = excluded.ended_at, scheduled_minutes = COALESCE(excluded.scheduled_minutes, workdays.scheduled_minutes), lunch_minutes = COALESCE(excluded.lunch_minutes, workdays.lunch_minutes), break_minutes = COALESCE(excluded.break_minutes, workdays.break_minutes)')}`)
       const rest = this.db.prepare(`INSERT INTO rest_sessions (id, type, status, planned_minutes, alarm_muted, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) ${onConflict('type = excluded.type, status = excluded.status, planned_minutes = excluded.planned_minutes, alarm_muted = excluded.alarm_muted, created_at = excluded.created_at, ended_at = excluded.ended_at, resume_task_ids_json = excluded.resume_task_ids_json')}`)
       const restInterval = this.db.prepare(`INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)
@@ -1036,7 +1048,7 @@ export class WorkBuddyDatabase {
         task.run(item.id, item.title, item.projectId, item.plannedTaskId, item.notes, JSON.stringify(item.tags), item.status, item.createdAt, item.updatedAt)
         for (const itemInterval of item.intervals) interval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
       }
-      for (const item of backup.workdays) workday.run(item.id, item.startedAt, item.endedAt, item.scheduledMinutes ?? null, item.lunchMinutes ?? null)
+      for (const item of backup.workdays) workday.run(item.id, item.startedAt, item.endedAt, item.scheduledMinutes ?? null, item.lunchMinutes ?? null, item.breakMinutes ?? null)
       for (const item of backup.rests) {
         rest.run(item.id, item.type, item.status, item.plannedMinutes, Number(item.alarmMuted ?? false), item.createdAt, item.endedAt, JSON.stringify(item.resumeTaskIds ?? []))
         for (const itemInterval of item.intervals) restInterval.run(itemInterval.id, item.id, itemInterval.startedAt, itemInterval.endedAt)
@@ -1300,15 +1312,30 @@ export class WorkBuddyDatabase {
     this.normalizeStaleWorkday(now)
     if (!this.getOpenWorkday()) throw new Error('Start the workday first')
     const active = this.getActiveRest()
-    if (active) throw new Error('Another break is already active')
+    if (active?.status === 'running') throw new Error('Another break is already active')
+    if (active?.type === type) return this.resumeRest(active.id)
     const settings = this.getSettings()
-    const plannedMinutes = type === 'lunch' ? settings.lunch.durationMinutes : settings.breaks.durationMinutes
+    const snapshot = this.getSnapshot()
+    const balance = dailyRestBalance(settings, snapshot.workday, snapshot.rests, now).find((item) => item.type === type)!
+    if (balance.remainingMs === 0) throw new Error(type === 'lunch' ? 'No lunch time remaining today' : 'No break time remaining today')
+    const reusable = snapshot.rests.find((rest) => rest.type === type && rest.plannedMinutes > 0
+      && (type === 'lunch' || restRemaining(rest, now) > 0))
+    const plannedMinutes = type === 'lunch'
+      ? ((reusable ? restElapsed(reusable, now) : 0) + balance.remainingMs) / 60_000
+      : ((reusable ? restElapsed(reusable, now) : 0) + Math.min(balance.remainingMs, reusable ? restRemaining(reusable, now) : settings.breaks.durationMinutes * 60_000)) / 60_000
     this.transaction(() => {
+      // Put a paused rest aside without discarding its unused time or intervals.
+      if (active) this.db.prepare("UPDATE rest_sessions SET status = 'completed', ended_at = ?, resume_task_ids_json = '[]' WHERE id = ?").run(now, active.id)
       const resumeTaskIds = this.getRunningTaskIds()
       this.pauseAll(now)
-      const id = randomUUID()
-      this.db.prepare("INSERT INTO rest_sessions (id, type, status, planned_minutes, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, 'running', ?, ?, NULL, ?)")
-        .run(id, type, plannedMinutes, now, JSON.stringify(resumeTaskIds))
+      const id = reusable?.id ?? randomUUID()
+      if (reusable) {
+        this.db.prepare("UPDATE rest_sessions SET status = 'running', planned_minutes = ?, ended_at = NULL, alarm_muted = 0, resume_task_ids_json = ? WHERE id = ?")
+          .run(plannedMinutes, JSON.stringify(resumeTaskIds), id)
+      } else {
+        this.db.prepare("INSERT INTO rest_sessions (id, type, status, planned_minutes, created_at, ended_at, resume_task_ids_json) VALUES (?, ?, 'running', ?, ?, NULL, ?)")
+          .run(id, type, plannedMinutes, now, JSON.stringify(resumeTaskIds))
+      }
       this.db.prepare('INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, NULL)')
         .run(randomUUID(), id, now)
     })
@@ -1416,6 +1443,29 @@ export class WorkBuddyDatabase {
     this.normalizeStaleWorkday(Date.now())
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
+    const intervalUpdates = input.intervalUpdates ?? []
+    if (intervalUpdates.length && (input.startedAt !== undefined || input.endedAt !== undefined)) throw new Error('Choose one time editing mode')
+    if (input.intervalUpdates !== undefined) {
+      const existing = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ?').all(input.id) as IntervalRow[]
+      const seen = new Set<string>()
+      for (const update of intervalUpdates) {
+        const original = existing.find((interval) => interval.id === update.id)
+        if (!original || seen.has(update.id)) throw new Error('Task interval not found')
+        seen.add(update.id)
+        const nextStart = update.startedAt ?? original.started_at
+        const nextEnd = update.endedAt ?? original.ended_at
+        if (update.startedAt !== undefined) this.validateAdjustedStart(update.startedAt, original.started_at, nextEnd)
+        if (update.endedAt !== undefined) {
+          if (original.ended_at === null) throw new Error('Task end was not found')
+          this.validateAdjustedEnd(update.endedAt, nextStart, original.ended_at)
+        }
+      }
+      const proposed = existing.map((interval) => {
+        const update = intervalUpdates.find((item) => item.id === interval.id)
+        return { startedAt: update?.startedAt ?? interval.started_at, endedAt: update?.endedAt ?? interval.ended_at }
+      })
+      if (hasOverlappingIntervals(proposed)) throw new Error('Task intervals cannot overlap')
+    }
     const selectedInterval = input.intervalId === undefined
       ? undefined
       : this.db.prepare('SELECT * FROM time_intervals WHERE id = ? AND task_id = ?').get(input.intervalId, input.id) as IntervalRow | undefined
@@ -1465,12 +1515,18 @@ export class WorkBuddyDatabase {
       if (input.endedAt !== undefined && finalInterval) {
         this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(input.endedAt), finalInterval.id)
       }
+      for (const update of intervalUpdates) {
+        if (update.startedAt !== undefined) this.db.prepare('UPDATE time_intervals SET started_at = ? WHERE id = ?').run(Math.round(update.startedAt), update.id)
+        if (update.endedAt !== undefined) this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(update.endedAt), update.id)
+      }
       if (plannedTaskId && plannedTaskId !== current.planned_task_id) this.completePlannedTask(plannedTaskId, updatedAt)
     })
     return this.getSnapshot()
   }
 
   mergeTasks(input: TaskMergeInput): AppSnapshot {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
     const sourceIds = [...new Set(input.sourceIds)].filter((id) => id !== input.targetId)
     if (!input.targetId || !sourceIds.length) throw new Error('Choose at least two tasks to merge')
     const reference = localDateTimestamp(input.date)
@@ -1479,49 +1535,63 @@ export class WorkBuddyDatabase {
     const placeholders = taskIds.map(() => '?').join(', ')
     const tasks = this.db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...taskIds) as Array<{ id: string; status: Task['status'] }>
     if (tasks.length !== taskIds.length) throw new Error('One of the selected tasks was not found')
-    if (tasks.some((task) => task.status !== 'stopped')) throw new Error('Finish the workday before merging tasks')
     const dayIntervals = this.db.prepare(
-      `SELECT task_id, started_at, ended_at FROM time_intervals
-       WHERE task_id IN (${placeholders}) AND started_at < ? AND ended_at > ?`
-    ).all(...taskIds, dayEnd, dayStart) as Array<{ task_id: string; started_at: number; ended_at: number }>
+      `SELECT id, task_id, started_at, ended_at FROM time_intervals
+       WHERE task_id IN (${placeholders}) AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`
+    ).all(...taskIds, dayEnd, dayStart) as IntervalRow[]
     const taskIdsOnDate = new Set(dayIntervals.map((interval) => interval.task_id))
     if (!taskIdsOnDate.has(input.targetId) || sourceIds.some((id) => !taskIdsOnDate.has(id))) {
       throw new Error('Every merged task must have time on the selected day')
     }
     const ranges = dayIntervals.map((interval) => ({
       startedAt: Math.max(interval.started_at, dayStart),
-      endedAt: Math.min(interval.ended_at, dayEnd)
-    }))
-    if (hasOverlappingIntervals(ranges)) throw new Error('Tasks with overlapping time cannot be merged')
+      endedAt: Math.min(interval.ended_at ?? now, dayEnd)
+    })).sort((a, b) => a.startedAt - b.startedAt)
+    const merged: Array<{ startedAt: number; endedAt: number }> = []
+    for (const range of ranges) {
+      const last = merged.at(-1)
+      if (last && range.startedAt <= last.endedAt) last.endedAt = Math.max(last.endedAt, range.endedAt)
+      else merged.push({ ...range })
+    }
+    const mergingToday = now >= dayStart && now < dayEnd
+    const keepRunning = mergingToday && dayIntervals.some((interval) => interval.ended_at === null)
 
     this.transaction(() => {
-      const overlappingIntervals = this.db.prepare(
-        'SELECT id, task_id, started_at, ended_at FROM time_intervals WHERE task_id = ? AND started_at < ? AND ended_at > ? ORDER BY started_at'
-      )
-      const moveInterval = this.db.prepare('UPDATE time_intervals SET task_id = ?, started_at = ?, ended_at = ? WHERE id = ?')
       const addInterval = this.db.prepare('INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)')
-      const countIntervals = this.db.prepare('SELECT COUNT(*) AS count FROM time_intervals WHERE task_id = ?')
-      const removeTask = this.db.prepare('DELETE FROM tasks WHERE id = ?')
-      for (const sourceId of sourceIds) {
-        const intervals = overlappingIntervals.all(sourceId, dayEnd, dayStart) as IntervalRow[]
-        for (const interval of intervals) {
-          // A Day merge must only affect the selected calendar date. Split a
-          // cross-midnight interval around that date instead of moving all of
-          // its history to the target task.
-          const movedStart = Math.max(interval.started_at, dayStart)
-          const movedEnd = Math.min(interval.ended_at as number, dayEnd)
-          if (interval.started_at < movedStart) {
-            addInterval.run(randomUUID(), sourceId, interval.started_at, movedStart)
-          }
-          if ((interval.ended_at as number) > movedEnd) {
-            addInterval.run(randomUUID(), sourceId, movedEnd, interval.ended_at)
-          }
-          moveInterval.run(input.targetId, movedStart, movedEnd, interval.id)
-        }
-        const remaining = countIntervals.get(sourceId) as { count: number }
-        if (!remaining.count) removeTask.run(sourceId)
+      const removeInterval = this.db.prepare('DELETE FROM time_intervals WHERE id = ?')
+      // Preserve every range outside this date, including a live interval after it.
+      for (const interval of dayIntervals) {
+        removeInterval.run(interval.id)
+        if (interval.started_at < dayStart) addInterval.run(randomUUID(), interval.task_id, interval.started_at, dayStart)
+        if ((interval.ended_at === null && now >= dayEnd) || (interval.ended_at ?? now) > dayEnd) addInterval.run(randomUUID(), interval.task_id, dayEnd, interval.ended_at)
       }
-      this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(Date.now(), input.targetId)
+      for (const [index, range] of merged.entries()) {
+        addInterval.run(randomUUID(), input.targetId, range.startedAt, keepRunning && index === merged.length - 1 ? null : range.endedAt)
+      }
+      const countIntervals = this.db.prepare('SELECT COUNT(*) AS count FROM time_intervals WHERE task_id = ?')
+      const hasOpen = this.db.prepare('SELECT 1 FROM time_intervals WHERE task_id = ? AND ended_at IS NULL')
+      const removeTask = this.db.prepare('DELETE FROM tasks WHERE id = ?')
+      const remappedIds = new Set<string>()
+      for (const sourceId of sourceIds) {
+        const remaining = countIntervals.get(sourceId) as { count: number }
+        if (!remaining.count) {
+          removeTask.run(sourceId)
+          remappedIds.add(sourceId)
+        } else if (mergingToday && !hasOpen.get(sourceId)) {
+          this.db.prepare("UPDATE tasks SET status = 'stopped', updated_at = ? WHERE id = ?").run(now, sourceId)
+          remappedIds.add(sourceId)
+        }
+      }
+      const target = tasks.find((task) => task.id === input.targetId)!
+      const status = hasOpen.get(input.targetId) ? 'running'
+        : mergingToday && tasks.some((task) => task.status === 'paused') ? 'paused' : target.status
+      this.db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(status, now, input.targetId)
+      // Lunch and ending the day keep lists of tasks to resume. Keep those links valid.
+      const remap = (json: string): string => JSON.stringify([...new Set((JSON.parse(json) as string[]).map((id) => remappedIds.has(id) ? input.targetId : id))])
+      const rests = this.db.prepare('SELECT id, resume_task_ids_json FROM rest_sessions').all() as Array<{ id: string; resume_task_ids_json: string }>
+      for (const rest of rests) this.db.prepare('UPDATE rest_sessions SET resume_task_ids_json = ? WHERE id = ?').run(remap(rest.resume_task_ids_json), rest.id)
+      const workdays = this.db.prepare('SELECT id, stopped_task_ids_json FROM workdays WHERE stopped_task_ids_json IS NOT NULL').all() as Array<{ id: string; stopped_task_ids_json: string }>
+      for (const workday of workdays) this.db.prepare('UPDATE workdays SET stopped_task_ids_json = ? WHERE id = ?').run(remap(workday.stopped_task_ids_json), workday.id)
     })
     return this.getSnapshot()
   }
