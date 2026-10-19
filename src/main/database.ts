@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { dailyRestBalance, restElapsed, restRemaining } from '../shared/rest'
+import { applyIntervalOperations, sortTasksByTrackedTime } from '../shared/task-intervals'
 import type {
   AppSettings,
   AppSnapshot,
@@ -26,7 +27,7 @@ import type {
   StartMode,
   StartTaskInput,
   Task,
-  TaskMergeInput,
+  TaskSplitInput, TaskMergeInput,
   TaskUpdateInput,
   TimeInterval,
   Workday
@@ -711,12 +712,12 @@ export class WorkBuddyDatabase {
         `SELECT DISTINCT t.* FROM tasks t
          LEFT JOIN time_intervals i ON i.task_id = t.id
          WHERE t.status IN ('running', 'paused') OR (i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?))
-         ORDER BY CASE t.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, t.updated_at DESC`
+         ORDER BY t.created_at DESC`
       )
       .all(dayEnd, dayStart) as TaskRow[]
 
     const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
-    const tasks = taskRows.map((row): Task => {
+    const tasks = sortTasksByTrackedTime(taskRows.map((row): Task => {
       const intervals = (intervalStatement.all(row.id) as IntervalRow[]).map(
         (item): TimeInterval => ({
           id: item.id,
@@ -737,7 +738,7 @@ export class WorkBuddyDatabase {
         updatedAt: row.updated_at,
         intervals
       }
-    })
+    }), now)
 
     const workdayRow = this.db
       .prepare('SELECT * FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at DESC LIMIT 1')
@@ -902,13 +903,13 @@ export class WorkBuddyDatabase {
     const taskRows = this.db.prepare(
       `SELECT DISTINCT t.* FROM tasks t JOIN time_intervals i ON i.task_id = t.id
        WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
-       ORDER BY t.updated_at DESC`
+       ORDER BY t.created_at DESC`
     ).all(dayEnd, dayStart) as TaskRow[]
     const intervalStatement = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at')
-    const tasks = taskRows.map((row): Task => ({
+    const tasks = sortTasksByTrackedTime(taskRows.map((row): Task => ({
       id: row.id, title: row.title, projectId: row.project_id, plannedTaskId: row.planned_task_id, notes: row.notes, tags: JSON.parse(row.tags_json) as string[], status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
       intervals: (intervalStatement.all(row.id) as IntervalRow[]).map((item): TimeInterval => ({ id: item.id, taskId: item.task_id, startedAt: item.started_at, endedAt: item.ended_at }))
-    }))
+    })), Math.min(Date.now(), dayEnd - 1), dayStart, dayEnd)
     const workdayRow = this.db.prepare('SELECT * FROM workdays WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at DESC LIMIT 1').get(dayEnd, dayStart) as WorkdayRow | undefined
     const workday = workdayRow ? this.workdayFromRow(workdayRow) : null
     const restRows = this.db.prepare('SELECT * FROM rest_sessions WHERE created_at < ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY created_at').all(dayEnd, dayStart) as RestRow[]
@@ -1444,27 +1445,29 @@ export class WorkBuddyDatabase {
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
     const intervalUpdates = input.intervalUpdates ?? []
-    if (intervalUpdates.length && (input.startedAt !== undefined || input.endedAt !== undefined)) throw new Error('Choose one time editing mode')
-    if (input.intervalUpdates !== undefined) {
+    if ((intervalUpdates.length || input.intervalOperations !== undefined) && (input.startedAt !== undefined || input.endedAt !== undefined)) throw new Error('Choose one time editing mode')
+    let proposedIntervals: TimeInterval[] | undefined
+    if (input.intervalUpdates !== undefined || input.intervalOperations !== undefined) {
       const existing = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ?').all(input.id) as IntervalRow[]
+      const structured = applyIntervalOperations(existing.map((interval) => ({ id: interval.id, taskId: interval.task_id, startedAt: interval.started_at, endedAt: interval.ended_at })), input.intervalOperations ?? [])
       const seen = new Set<string>()
       for (const update of intervalUpdates) {
-        const original = existing.find((interval) => interval.id === update.id)
+        const original = structured.find((interval) => interval.id === update.id)
         if (!original || seen.has(update.id)) throw new Error('Task interval not found')
         seen.add(update.id)
-        const nextStart = update.startedAt ?? original.started_at
-        const nextEnd = update.endedAt ?? original.ended_at
-        if (update.startedAt !== undefined) this.validateAdjustedStart(update.startedAt, original.started_at, nextEnd)
+        const nextStart = update.startedAt ?? original.startedAt
+        const nextEnd = update.endedAt ?? original.endedAt
+        if (update.startedAt !== undefined) this.validateAdjustedStart(update.startedAt, original.startedAt, nextEnd)
         if (update.endedAt !== undefined) {
-          if (original.ended_at === null) throw new Error('Task end was not found')
-          this.validateAdjustedEnd(update.endedAt, nextStart, original.ended_at)
+          if (original.endedAt === null) throw new Error('Task end was not found')
+          this.validateAdjustedEnd(update.endedAt, nextStart, original.endedAt)
         }
       }
-      const proposed = existing.map((interval) => {
+      proposedIntervals = structured.map((interval) => {
         const update = intervalUpdates.find((item) => item.id === interval.id)
-        return { startedAt: update?.startedAt ?? interval.started_at, endedAt: update?.endedAt ?? interval.ended_at }
+        return { ...interval, startedAt: Math.round(update?.startedAt ?? interval.startedAt), endedAt: (update?.endedAt ?? interval.endedAt) === null ? null : Math.round((update?.endedAt ?? interval.endedAt)!) }
       })
-      if (hasOverlappingIntervals(proposed)) throw new Error('Task intervals cannot overlap')
+      if (hasOverlappingIntervals(proposedIntervals)) throw new Error('Task intervals cannot overlap')
     }
     const selectedInterval = input.intervalId === undefined
       ? undefined
@@ -1515,11 +1518,65 @@ export class WorkBuddyDatabase {
       if (input.endedAt !== undefined && finalInterval) {
         this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(input.endedAt), finalInterval.id)
       }
+      if (input.intervalOperations !== undefined && proposedIntervals) {
+        const remainingIds = new Set(proposedIntervals.map((interval) => interval.id))
+        const existing = this.db.prepare('SELECT id FROM time_intervals WHERE task_id = ?').all(input.id) as Array<{ id: string }>
+        for (const interval of existing) {
+          if (!remainingIds.has(interval.id)) this.db.prepare('DELETE FROM time_intervals WHERE id = ? AND task_id = ?').run(interval.id, input.id)
+        }
+        for (const interval of proposedIntervals) {
+          this.db.prepare('UPDATE time_intervals SET started_at = ?, ended_at = ? WHERE id = ? AND task_id = ?').run(interval.startedAt, interval.endedAt, interval.id, input.id)
+        }
+        if (current.status === 'running' && !proposedIntervals.some((interval) => interval.endedAt === null)) {
+          this.db.prepare("UPDATE tasks SET status = 'paused' WHERE id = ?").run(input.id)
+        }
+      }
       for (const update of intervalUpdates) {
         if (update.startedAt !== undefined) this.db.prepare('UPDATE time_intervals SET started_at = ? WHERE id = ?').run(Math.round(update.startedAt), update.id)
         if (update.endedAt !== undefined) this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?').run(Math.round(update.endedAt), update.id)
       }
       if (plannedTaskId && plannedTaskId !== current.planned_task_id) this.completePlannedTask(plannedTaskId, updatedAt)
+    })
+    return this.getSnapshot()
+  }
+
+  splitTask(input: TaskSplitInput): AppSnapshot {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
+    const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
+    if (!current) throw new Error('Task not found')
+    if (current.updated_at !== input.expectedUpdatedAt) throw new Error('Task changed; reopen the editor')
+    if (!Number.isSafeInteger(input.splitAt) || input.splitAt >= now) throw new Error('Invalid split time')
+    const intervals = this.db.prepare('SELECT * FROM time_intervals WHERE task_id = ? ORDER BY started_at').all(input.id) as IntervalRow[]
+    const [todayStart] = localDayBounds(now)
+    if (current.status !== 'stopped' && !intervals.some((range) => (range.ended_at ?? now) > todayStart && range.started_at < now)) {
+      throw new Error('Only today’s active task can be split')
+    }
+    const first = intervals.flatMap((range) => range.started_at < input.splitAt && Math.min(range.ended_at ?? now, input.splitAt) > range.started_at
+      ? [{ ...range, ended_at: Math.min(range.ended_at ?? now, input.splitAt) }] : [])
+    const second = intervals.flatMap((range) => (range.ended_at ?? now) > input.splitAt && (range.ended_at ?? now) > Math.max(range.started_at, input.splitAt)
+      ? [{ ...range, started_at: Math.max(range.started_at, input.splitAt) }] : [])
+    if (!first.length || !second.length) throw new Error('Both parts must contain tracked time')
+    for (const part of [input.first, input.second]) {
+      if (typeof part.notes !== 'string') throw new Error('Invalid task description')
+      if (part.projectId !== null && !this.db.prepare('SELECT id FROM projects WHERE id = ?').get(part.projectId)) throw new Error('Project not found')
+    }
+    const secondId = randomUUID()
+    this.transaction(() => {
+      this.db.prepare("UPDATE tasks SET status = 'stopped', project_id = ?, notes = ?, updated_at = ? WHERE id = ?").run(input.first.projectId, input.first.notes.trim(), now, input.id)
+      this.db.prepare("INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)")
+        .run(secondId, current.title, input.second.projectId, input.second.notes.trim(), current.tags_json, current.status, second[0].started_at, now)
+      this.db.prepare('DELETE FROM time_intervals WHERE task_id = ?').run(input.id)
+      const insert = this.db.prepare('INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)')
+      for (const range of first) insert.run(range.id, input.id, range.started_at, range.ended_at)
+      for (const range of second) insert.run(randomUUID(), secondId, range.started_at, range.ended_at)
+      // An automatic break should resume the continuing part, never the completed first part.
+      const rests = this.db.prepare("SELECT id, resume_task_ids_json FROM rest_sessions WHERE status = 'running'").all() as Array<{ id: string; resume_task_ids_json: string }>
+      for (const rest of rests) {
+        const ids = JSON.parse(rest.resume_task_ids_json) as string[]
+        if (ids.includes(input.id)) this.db.prepare('UPDATE rest_sessions SET resume_task_ids_json = ? WHERE id = ?')
+          .run(JSON.stringify(ids.map((id) => id === input.id ? secondId : id)), rest.id)
+      }
     })
     return this.getSnapshot()
   }

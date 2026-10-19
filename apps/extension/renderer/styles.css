@@ -460,3 +460,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .rest-balance__row small { display: block; margin-top: 4px; font-size: 9px; color: var(--muted); line-height: 1.5; }
 .rest-balance__row button { display: flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0; padding: 7px; border-radius: 8px; font-size: 9px; }
 .rest-balance > p { margin: 8px 0 0; font-size: 9px; color: var(--muted); line-height: 1.5; }
+
+.task-time-range__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.task-time-range__actions .secondary-button { padding: 6px 8px; font-size: 10px; min-height: 30px; }
+.advanced-time-toggle { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.task-split { display: grid; gap: 12px; }
+.task-split h3 { margin: 0; }
+.split-endpoints { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.split-slider { width: 100%; min-height: 28px; accent-color: #b8e986; cursor: pointer; }
+.task-split .task-time-range { display: grid; gap: 10px; }
+.task-split input[type="datetime-local"] { width: 100%; box-sizing: border-box; }

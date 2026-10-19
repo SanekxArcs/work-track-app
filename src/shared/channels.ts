@@ -30,6 +30,7 @@ export const channels = {
   updateRestStart: 'rest:update-start',
   setRestAlarmMuted: 'rest:set-alarm-muted',
   updateTask: 'task:update',
+  splitTask: 'task:split',
   mergeTasks: 'task:merge',
   deleteTask: 'task:delete',
   createPlannedTask: 'planned-task:create',

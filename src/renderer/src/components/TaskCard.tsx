@@ -54,7 +54,7 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
         <div className="task-time-row">
           <span className={`status-dot ${isRunning ? 'status-dot--live' : ''}`} />
           <AnimatedDuration className="task-time" ms={taskDuration(task, now)} />
-          <AnimatedText className="task-status" text={isRunning ? t('running') : t('paused')} />
+          <AnimatedText className="task-status" text={isRunning ? t('running') : task.status === 'stopped' ? t('taskCompleted') : t('paused')} />
         </div>
 
       </div>

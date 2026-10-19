@@ -10,7 +10,7 @@ import { fitWindowHeight, isBottomAnchored } from './window-layout'
 import { syncWindowTopmost } from './window-topmost'
 import { localDateKey } from '../shared/local-date'
 import { channels } from '../shared/channels'
-import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
+import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -422,6 +422,7 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'updateRestStart': return database.updateRestStart(first as string, second as number)
     case 'setRestAlarmMuted': return database.setRestAlarmMuted(first as string, second as boolean)
     case 'updateTask': return database.updateTask(first as TaskUpdateInput)
+    case 'splitTask': return database.splitTask(first as TaskSplitInput)
     case 'mergeTasks': return database.mergeTasks(first as TaskMergeInput)
     case 'deleteTask': return database.deleteTask(first as string)
     case 'createPlannedTask': return database.createPlannedTask(first as PlannedTaskInput)
@@ -629,6 +630,11 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.updateTask, (_, input: TaskUpdateInput) => {
     const result = database.updateTask(input)
+    emitChanged()
+    return result
+  })
+  ipcMain.handle(channels.splitTask, (_, input: TaskSplitInput) => {
+    const result = database.splitTask(input)
     emitChanged()
     return result
   })

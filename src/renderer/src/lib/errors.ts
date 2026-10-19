@@ -2,6 +2,10 @@ import type { MessageKey, Translator } from './i18n'
 
 /** Main-process validation messages, translated for the Ukrainian interface. */
 const ukErrors: Record<string, string> = {
+  'Only today’s active task can be split': 'Розділити можна сьогоднішню активну задачу',
+  'Task changed; reopen the editor': 'Задача змінилася; відкрийте редактор знову',
+  'Invalid split time': 'Некоректний момент поділу',
+  'Both parts must contain tracked time': 'Обидві частини мають містити записаний час',
   'A project with this name already exists': 'Проєкт з такою назвою вже існує',
   'Active break not found': 'Активну перерву не знайдено',
   'Another break is already active': 'Інша перерва вже триває',

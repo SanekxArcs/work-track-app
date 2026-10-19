@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Sparkles, Trash2, X } from 'lucide-react'
-import type { AppSnapshot, StartMode, Task } from '@shared/types'
+import { Scissors, GitMerge, Sparkles, Trash2, X } from 'lucide-react'
+import type { AppSnapshot, StartMode, Task, TaskIntervalOperation } from '@shared/types'
 import { localDayBounds } from '@shared/local-date'
+import { applyIntervalOperations } from '@shared/task-intervals'
 import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
 import { AnimatedText, Collapse, ease } from './Animated'
@@ -12,6 +13,7 @@ import { ProjectPicker } from './ProjectPicker'
 import { TimeInput } from './TimeInput'
 import { formatDuration } from '../lib/time'
 import { VoiceButton } from './VoiceButton'
+import { TaskSplit } from './TaskSplit'
 
 interface TaskEditorProps {
   open: boolean
@@ -46,6 +48,7 @@ function editableInterval(task: Task | undefined, intervalId: string | undefined
 }
 
 export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, onClose, onSnapshot, onSaved }: TaskEditorProps): React.JSX.Element {
+  const [splitOpen, setSplitOpen] = useState(false)
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
   const [notes, setNotes] = useState('')
@@ -56,12 +59,18 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   const [endTime, setEndTime] = useState('')
   const [saveError, setSaveError] = useState('')
   const [advancedTime, setAdvancedTime] = useState(false)
+  const [intervalOperations, setIntervalOperations] = useState<TaskIntervalOperation[]>([])
+  const [intervalDraftTask, setIntervalDraftTask] = useState<Task | undefined>()
+  const [selectedRangeId, setSelectedRangeId] = useState<string | undefined>()
+  const timeRanges = applyIntervalOperations(task?.intervals ?? [], intervalDraftTask === task ? intervalOperations : [])
+  const currentRange = timeRanges.find((range) => range.id === selectedRangeId) ?? timeRanges.at(-1)
   const [rangeTimes, setRangeTimes] = useState<Record<string, { start: string; end: string }>>({})
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
   useEffect(() => {
     if (!open) return
+    setSplitOpen(false)
     setDeleteOpen(false)
     setDeleteError('')
     setProjectId(task?.projectId ?? '')
@@ -69,8 +78,11 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setNotes(task?.notes ?? '')
     setAiMessage('')
     setAdvancedTime(false)
+    setIntervalDraftTask(task)
+    setIntervalOperations([])
     setRangeTimes(Object.fromEntries((task?.intervals ?? []).map((range) => [range.id, { start: clockTime(range.startedAt), end: range.endedAt === null ? '' : clockTime(range.endedAt) }])))
     const interval = editableInterval(task, intervalId)
+    setSelectedRangeId(interval?.id)
     setStartTime(interval ? clockTime(interval.startedAt) : '')
     setEndTime(interval?.endedAt ? clockTime(interval.endedAt) : '')
     setSaveError('')
@@ -78,7 +90,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
 
   // End of the closest interval (of any other task) that finished on the same day at or before this one started.
   const previousEndTime = (() => {
-    const current = editableInterval(task, intervalId)
+    const current = currentRange
     if (!task || !current) return undefined
     const [dayStart] = localDayBounds(current.startedAt)
     let closest = 0
@@ -91,17 +103,48 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     return closest ? clockTime(closest) : undefined
   })()
 
+
+  const changeIntervals = (operation: TaskIntervalOperation): void => {
+    if (!task) return
+    const drafts = { ...rangeTimes }
+    if (currentRange) drafts[currentRange.id] = { start: startTime, end: endTime }
+    if (operation.type === 'merge') {
+      drafts[operation.firstId] = { start: drafts[operation.firstId].start, end: drafts[operation.secondId].end }
+    }
+    const operations = [...intervalOperations, operation]
+    const remaining = applyIntervalOperations(task.intervals, operations)
+    const next = remaining.find((range) => range.id === currentRange?.id)
+      ?? (operation.type === 'merge' ? remaining.find((range) => range.id === operation.firstId) : undefined)
+      ?? remaining.at(-1)
+    setIntervalOperations(operations)
+    setRangeTimes(drafts)
+    setSelectedRangeId(next?.id)
+    setStartTime(next ? drafts[next.id].start : '')
+    setEndTime(next ? drafts[next.id].end : '')
+    setSaveError('')
+  }
+
+  const resetTimeEdits = (): void => {
+    setIntervalOperations([])
+    setRangeTimes(Object.fromEntries((task?.intervals ?? []).map((range) => [range.id, { start: clockTime(range.startedAt), end: range.endedAt === null ? '' : clockTime(range.endedAt) }])))
+    const interval = editableInterval(task, intervalId)
+    setSelectedRangeId(interval?.id)
+    setStartTime(interval ? clockTime(interval.startedAt) : '')
+    setEndTime(interval?.endedAt ? clockTime(interval.endedAt) : '')
+    setSaveError('')
+  }
+
   const saveTask = async (mode: StartMode): Promise<void> => {
     setBusy(true)
     setSaveError('')
     try {
-      const interval = editableInterval(task, intervalId)
-      const intervalUpdates = (task?.intervals ?? []).map((range) => {
+      const interval = currentRange
+      const intervalUpdates = timeRanges.map((range) => {
         const draft = range.id === interval?.id ? { start: startTime, end: endTime } : rangeTimes[range.id]
         return { id: range.id, startedAt: draft ? editedTime(range.startedAt, draft.start) : undefined, endedAt: range.endedAt !== null && draft ? editedTime(range.endedAt, draft.end) : undefined }
       }).filter((range) => range.startedAt !== undefined || range.endedAt !== undefined)
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalUpdates, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [] })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalUpdates, intervalOperations, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [] })
         : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
       onSaved(result)
     } catch (error) {
@@ -197,18 +240,28 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
               <button className="icon-button" onClick={onClose} aria-label={t('cancel')}><X size={18} /></button>
             </div>
 
+            {splitOpen && task ? <TaskSplit task={{ ...task, projectId: projectId || null, notes }} snapshot={snapshot} t={t} onCancel={() => setSplitOpen(false)} onSaved={onSaved} onSnapshot={onSnapshot} /> : <>
             <div className="field">
               <span>{t('project')}</span>
               <ProjectPicker value={projectId} snapshot={snapshot} ariaLabel={t('project')} autoFocus={!task} t={t} onChange={setProjectId} onSnapshot={onSnapshot} onError={setSaveError} />
             </div>
 
-            {task && task.intervals.length > 0 && <div className="advanced-time-toggle">
-              <button type="button" className="secondary-button" disabled={busy} aria-expanded={advancedTime} aria-controls="task-time-ranges" onClick={() => setAdvancedTime(!advancedTime)}>{advancedTime ? t('basicTime') : t('advancedTime')}</button>
-            </div>}
+            {task && !advancedTime && startTime && (
+              <div className={`task-time-fields ${currentRange?.endedAt !== null && endTime ? 'task-time-fields--complete' : ''}`}>
+                <label className="field time-edit-field">
+                  <span>{t('firstStartTime')}</span>
+                  <TimeInput value={startTime} onChange={setStartTime} ariaLabel={t('firstStartTime')} previousTime={previousEndTime} />
+                </label>
+                {currentRange?.endedAt !== null && endTime && <label className="field time-edit-field"><span>{t('finishedAt')}</span><TimeInput value={endTime} onChange={setEndTime} ariaLabel={t('finishedAt')} /></label>}
+                <small>{currentRange?.endedAt !== null && endTime ? t('taskTimeRangeBody') : t('firstStartTimeBody')}</small>
+              </div>
+            )}
+
             {task && advancedTime && <div id="task-time-ranges" className="task-time-ranges">
               <p className="time-ranges-description">{t('allTimeRangesBody')}</p>
-              {task.intervals.slice().sort((a, b) => a.startedAt - b.startedAt).map((range, index) => {
-                const selected = range.id === editableInterval(task, intervalId)?.id
+              {!timeRanges.length && <p className="time-ranges-description">{t('noTimeRanges')}</p>}
+              {timeRanges.map((range, index) => {
+                const selected = range.id === currentRange?.id
                 const draft = selected ? { start: startTime, end: endTime } : rangeTimes[range.id]
                 if (!draft) return null
                 const change = (part: 'start' | 'end', value: string): void => {
@@ -223,19 +276,18 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
                     <label className="field time-edit-field"><span>{t('firstStartTime')} · {new Date(range.startedAt).toLocaleDateString(snapshot.settings.locale === 'uk' ? 'uk-UA' : 'en-GB')}</span><TimeInput value={draft.start} onChange={(value) => change('start', value)} ariaLabel={t('firstStartTime') + ' ' + (index + 1)} /></label>
                     {range.endedAt !== null ? <label className="field time-edit-field"><span>{t('finishedAt')} · {new Date(range.endedAt).toLocaleDateString(snapshot.settings.locale === 'uk' ? 'uk-UA' : 'en-GB')}</span><TimeInput value={draft.end} onChange={(value) => change('end', value)} ariaLabel={t('finishedAt') + ' ' + (index + 1)} /></label> : <div className="time-range-running">{t('running')}</div>}
                   </div>
+
+                  <div className="task-time-range__actions">
+                    <button type="button" className="secondary-button" disabled={busy} onClick={() => changeIntervals({ type: 'delete', id: range.id })}><Trash2 size={13} />{t('deleteTimeRange')}</button>
+                    {index < timeRanges.length - 1 && <button type="button" className="secondary-button" disabled={busy} onClick={() => changeIntervals({ type: 'merge', firstId: range.id, secondId: timeRanges[index + 1].id })}><GitMerge size={13} />{t('mergeNextRange')}</button>}
+                  </div>
                 </section>
               })}
             </div>}
-            {task && !advancedTime && startTime && (
-              <div className={`task-time-fields ${task.status !== 'running' && endTime ? 'task-time-fields--complete' : ''}`}>
-                <label className="field time-edit-field">
-                  <span>{t('firstStartTime')}</span>
-                  <TimeInput value={startTime} onChange={setStartTime} ariaLabel={t('firstStartTime')} previousTime={previousEndTime} />
-                </label>
-                {task.status !== 'running' && endTime && <label className="field time-edit-field"><span>{t('finishedAt')}</span><TimeInput value={endTime} onChange={setEndTime} ariaLabel={t('finishedAt')} /></label>}
-                <small>{task.status !== 'running' && endTime ? t('taskTimeRangeBody') : t('firstStartTimeBody')}</small>
-              </div>
-            )}
+            {task && task.intervals.length > 0 && <div className="advanced-time-toggle">
+              <button type="button" className="secondary-button" disabled={busy} aria-expanded={advancedTime} aria-controls="task-time-ranges" onClick={() => setAdvancedTime(!advancedTime)}>{advancedTime ? t('basicTime') : t('advancedTime')}</button>
+              {intervalOperations.length > 0 && <button type="button" className="secondary-button" disabled={busy} onClick={resetTimeEdits}>{t('resetRangeEdits')}</button>}
+            </div>}
 
             {snapshot.plannedTasks.length > 0 && <label className="field">
               <span>{t('plannedTask')}</span>
@@ -265,6 +317,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
                     </AnimatePresence>
                     <VoiceButton t={t} disabled={aiBusy || busy} onVoice={applyVoice} onError={setAiMessage} />
                   </div>}
+                  {task.intervals.length > 0 && <button className="secondary-button" disabled={busy} onClick={() => setSplitOpen(true)}><Scissors size={14} />{t('splitTask')}</button>}
                   <button className="primary-button" disabled={busy} onClick={() => saveTask(defaultMode)}>{t('save')}</button>
                 </>
               ) : (
@@ -274,6 +327,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
                 </>
               )}
             </div>
+            </>}
           </motion.section>
         </motion.div>
       )}

@@ -225,8 +225,11 @@ export interface StartTaskInput {
   mode: StartMode
 }
 
+export type TaskIntervalOperation = { type: 'delete'; id: string } | { type: 'merge'; firstId: string; secondId: string }
+
 export interface TaskUpdateInput {
   id: string
+  intervalOperations?: TaskIntervalOperation[]
   intervalUpdates?: Array<{ id: string; startedAt?: number; endedAt?: number }>
   intervalId?: string
   title?: string
@@ -236,6 +239,14 @@ export interface TaskUpdateInput {
   tags?: string[]
   startedAt?: number
   endedAt?: number
+}
+
+export interface TaskSplitInput {
+  id: string
+  splitAt: number
+  expectedUpdatedAt: number
+  first: { projectId: string | null; notes: string }
+  second: { projectId: string | null; notes: string }
 }
 
 export interface TaskMergeInput {
@@ -371,6 +382,7 @@ export interface WorkBuddyApi {
   updateRestStart: (id: string, startedAt: number) => Promise<AppSnapshot>
   setRestAlarmMuted: (id: string, muted: boolean) => Promise<AppSnapshot>
   updateTask: (input: TaskUpdateInput) => Promise<AppSnapshot>
+  splitTask: (input: TaskSplitInput) => Promise<AppSnapshot>
   mergeTasks: (input: TaskMergeInput) => Promise<AppSnapshot>
   deleteTask: (id: string) => Promise<AppSnapshot>
   createPlannedTask: (input: PlannedTaskInput) => Promise<AppSnapshot>

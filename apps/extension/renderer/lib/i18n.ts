@@ -2,6 +2,14 @@ import type { Locale } from '../../shared/types'
 
 const messages = {
   uk: {
+    taskCompleted: 'Завершено',
+    splitTask: 'Розділити',
+    splitTaskBody: 'Вибери момент поділу. Паузи збережуться, а загальний час не зміниться. Для кожної частини можна вибрати проєкт і опис.',
+    splitActiveBody: 'Перше завдання завершиться, а друге збереже поточний стан таймера.',
+    splitAt: 'Момент поділу',
+    splitFirst: 'Перше завдання',
+    splitSecond: 'Друге завдання',
+    splitNoTime: 'Вибери хвилину, щоб обидві частини містили записаний час.',
     appName: 'Work Buddy',
     hello: 'Твій робочий напарник',
     focus: 'Фокус',
@@ -59,9 +67,13 @@ const messages = {
     firstStartTimeBody: 'Змінюється перший старт цієї задачі — загальний час перерахується.',
     finishedAt: 'Коли задача завершилась',
     advancedTime: 'Детальний час',
+    deleteTimeRange: 'Видалити відрізок',
+    mergeNextRange: 'Об’єднати з наступним',
+    resetRangeEdits: 'Скинути зміни часу',
+    noTimeRanges: 'Відрізків не залишилось. Збережи зміни або скинь їх, щоб відновити час.',
     basicTime: 'Простий час',
     timeRange: 'Відрізок',
-    allTimeRangesBody: 'Усі записані відрізки роботи, включно з паузами, продовженнями та об’єднаними задачами. Зміни потрібні відрізки й натисни «Зберегти».',
+    allTimeRangesBody: 'Усі записані відрізки роботи, включно з паузами, продовженнями та об’єднаними задачами. Зміни, видали або об’єднай відрізки й натисни «Зберегти». Об’єднання бере початок першого та кінець наступного, включно з проміжком між ними.',
     taskTimeRangeBody: 'Можна підправити початок і завершення — тривалість перерахується.',
     timeUpdateError: 'Не вдалося змінити час старту.',
     project: 'Проєкт',
@@ -279,6 +291,14 @@ const messages = {
     pairingExpired: 'Ключ підключення змінився. Встав новий ключ із Work Buddy.'
   },
   en: {
+    taskCompleted: 'Completed',
+    splitTask: 'Split task',
+    splitTaskBody: 'Choose where to split. Pauses and total tracked time stay the same. Choose a project and description for each part.',
+    splitActiveBody: 'The first task finishes; the second keeps the current timer state.',
+    splitAt: 'Split at',
+    splitFirst: 'First task',
+    splitSecond: 'Second task',
+    splitNoTime: 'Choose a minute so both parts contain tracked time.',
     appName: 'Work Buddy',
     hello: 'Your workday sidekick',
     focus: 'Focus',
@@ -336,9 +356,13 @@ const messages = {
     firstStartTimeBody: 'This changes the first start of the task and recalculates its total time.',
     finishedAt: 'When the task finished',
     advancedTime: 'Advanced time',
+    deleteTimeRange: 'Delete range',
+    mergeNextRange: 'Merge with next',
+    resetRangeEdits: 'Reset time changes',
+    noTimeRanges: 'No ranges remain. Save the changes or reset them to restore the time.',
     basicTime: 'Basic time',
     timeRange: 'Range',
-    allTimeRangesBody: 'Every recorded work range, including resumed sessions and merged tasks. Edit any ranges, then Save to apply all changes.',
+    allTimeRangesBody: 'Every recorded work range, including resumed sessions and merged tasks. Edit, delete, or merge ranges, then Save. A merge keeps the first start and the next end, including the gap between them.',
     taskTimeRangeBody: 'Adjust the start and finish time; the total will recalculate.',
     timeUpdateError: 'Could not update the start time.',
     project: 'Project',
@@ -558,7 +582,7 @@ const messages = {
 } as const
 
 export type MessageKey = keyof typeof messages.uk
-export type Translator = (key: MessageKey) => string
+export type Translator = ((key: MessageKey) => string) & { locale: Locale }
 
 /** The interface language to use before the desktop settings are known. */
 export function browserLocale(): Locale {
@@ -566,5 +590,5 @@ export function browserLocale(): Locale {
 }
 
 export function translator(locale: Locale): Translator {
-  return (key) => messages[locale][key]
+  return Object.assign((key: MessageKey) => messages[locale][key], { locale })
 }

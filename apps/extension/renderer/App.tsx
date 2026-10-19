@@ -107,14 +107,15 @@ export default function App({ onUnpaired, onLocale }: AppProps = {}): React.JSX.
     ? snapshot.tasks.filter((task) => taskTouchesWorkday(task, openWorkdayStartedAt, now))
     : []
   const liveTasks = workdayTasks.filter((task) => task.status === 'running')
-  const focusTasks = workdayTasks.filter((task) => task.status !== 'stopped')
+  const focusTasks = workdayTasks
+  const activeFocusTasks = focusTasks.filter((task) => task.status !== 'stopped')
   const liveTotal = liveTasks.reduce((total, task) => total + taskDuration(task, now), 0)
   const workedMs = unionDuration(dayIntervals(workdayTasks, now), now)
   const activeRest = snapshot?.rests.find((rest) => rest.status !== 'completed')
   const restRunning = activeRest?.status === 'running'
-  const compactRows = compactHovered ? Math.max(1, focusTasks.length + (activeRest ? 1 : 0)) : activeRest && !restRunning ? 2 : 1
-  const compactPrimaryTask = restRunning ? null : liveTasks[0] ?? focusTasks[0] ?? null
-  const compactExtraTasks = compactHovered ? focusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
+  const compactRows = compactHovered ? Math.max(1, activeFocusTasks.length + (activeRest ? 1 : 0)) : activeRest && !restRunning ? 2 : 1
+  const compactPrimaryTask = restRunning ? null : liveTasks[0] ?? activeFocusTasks[0] ?? null
+  const compactExtraTasks = compactHovered ? activeFocusTasks.filter((task) => task.id !== compactPrimaryTask?.id) : []
   const scheduledEndAt = snapshot ? scheduledWorkdayEndAt(snapshot.settings, snapshot.workday, snapshot.rests, now) : null
   const showFocusEndDay = scheduledEndAt !== null && now >= scheduledEndAt
 

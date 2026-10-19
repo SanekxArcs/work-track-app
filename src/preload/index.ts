@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
+import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
@@ -38,6 +38,7 @@ const api: WorkBuddyApi = {
   updateRestStart: (id: string, startedAt: number) => ipcRenderer.invoke(channels.updateRestStart, id, startedAt),
   setRestAlarmMuted: (id: string, muted: boolean): Promise<AppSnapshot> => ipcRenderer.invoke(channels.setRestAlarmMuted, id, muted),
   updateTask: (input: TaskUpdateInput) => ipcRenderer.invoke(channels.updateTask, input),
+  splitTask: (input: TaskSplitInput) => ipcRenderer.invoke(channels.splitTask, input),
   mergeTasks: (input: TaskMergeInput): Promise<AppSnapshot> => ipcRenderer.invoke(channels.mergeTasks, input),
   deleteTask: (id: string) => ipcRenderer.invoke(channels.deleteTask, id),
   createPlannedTask: (input: PlannedTaskInput): Promise<AppSnapshot> => ipcRenderer.invoke(channels.createPlannedTask, input),

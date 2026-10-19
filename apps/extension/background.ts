@@ -8,7 +8,7 @@ const allowedMethods = new Set([
   "getAppVersion", "getSnapshot", "getHistory", "getDaySnapshot", "getOvertimeOverview", "setOvertimeRedeemed",
   "startWorkday", "endWorkday", "startTask", "pauseTask", "resumeTask", "stopTask", "pauseAllTasks", "stopAllTasks",
   "startRest", "pauseRest", "resumeRest", "completeRest", "skipRest", "updateRestStart", "setRestAlarmMuted",
-  "updateTask", "mergeTasks", "deleteTask", "createPlannedTask", "updatePlannedTask", "deletePlannedTask",
+  "updateTask", "splitTask", "mergeTasks", "deleteTask", "createPlannedTask", "updatePlannedTask", "deletePlannedTask",
   "createProject", "updateProject", "updateSettings", "saveAiKey", "exportBackup", "chooseBackupImport",
   "applyBackupImport", "exportDayCalendar", "suggestTask", "interpretVoiceTask", "transcribeVoice", "summarizeDay",
   "notify", "chooseNotificationSound", "getCustomSoundData"

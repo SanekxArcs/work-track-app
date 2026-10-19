@@ -52,7 +52,7 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
         <div className="task-time-row">
           <span className={`status-dot ${isRunning ? 'status-dot--live' : ''}`} />
           <span className="task-time">{formatDuration(taskDuration(task, now))}</span>
-          <span className="task-status">{isRunning ? t('running') : t('paused')}</span>
+          <span className="task-status">{isRunning ? t('running') : task.status === 'stopped' ? t('taskCompleted') : t('paused')}</span>
         </div>
 
       </div>

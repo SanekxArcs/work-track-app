@@ -660,6 +660,82 @@ test('rejects task interval edits that would double-count the same task', async 
   })
 })
 
+test('deleting an accidental interval and extending the remaining time is one atomic edit', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', title: 'Work' }))
+    const id = started.tasks[0].id
+    await atTime(at(26, 8, 40), () => database.pauseTask(id))
+    await atTime(at(26, 9, 1), () => database.resumeTask(id, 'parallel'))
+    const paused = await atTime(at(26, 9, 2), () => database.pauseTask(id))
+    const [first, accidental] = paused.tasks[0].intervals
+    const changed = await atTime(at(26, 10), () => database.updateTask({ id, intervalOperations: [{ type: 'delete', id: accidental.id }], intervalUpdates: [{ id: first.id, endedAt: at(26, 9, 30) }] }))
+    assert.deepEqual(changed.tasks[0].intervals.map((range) => [range.startedAt, range.endedAt]), [[at(26, 8), at(26, 9, 30)]])
+    assert.equal(changed.tasks[0].title, 'Work')
+  })
+})
+
+test('merging detailed ranges fills the gap from the first start to the second end', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 8), () => database.startTask({ mode: 'parallel' }))
+    const id = started.tasks[0].id
+    await atTime(at(26, 8, 40), () => database.pauseTask(id))
+    await atTime(at(26, 9, 1), () => database.resumeTask(id, 'parallel'))
+    const paused = await atTime(at(26, 9, 2), () => database.pauseTask(id))
+    const [first, second] = paused.tasks[0].intervals
+    const changed = await atTime(at(26, 10), () => database.updateTask({ id, intervalOperations: [{ type: 'merge', firstId: first.id, secondId: second.id }] }))
+    assert.equal(changed.tasks[0].intervals.length, 1)
+    assert.equal(changed.tasks[0].intervals[0].id, first.id)
+    assert.deepEqual([changed.tasks[0].intervals[0].startedAt, changed.tasks[0].intervals[0].endedAt], [at(26, 8), at(26, 9, 2)])
+  })
+})
+
+test('merging into a running range keeps one live timer; deleting that timer pauses the task', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 8), () => database.startTask({ mode: 'parallel' }))
+    const id = started.tasks[0].id
+    await atTime(at(26, 8, 40), () => database.pauseTask(id))
+    const running = await atTime(at(26, 9), () => database.resumeTask(id, 'parallel'))
+    const [first, second] = running.tasks[0].intervals
+    const changed = await atTime(at(26, 9, 30), () => database.updateTask({ id, intervalOperations: [{ type: 'merge', firstId: first.id, secondId: second.id }] }))
+    assert.equal(changed.tasks[0].status, 'running')
+    assert.deepEqual(changed.tasks[0].intervals.map((range) => [range.startedAt, range.endedAt]), [[at(26, 8), null]])
+    const empty = await atTime(at(26, 9, 30), () => database.updateTask({ id, intervalOperations: [{ type: 'delete', id: first.id }] }))
+    assert.equal(empty.tasks[0].status, 'paused')
+    assert.equal(empty.tasks[0].intervals.length, 0)
+    await atTime(at(26, 9, 30), () => database.parseBackup(JSON.stringify(database.exportBackup())))
+  })
+})
+
+test('invalid interval operations cannot alter another task or partially apply edits', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 8), () => database.startTask({ mode: 'parallel', notes: 'Original' }))
+    const id = started.tasks[0].id
+    const other = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel' }))
+    const foreign = other.tasks.find((task) => task.id !== id)!.intervals[0]
+    await atTime(at(26, 10), () => assert.throws(() => database.updateTask({ id, notes: 'Changed', intervalOperations: [{ type: 'delete', id: foreign.id }] }), /interval not found/))
+    const unchanged = await atTime(at(26, 10), () => database.getSnapshot())
+    assert.equal(unchanged.tasks.find((task) => task.id === id)?.notes, 'Original')
+    assert.equal(unchanged.tasks.find((task) => task.id === foreign.taskId)?.intervals[0].endedAt, null)
+  })
+})
+
+test('editing old task metadata or its old clock times does not move it above more recent work', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 8), () => database.startTask({ mode: 'parallel' }))
+    const oldId = first.tasks[0].id
+    await atTime(at(26, 8, 40), () => database.pauseTask(oldId))
+    const second = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel' }))
+    const latestId = second.tasks.find((task) => task.id !== oldId)!.id
+    await atTime(at(26, 9, 30), () => database.pauseTask(latestId))
+    const edited = await atTime(at(26, 10), () => database.updateTask({ id: oldId, notes: 'Edited later', endedAt: at(26, 8, 50) }))
+    assert.deepEqual(edited.tasks.map((task) => task.id), [latestId, oldId])
+    const day = await atTime(at(26, 10), () => database.getDaySnapshot('2026-08-26'))
+    assert.deepEqual(day.tasks.map((task) => task.id), [latestId, oldId])
+    const laterClock = await atTime(at(26, 10), () => database.updateTask({ id: oldId, endedAt: at(26, 9, 50) }))
+    assert.deepEqual(laterClock.tasks.map((task) => task.id), [oldId, latestId])
+  })
+})
+
 test('saves multiple interval corrections together and rejects invalid batches without partial edits', async () => {
   await withDatabase(async (database) => {
     const initial = await atTime(at(26, 10), () => database.startTask({ mode: 'parallel', notes: 'Original' }))
@@ -1199,5 +1275,96 @@ test('resetting an accidental day removes it and the time tracked in it', async 
     const history = await atTime(at(26, 9, 30), () => database.getHistory(30))
     assert.equal(history.find((day) => day.date === '2026-08-25')?.workedMs, 8 * 60 * 60 * 1000)
     assert.equal(history.find((day) => day.date === '2026-08-26')?.workedMs ?? 0, 0)
+  })
+})
+
+
+test('split creates two stopped tasks, preserving every millisecond and independent descriptions', async () => {
+  await withDatabase(async (database) => {
+    const project = database.createProject({ name: 'Second project', color: '#abcdef' }).projects[0]
+    const started = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Original', tags: ['tag'] }))
+    const id = started.tasks[0].id
+    const stopped = await atTime(at(26, 11), () => database.stopTask(id))
+    const task = stopped.tasks.find((item) => item.id === id)!
+    await atTime(at(26, 12), () => database.splitTask({ id, expectedUpdatedAt: task.updatedAt, splitAt: at(26, 9, 45),
+      first: { projectId: null, notes: 'First part' }, second: { projectId: project.id, notes: 'Second part' } }))
+    const day = database.getDaySnapshot('2026-08-26')
+    assert.equal(day.tasks.length, 2)
+    const first = day.tasks.find((item) => item.id === id)!, second = day.tasks.find((item) => item.id !== id)!
+    assert.equal(first.notes, 'First part')
+    assert.equal(second.notes, 'Second part')
+    assert.equal(second.projectId, project.id)
+    assert.deepEqual(second.tags, ['tag'])
+    assert.equal(first.status, 'stopped'); assert.equal(second.status, 'stopped')
+    assert.equal(first.intervals[0].startedAt, at(26, 9))
+    assert.equal(first.intervals[0].endedAt, at(26, 9, 45))
+    assert.equal(second.intervals[0].startedAt, at(26, 9, 45))
+    assert.equal(second.intervals[0].endedAt, at(26, 11))
+    assert.equal(day.tasks.flatMap((item) => item.intervals).reduce((sum, range) => sum + range.endedAt! - range.startedAt, 0), 2 * 60 * 60_000)
+  })
+})
+
+test('split in a pause preserves the gap and rejects invalid or stale operations without mutation', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Paused task' }))
+    const id = started.tasks[0].id
+    const parts = { first: { projectId: null, notes: 'Before' }, second: { projectId: null, notes: 'After' } }
+    await atTime(at(26, 9, 15), () => assert.throws(() => database.splitTask({ id, splitAt: at(26, 9, 30), expectedUpdatedAt: started.tasks[0].updatedAt, ...parts }), /Invalid split time/))
+    await atTime(at(26, 10), () => database.pauseTask(id))
+    await atTime(at(26, 11), () => database.resumeTask(id, 'parallel'))
+    const stopped = await atTime(at(26, 12), () => database.stopTask(id))
+    const task = stopped.tasks.find((item) => item.id === id)!
+    for (const splitAt of [at(26, 9), at(26, 12), NaN]) {
+      assert.throws(() => database.splitTask({ id, splitAt, expectedUpdatedAt: task.updatedAt, ...parts }))
+    }
+    assert.throws(() => database.splitTask({ id, splitAt: at(26, 10, 30), expectedUpdatedAt: task.updatedAt - 1, ...parts }), /Task changed/)
+    assert.throws(() => database.splitTask({ id, splitAt: at(26, 10, 30), expectedUpdatedAt: task.updatedAt, ...parts, second: { projectId: 'missing', notes: '' } }), /Project not found/)
+    assert.deepEqual(database.getDaySnapshot('2026-08-26').tasks.find((item) => item.id === id)!.intervals, task.intervals)
+    await atTime(at(26, 13), () => database.splitTask({ id, splitAt: at(26, 10, 30), expectedUpdatedAt: task.updatedAt, ...parts }))
+    const day = database.getDaySnapshot('2026-08-26')
+    const first = day.tasks.find((item) => item.id === id)!, second = day.tasks.find((item) => item.id !== id)!
+    assert.equal(first.intervals[0].endedAt, at(26, 10))
+    assert.equal(second.intervals[0].startedAt, at(26, 11))
+    assert.equal(day.tasks.flatMap((item) => item.intervals).reduce((sum, range) => sum + range.endedAt! - range.startedAt, 0), 2 * 60 * 60_000)
+  })
+})
+
+
+test('splitting a running task finishes the first part and continues exactly one timer', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'In progress' }))
+    const task = started.tasks[0]
+    const parts = { first: { projectId: null, notes: 'First' }, second: { projectId: null, notes: 'Continuing' } }
+    const result = await atTime(at(26, 11), () => database.splitTask({ id: task.id, expectedUpdatedAt: task.updatedAt, splitAt: at(26, 10), ...parts }))
+    const first = result.tasks.find((item) => item.id === task.id)!, second = result.tasks.find((item) => item.id !== task.id)!
+    assert.equal(first.status, 'stopped')
+    assert.equal(first.intervals[0].endedAt, at(26, 10))
+    assert.equal(second.status, 'running')
+    assert.equal(second.intervals[0].startedAt, at(26, 10))
+    assert.equal(second.intervals[0].endedAt, null)
+    assert.equal(result.tasks.flatMap((item) => item.intervals).filter((range) => range.endedAt === null).length, 1)
+    assert.equal(result.tasks.flatMap((item) => item.intervals).reduce((sum, range) => sum + (range.endedAt ?? result.now) - range.startedAt, 0), 2 * 60 * 60_000)
+    const later = await atTime(at(26, 11, 15), () => database.getSnapshot())
+    assert.equal(later.tasks.flatMap((item) => item.intervals).reduce((sum, range) => sum + (range.endedAt ?? later.now) - range.startedAt, 0), 135 * 60_000)
+    await atTime(at(26, 11, 15), () => assert.throws(() => database.splitTask({ id: task.id, expectedUpdatedAt: task.updatedAt, splitAt: at(26, 9, 30), ...parts }), /Task changed/))
+  })
+})
+
+test('splitting a task paused by a break resumes only the second part after the break', async () => {
+  await withDatabase(async (database) => {
+    const started = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', notes: 'Before break' }))
+    const id = started.tasks[0].id
+    const resting = await atTime(at(26, 11), () => database.startRest('break'))
+    const task = resting.tasks.find((item) => item.id === id)!
+    const result = await atTime(at(26, 11, 1), () => database.splitTask({ id, expectedUpdatedAt: task.updatedAt, splitAt: at(26, 10),
+      first: { projectId: null, notes: 'Done' }, second: { projectId: null, notes: 'Resume this' } }))
+    const second = result.tasks.find((item) => item.id !== id)!
+    assert.equal(result.tasks.find((item) => item.id === id)!.status, 'stopped')
+    assert.equal(second.status, 'paused')
+    assert.equal(second.intervals[0].endedAt, at(26, 11))
+    const resumed = await atTime(at(26, 11, 5), () => database.completeRest(resting.rests[0].id))
+    assert.equal(resumed.tasks.find((item) => item.id === id)!.status, 'stopped')
+    assert.equal(resumed.tasks.find((item) => item.id === second.id)!.status, 'running')
+    assert.equal(resumed.tasks.find((item) => item.id === second.id)!.intervals.at(-1)!.startedAt, at(26, 11, 5))
   })
 })
