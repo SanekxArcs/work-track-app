@@ -1,0 +1,31 @@
+{
+  "name": "work-buddy-promo-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion product video for Work Buddy",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts WorkBuddyPromo out/work-buddy-promo.mp4 --codec h264 --crf 16 --concurrency 12",
+    "still": "remotion still src/index.ts WorkBuddyPromo out/still.png"
+  },
+  "dependencies": {
+    "@react-three/fiber": "9.8.1",
+    "@remotion/cli": "4.0.531",
+    "@remotion/google-fonts": "4.0.531",
+    "@remotion/media-utils": "4.0.531",
+    "@remotion/tailwind-v4": "4.0.531",
+    "@remotion/three": "4.0.531",
+    "@remotion/transitions": "4.0.531",
+    "lucide-react": "1.33.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.531",
+    "tailwindcss": "4.3.3",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/three": "0.186.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "vo": {
+    "intro": 2.902,
+    "problem": 6.545,
+    "parallel": 9.851,
+    "notch": 5.456,
+    "compact": 6.839,
+    "voice": 7.733,
+    "breaks": 5.089,
+    "insights": 8.437,
+    "everywhere": 4.639,
+    "outro": 2.209,
+    "command": 3.084
+  },
+  "music": 88.0,
+  "voice": "en-US-AndrewMultilingualNeural",
+  "commandVoice": "en-US-EmmaMultilingualNeural",
+  "sfx": {
+    "boom": 2.5,
+    "chime": 1.2,
+    "click": 0.06,
+    "pop": 0.15,
+    "shimmer": 1.2,
+    "tick": 0.03,
+    "whoosh-soft": 0.45,
+    "whoosh": 0.7
+  }
+}
