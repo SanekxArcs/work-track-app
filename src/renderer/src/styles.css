@@ -477,7 +477,7 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 .brand-copy { min-width: 172px; max-width: 214px; }
 .brand-slide { display: block; height: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .brand-slide b { margin-left: 6px; color: var(--accent); font-weight: 700; }
-.tab-bar { grid-template-columns: 1fr 1fr 1fr 40px; }
+.tab-bar { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 32px 32px; }
 .tab-bar button.tab-icon-only { flex: none; }
 
 /* Searchable project picker */
@@ -809,3 +809,58 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 
 .convex-sync-settings .settings-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .convex-field input { min-height: 36px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); padding: 8px 10px; font-size: 11px; }
+
+/* Daily activity: compact at the desktop tracker's minimum width. */
+.activity-page { gap: 10px; }
+.activity-header,.activity-section-title,.activity-toolbar,.activity-recording,.activity-footer {display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.activity-header h2 {font-size:17px;margin:0 0 3px;letter-spacing:-.02em}
+.activity-header p,.activity-card p,.activity-caption,.activity-footer small {font-size:11px;line-height:1.55;color:var(--muted);margin:3px 0}
+.activity-tools {display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.activity-toolbar input {min-width:0;width:140px;background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;padding:6px;color:var(--text);font-size:11px;color-scheme:dark}
+.activity-state {display:flex;gap:5px;align-items:center;font-size:10px;color:var(--muted);margin-left:auto}
+.activity-state i {width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.activity-state.is-on i {background:var(--accent);box-shadow:0 0 8px #b8e94433}
+.activity-recording {padding:9px 10px;border:1px solid var(--line);background:var(--bg-elevated);border-radius:11px;font-size:12px}
+.activity-recording small {display:block;font-size:10px;color:var(--muted);margin-top:3px}
+.activity-metrics {display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.activity-metrics>div {padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:var(--bg-elevated)}
+.activity-metrics span {font-size:10px;color:var(--muted);display:block}
+.activity-metrics strong {display:block;font-size:21px;letter-spacing:-.04em;margin-top:5px;font-variant-numeric:tabular-nums}
+.activity-metrics>div:first-child strong {color:var(--accent)}
+.activity-card {border:1px solid var(--line);border-radius:12px;background:var(--bg-elevated);padding:12px;min-width:0}
+.activity-card h3 {font-size:12px;font-weight:650;margin:0 0 8px;display:flex;align-items:center;gap:6px}
+.activity-section-title h3 {margin:0}
+.activity-section-title>span {font-size:10px;color:var(--muted)}
+.activity-preferences {display:flex;flex-direction:column;gap:9px}
+.activity-preferences label {display:flex;flex-direction:column;gap:5px;font-size:11px;min-width:0}
+.activity-preferences input:not([type=checkbox]),.activity-preferences textarea,.activity-editor textarea {width:100%;min-width:0;padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft);color:var(--text);font-size:11px;resize:vertical}
+.activity-check {display:flex!important;flex-direction:row!important;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
+.activity-check input {accent-color:var(--accent)}
+.activity-setting-grid {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.activity-top>div:not(.activity-tools) {position:relative;display:flex;justify-content:space-between;gap:8px;padding:7px 0 9px;font-size:11px;overflow:hidden}
+.activity-top>div:not(.activity-tools) span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-top>div:not(.activity-tools) b {font-weight:500;white-space:nowrap;color:var(--muted)}
+.activity-top>div:not(.activity-tools) i {position:absolute;bottom:2px;left:0;height:2px;background:var(--accent);opacity:.45;border-radius:4px}
+.activity-row {display:flex;align-items:flex-start;gap:9px;width:100%;background:none;border:0;border-bottom:1px solid var(--line);padding:11px 0;text-align:left;cursor:pointer;min-width:0}
+.activity-row:hover {background:var(--bg-soft);border-radius:7px}
+.activity-row-icon {display:grid;place-items:center;width:27px;height:27px;flex:none;background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;color:var(--accent);margin-top:2px}
+.activity-row-body {display:flex;flex-direction:column;gap:4px;min-width:0}
+.activity-row-body small {font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+.activity-row-body small b {color:var(--muted);font-weight:500;border:1px solid var(--line);padding:1px 3px;border-radius:3px}
+.activity-row-body strong {font-size:11px;font-weight:550;overflow-wrap:anywhere;line-height:1.45}
+.activity-row-body>span {font-size:10px;color:var(--muted);overflow-wrap:anywhere;line-height:1.4}
+.activity-row-body .activity-task-match {color:var(--blue)}
+.activity-row.is-idle {opacity:.65}
+.activity-empty {display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:25px 5px;color:var(--muted);font-size:12px}
+.activity-empty p {max-width:280px}
+.activity-recap {white-space:pre-wrap;font-size:12px;line-height:1.65;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.activity-card summary {font-size:11px;cursor:pointer;color:var(--muted)}
+.activity-manual {display:flex;flex-direction:column;gap:4px;padding:9px 0;border-bottom:1px solid var(--line);font-size:11px;overflow-wrap:anywhere}
+.activity-manual small {color:var(--muted);font-size:10px}
+.activity-editor,.activity-preview {position:sticky;bottom:0;z-index:30;box-shadow:0 -12px 35px #0007;display:flex;flex-direction:column;gap:9px;border-color:var(--accent);max-height:75vh;overflow:auto}
+.activity-preview pre {font-size:9px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto;background:var(--bg-soft);padding:8px;border-radius:6px}
+.activity-footer {align-items:flex-start}
+.activity-timeline .secondary-button {margin-top:9px}
+html[data-theme=light] .activity-toolbar input {color-scheme:light}
+
+.activity-evidence-link {display:inline;border:0;background:none;color:var(--blue);padding:0 2px;font:inherit;text-decoration:underline;cursor:pointer} .activity-recap [id] {scroll-margin:40px}

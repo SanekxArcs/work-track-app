@@ -14,3 +14,4 @@ release-*/
 *.tsbuildinfo
 .plasmo/
 apps/extension/build/
+.artifacts/

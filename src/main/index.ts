@@ -1,9 +1,12 @@
+import { ActivityStore } from './activity-store'
+import { ActivityService } from './activity'
+import { activityReview } from '../shared/activity-review'
 import { ConvexSyncService } from './convex-sync'
 import type { ConvexSyncConfig } from '../shared/convex-sync'
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, screen, shell, Tray } from 'electron'
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { ReminderService } from './reminders'
@@ -19,6 +22,8 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let activity: ActivityService
+const activityPreviews = new Map<string,{expires:number;epoch:number;review:ReturnType<typeof activityReview>}>()
 let convexSync: ConvexSyncService
 let database: WorkBuddyDatabase
 let reminders: ReminderService
@@ -514,6 +519,39 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
 }
 
 function registerIpc(): void {
+  ipcMain.handle(channels.activityDay,(_,day:string)=>activity.day(day))
+  ipcMain.handle(channels.activityConfigure,(_,config,writeKey,readKey)=>activity.configure(config,writeKey,readKey))
+  ipcMain.handle(channels.activityImport,async()=>{
+    const result=await dialog.showOpenDialog({title:'Import Work Buddy connection',properties:['openFile']})
+    if(result.canceled||!result.filePaths[0])return null
+    const contents=await readFile(result.filePaths[0],'utf8')
+    if(contents.length>16384)throw new Error('Connection file is too large')
+    return activity.importConnection(contents)
+  })
+  ipcMain.handle(channels.activityRefresh,(_,day:string)=>activity.refresh(day))
+  ipcMain.handle(channels.activityAssign,(_,value)=>activity.assign(value))
+  ipcMain.handle(channels.activityRemember,(_,rule)=>{
+    if(!database.getSnapshot().projects.some(p=>p.id===rule?.projectId))throw new Error('Choose an existing Work Buddy project')
+    activity.remember(rule)
+  })
+  ipcMain.handle(channels.activityForgetRules,()=>activity.forgetRules())
+  ipcMain.handle(channels.activityDelete,async(_,day:string)=>{activity.deleteDay(day);await activity.sync();await activity.sync()})
+  ipcMain.handle(channels.activityPreview,(_,day:string)=>{
+    const data=activity.day(day),snapshot=database.getDaySnapshot(day)
+    const review=activityReview(data,snapshot,data.assignments,data.rules)
+    if(!review.report.segments.length&&!review.tasks.length)throw new Error('No activity or tracked tasks for this day')
+    const id=randomBytes(16).toString('hex')
+    activityPreviews.clear();activityPreviews.set(id,{expires:Date.now()+300000,epoch:activity.privacyEpoch,review})
+    return {id,review}
+  })
+  ipcMain.handle(channels.activityRecap,async(_,id:string)=>{
+    const preview=activityPreviews.get(id);activityPreviews.delete(id)
+    if(!preview||preview.expires<Date.now()||preview.epoch!==activity.privacyEpoch)throw new Error('Preview expired or privacy settings changed. Review the data again.')
+    const result=await gemini.summarizeActivity(preview.review)
+    if(preview.epoch!==activity.privacyEpoch)throw new Error('Activity privacy settings changed during generation. Review the data again.')
+    activity.store.saveRecap(preview.review.day,{summary:result.summary,generatedAt:Date.now(),through:preview.review.through,evidence:preview.review.evidence})
+    return result
+  })
   ipcMain.handle(channels.convexSyncStatus, () => convexSync.status())
   ipcMain.handle(channels.convexSyncConfigure, (_, config: ConvexSyncConfig, key?: string) => convexSync.configure(config, key))
   ipcMain.handle(channels.convexSyncNow, () => convexSync.sync())
@@ -985,6 +1023,15 @@ else {
       },
       decrypt: (key) => safeStorage.decryptString(Buffer.from(key, 'base64'))
     })
+    activity = new ActivityService(new ActivityStore(join(app.getPath('userData'),'activity.sqlite'),convexSync.status().sourceId),{
+      encrypt:(key)=>{if(!safeStorage.isEncryptionAvailable())throw new Error('Secure storage is unavailable');return safeStorage.encryptString(key).toString('base64')},
+      decrypt:(key)=>safeStorage.decryptString(Buffer.from(key,'base64'))
+    },()=>powerMonitor.getSystemIdleTime())
+    activity.start()
+    powerMonitor.on('suspend',()=>activity.system('suspend'))
+    powerMonitor.on('resume',()=>activity.system('resume'))
+    powerMonitor.on('lock-screen',()=>activity.system('lock'))
+    powerMonitor.on('unlock-screen',()=>activity.system('unlock'))
     convexSync.start()
     registerIpc()
     try {
@@ -1038,6 +1085,8 @@ app.on('before-quit', () => {
   reminders?.stop()
   void localServer?.stop()
   convexSync?.stop()
+  activity?.stop()
+  activity?.store.close()
   database?.close()
 })
 

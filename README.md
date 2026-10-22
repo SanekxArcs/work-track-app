@@ -183,3 +183,7 @@ Gemini is an opt-in integration. Only data needed for a requested AI command lea
 | Voice input does not start | Allow microphone permission for Work Buddy in your operating-system privacy settings. |
 | macOS blocks the app | This is expected for an unsigned local build. Use an Apple Developer certificate/notarization for public distribution. |
 | Linux AppImage does not open | Make it executable with `chmod +x`; some distributions also require FUSE support. |
+
+## PC activity and daily review
+
+Windows foreground activity and Nested Tab Manager browser observations can now be combined with manual task timers. Open the monitor-icon tab to review your day, assign projects, and generate an optional AI recap after inspecting the data. See [the setup and privacy guide](docs/activity-tracking.md).

@@ -59,3 +59,7 @@ const { syncedAt, data } = await response.json()
 `npx tsc -p convex/tsconfig.json` checks backend types without a deployment. `npm test` covers interval/restart/retry behavior, credential separation, payload filtering, concurrent upload handling, and shutdown. A successful local build does not confirm a live cloud deployment; after setup, use **Sync now** and make an authenticated GET request from a consumer to check it end to end.
 
 Official references: [HTTP actions](https://docs.convex.dev/functions/http-actions), [storing files](https://docs.convex.dev/file-storage/store-files).
+
+## PC and browser activity
+
+The separate activity endpoints, per-minute sync, setup and privacy behavior are documented in [activity-tracking.md](activity-tracking.md).

@@ -3,6 +3,16 @@ import { channels } from '../shared/channels'
 import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
+  getActivityDay: (day) => ipcRenderer.invoke(channels.activityDay,day),
+  configureActivity: (config,writeKey,readKey) => ipcRenderer.invoke(channels.activityConfigure,config,writeKey,readKey),
+  importActivityConnection: () => ipcRenderer.invoke(channels.activityImport),
+  refreshActivity: (day) => ipcRenderer.invoke(channels.activityRefresh,day),
+  assignActivity: (value) => ipcRenderer.invoke(channels.activityAssign,value),
+  rememberActivityProject: (rule) => ipcRenderer.invoke(channels.activityRemember,rule),
+  forgetActivityRules: () => ipcRenderer.invoke(channels.activityForgetRules),
+  deleteActivityDay: (day) => ipcRenderer.invoke(channels.activityDelete,day),
+  previewActivityRecap: (day) => ipcRenderer.invoke(channels.activityPreview,day),
+  generateActivityRecap: (id) => ipcRenderer.invoke(channels.activityRecap,id),
   getConvexSyncStatus: () => ipcRenderer.invoke(channels.convexSyncStatus),
   configureConvexSync: (config, key) => ipcRenderer.invoke(channels.convexSyncConfigure, config, key),
   syncConvexNow: () => ipcRenderer.invoke(channels.convexSyncNow),

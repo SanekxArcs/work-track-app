@@ -1,6 +1,7 @@
+import { ActivityPage } from './components/ActivityPage'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Pin, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Monitor, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Pin, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
@@ -18,7 +19,7 @@ import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib
 import { playNotificationSound } from './lib/sounds'
 import { localDayBounds } from '@shared/local-date'
 
-type Tab = 'focus' | 'day' | 'projects' | 'settings'
+type Tab = 'focus' | 'day' | 'projects' | 'activity' | 'settings'
 type NotchState = 'collapsed' | 'open' | 'closing'
 type HeaderSlide = { id: string; label: string; value?: string; ms?: number; compactMs?: boolean; count?: number }
 
@@ -518,6 +519,7 @@ export default function App(): React.JSX.Element {
     { id: 'focus', label: t('focus'), icon: Clock3 },
     { id: 'day', label: t('day'), icon: BarChart3 },
     { id: 'projects', label: t('projectsTab'), icon: BriefcaseBusiness },
+    { id: 'activity', label: snapshot.settings.locale === 'uk' ? 'Активність ПК' : 'PC activity', icon: Monitor },
     { id: 'settings', label: t('settings'), icon: Settings2 }
   ]
 
@@ -579,9 +581,9 @@ export default function App(): React.JSX.Element {
           <motion.div key="expanded" className="expanded-view" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2, ease }}>
             <nav className="tab-bar no-drag">
               {navItems.map(({ id, label, icon: Icon }) => (
-                <button key={id} className={`${tab === id ? 'active' : ''} ${id === 'settings' ? 'tab-icon-only' : ''}`} onClick={() => setTab(id)} title={id === 'settings' ? label : undefined} aria-label={label}>
+                <button key={id} className={`${tab === id ? 'active' : ''} ${(id === 'settings' || id === 'activity') ? 'tab-icon-only' : ''}`} onClick={() => setTab(id)} title={id === 'settings' || id === 'activity' ? label : undefined} aria-label={label}>
                   {tab === id && <motion.span layoutId="tab-pill" className="tab-pill" />}
-                  <Icon size={15} />{id !== 'settings' && <span>{label}</span>}
+                  <Icon size={15} />{id !== 'settings' && id !== 'activity' && <span>{label}</span>}
                 </button>
               ))}
             </nav>
@@ -670,6 +672,7 @@ export default function App(): React.JSX.Element {
 
                 {tab === 'projects' && <ProjectsPage key="projects" snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />}
 
+                {tab === 'activity' && <ActivityPage key="activity" snapshot={snapshot} />}
                 {tab === 'settings' && <SettingsPage key="settings" snapshot={snapshot} t={t} onSnapshot={setSnapshot} />}
               </AnimatePresence>
             </div>

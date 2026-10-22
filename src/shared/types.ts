@@ -352,6 +352,16 @@ export interface ExtensionServerStatus {
 }
 
 export interface WorkBuddyApi {
+  getActivityDay: (day:string) => Promise<import('./activity').ActivityDay>
+  configureActivity: (config:import('./activity').ActivityConfig,writeKey?:string,readKey?:string) => Promise<import('./activity').ActivityStatus>
+  importActivityConnection: () => Promise<import('./activity').ActivityStatus|null>
+  refreshActivity: (day:string) => Promise<import('./activity').ActivityDay>
+  assignActivity: (value:import('./activity').ActivityAssignment) => Promise<void>
+  rememberActivityProject: (rule:import('./activity-review').ActivityRule) => Promise<void>
+  forgetActivityRules: () => Promise<void>
+  deleteActivityDay: (day:string) => Promise<void>
+  previewActivityRecap: (day:string) => Promise<{id:string;review:ReturnType<typeof import('./activity-review').activityReview>}>
+  generateActivityRecap: (previewId:string) => Promise<{summary:string}>
   getConvexSyncStatus: () => Promise<import('./convex-sync').ConvexSyncStatus>
   configureConvexSync: (config: import('./convex-sync').ConvexSyncConfig, key?: string) => Promise<import('./convex-sync').ConvexSyncStatus>
   syncConvexNow: () => Promise<import('./convex-sync').ConvexSyncStatus>
