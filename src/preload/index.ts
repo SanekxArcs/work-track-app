@@ -3,6 +3,9 @@ import { channels } from '../shared/channels'
 import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
+  getConvexSyncStatus: () => ipcRenderer.invoke(channels.convexSyncStatus),
+  configureConvexSync: (config, key) => ipcRenderer.invoke(channels.convexSyncConfigure, config, key),
+  syncConvexNow: () => ipcRenderer.invoke(channels.convexSyncNow),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
   getSnapshot: () => ipcRenderer.invoke(channels.snapshot),
   getHistory: (days?: number): Promise<HistoryDay[]> => ipcRenderer.invoke(channels.history, days),
@@ -56,6 +59,7 @@ const api: WorkBuddyApi = {
   exportRangeCalendar: (from: string, to: string): Promise<{ path: string } | null> => ipcRenderer.invoke(channels.calendarExportRange, from, to),
   suggestTask: (taskId: string) => ipcRenderer.invoke(channels.suggestTask, taskId),
   interpretVoiceTask: (input: VoiceInput, taskId?: string): Promise<VoiceTaskDraft> => ipcRenderer.invoke(channels.interpretVoiceTask, input, taskId),
+  interpretPlannedVoice: (input: VoiceInput): Promise<VoiceTaskDraft> => ipcRenderer.invoke(channels.interpretPlannedVoice, input),
   transcribeVoice: (input: VoiceInput): Promise<string> => ipcRenderer.invoke(channels.transcribeVoice, input),
   summarizeDay: () => ipcRenderer.invoke(channels.summarizeDay),
   notify: (input: NotificationInput) => ipcRenderer.invoke(channels.notify, input),

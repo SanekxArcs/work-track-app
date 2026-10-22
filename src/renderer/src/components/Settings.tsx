@@ -1,3 +1,4 @@
+import { ConvexSyncSettings } from './ConvexSyncSettings'
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2 } from 'lucide-react'
@@ -523,6 +524,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
       </section>
 
+      <ConvexSyncSettings locale={settings.locale} />
       <section className="app-version"><Info size={14} /><span>{t('appVersion')}</span><strong>{appVersion ? `v${appVersion}` : '…'}</strong></section>
 
       <div className={`autosave-indicator autosave-indicator--${saveState}`}><span /><AnimatedText text={saveState === 'saving' ? t('saving') : saveState === 'error' ? t('saveFailed') : t('autosaved')} /></div>

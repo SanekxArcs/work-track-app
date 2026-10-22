@@ -1,4 +1,7 @@
 export const channels = {
+  convexSyncStatus: 'convex:status',
+  convexSyncConfigure: 'convex:configure',
+  convexSyncNow: 'convex:sync',
   appVersion: 'app:version',
   snapshot: 'app:snapshot',
   history: 'app:history',
@@ -48,6 +51,7 @@ export const channels = {
   calendarExportRange: 'calendar:export-range',
   suggestTask: 'ai:suggest-task',
   interpretVoiceTask: 'ai:interpret-voice-task',
+  interpretPlannedVoice: 'ai:interpret-planned-voice',
   transcribeVoice: 'ai:transcribe-voice',
   summarizeDay: 'ai:summarize-day',
   notify: 'notification:show',

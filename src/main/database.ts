@@ -1590,7 +1590,11 @@ export class WorkBuddyDatabase {
     const [dayStart, dayEnd] = localDayBounds(reference)
     const taskIds = [input.targetId, ...sourceIds]
     const placeholders = taskIds.map(() => '?').join(', ')
-    const tasks = this.db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...taskIds) as Array<{ id: string; status: Task['status'] }>
+    const tasks = this.db.prepare(`
+      SELECT t.id, t.status, t.title, t.notes, p.title AS planned_title, p.notes AS planned_notes
+      FROM tasks t LEFT JOIN planned_tasks p ON p.id = t.planned_task_id
+      WHERE t.id IN (${placeholders})
+    `).all(...taskIds) as Array<{ id: string; status: Task['status']; title: string; notes: string; planned_title: string | null; planned_notes: string | null }>
     if (tasks.length !== taskIds.length) throw new Error('One of the selected tasks was not found')
     const dayIntervals = this.db.prepare(
       `SELECT id, task_id, started_at, ended_at FROM time_intervals
@@ -1600,6 +1604,18 @@ export class WorkBuddyDatabase {
     if (!taskIdsOnDate.has(input.targetId) || sourceIds.some((id) => !taskIdsOnDate.has(id))) {
       throw new Error('Every merged task must have time on the selected day')
     }
+    // Read completed planned tasks directly too: they are absent from snapshot.plannedTasks.
+    // Keep the requested target/source order and every distinct paragraph, even after repeated merges.
+    const descriptions = new Set<string>()
+    for (const id of taskIds) {
+      const task = tasks.find((item) => item.id === id)!
+      for (const text of [task.planned_title, task.title, task.notes, task.planned_notes]) {
+        for (const paragraph of (text ?? '').split(/\r?\n\s*\r?\n/)) {
+          if (paragraph.trim()) descriptions.add(paragraph.trim())
+        }
+      }
+    }
+    const mergedNotes = [...descriptions].join('\n\n')
     const ranges = dayIntervals.map((interval) => ({
       startedAt: Math.max(interval.started_at, dayStart),
       endedAt: Math.min(interval.ended_at ?? now, dayEnd)
@@ -1642,7 +1658,7 @@ export class WorkBuddyDatabase {
       const target = tasks.find((task) => task.id === input.targetId)!
       const status = hasOpen.get(input.targetId) ? 'running'
         : mergingToday && tasks.some((task) => task.status === 'paused') ? 'paused' : target.status
-      this.db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(status, now, input.targetId)
+      this.db.prepare('UPDATE tasks SET status = ?, notes = ?, updated_at = ? WHERE id = ?').run(status, mergedNotes, now, input.targetId)
       // Lunch and ending the day keep lists of tasks to resume. Keep those links valid.
       const remap = (json: string): string => JSON.stringify([...new Set((JSON.parse(json) as string[]).map((id) => remappedIds.has(id) ? input.targetId : id))])
       const rests = this.db.prepare('SELECT id, resume_task_ids_json FROM rest_sessions').all() as Array<{ id: string; resume_task_ids_json: string }>

@@ -1368,3 +1368,57 @@ test('splitting a task paused by a break resumes only the second part after the 
     assert.equal(resumed.tasks.find((item) => item.id === second.id)!.intervals.at(-1)!.startedAt, at(26, 11, 5))
   })
 })
+
+test('task merging preserves all descriptions, legacy titles, and completed planned task details', async () => {
+  await withDatabase(async (database) => {
+    const planned = await atTime(at(26, 8), () => database.createPlannedTask({ title: 'Build checkout', notes: 'Original checkout requirements' }))
+    const firstPlan = planned.plannedTasks[0].id
+    const secondPlanned = await atTime(at(26, 8, 1), () => database.createPlannedTask({ title: 'Fix payment bug', notes: 'Handle declined cards' }))
+    const secondPlan = secondPlanned.plannedTasks.find((task) => task.id !== firstPlan)!.id
+    const first = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', plannedTaskId: firstPlan, notes: 'Checkout styling', title: 'Legacy checkout title' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 10), () => database.startTask({ mode: 'switch', plannedTaskId: secondPlan, notes: 'Payment error copy' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    assert.equal(second.plannedTasks.length, 0)
+    const merged = await atTime(at(26, 11), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    const task = merged.tasks.find((item) => item.id === targetId)!
+    assert.equal(task.notes, 'Build checkout\n\nLegacy checkout title\n\nCheckout styling\n\nOriginal checkout requirements\n\nFix payment bug\n\nPayment error copy\n\nHandle declined cards')
+    assert.equal(task.plannedTaskId, firstPlan)
+    assert.equal(task.status, 'running')
+    assert.equal(merged.tasks.some((item) => item.id === sourceId), false)
+    const backup = await atTime(at(26, 11), () => database.exportBackup())
+    assert.equal(backup.plannedTasks.length, 2)
+    assert.ok(backup.plannedTasks.every((item) => item.completedAt !== null))
+    assert.equal(backup.tasks[0].notes, task.notes)
+    await atTime(at(26, 11), () => database.parseBackup(JSON.stringify(backup)))
+  })
+})
+
+test('repeated task merges keep distinct paragraphs once and preserve multiline descriptions', async () => {
+  await withDatabase(async (database) => {
+    const first = await atTime(at(26, 9), () => database.startTask({ mode: 'parallel', title: 'Same title', notes: 'First line\nSecond line\n\nShared detail' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 10), () => database.startTask({ mode: 'switch', title: 'Same title', notes: 'Shared detail' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    await atTime(at(26, 11), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    const third = await atTime(at(26, 11), () => database.startTask({ mode: 'switch', notes: 'New detail\n\nShared detail' }))
+    const thirdId = third.tasks.find((task) => task.id !== targetId)!.id
+    const merged = await atTime(at(26, 12), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [thirdId] }))
+    assert.equal(merged.tasks[0].notes, 'Same title\n\nFirst line\nSecond line\n\nShared detail\n\nNew detail')
+  })
+})
+
+test('merging one day copies descriptions while leaving other-day source descriptions intact', async () => {
+  await withDatabase(async (database) => {
+    const settings = database.getSettings()
+    database.updateSettings({ ...settings, workday: { ...settings.workday, startTime: '22:00', endTime: '06:00' } })
+    const first = await atTime(at(26, 22), () => database.startTask({ mode: 'parallel', notes: 'Target description' }))
+    const targetId = first.tasks[0].id
+    const second = await atTime(at(26, 23), () => database.startTask({ mode: 'switch', notes: 'Source description' }))
+    const sourceId = second.tasks.find((task) => task.id !== targetId)!.id
+    await atTime(at(27, 1), () => database.mergeTasks({ date: '2026-08-26', targetId, sourceIds: [sourceId] }))
+    const backup = await atTime(at(27, 1), () => database.exportBackup())
+    assert.equal(backup.tasks.find((task) => task.id === targetId)?.notes, 'Target description\n\nSource description')
+    assert.equal(backup.tasks.find((task) => task.id === sourceId)?.notes, 'Source description')
+  })
+})

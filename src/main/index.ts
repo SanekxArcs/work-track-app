@@ -1,3 +1,5 @@
+import { ConvexSyncService } from './convex-sync'
+import type { ConvexSyncConfig } from '../shared/convex-sync'
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
@@ -17,6 +19,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let convexSync: ConvexSyncService
 let database: WorkBuddyDatabase
 let reminders: ReminderService
 let gemini: GeminiService
@@ -487,6 +490,7 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'chooseNotificationSound': return chooseSoundFile()
     case 'suggestTask': return gemini.suggestTask(first as string)
     case 'interpretVoiceTask': return gemini.interpretVoiceTask(first as VoiceInput, second as string | undefined)
+    case 'interpretPlannedVoice': return gemini.interpretVoiceTask(first as VoiceInput, undefined, true)
     case 'transcribeVoice': return gemini.transcribeVoice(first as VoiceInput)
     case 'summarizeDay': return gemini.summarizeDay()
     case 'notify': {
@@ -510,6 +514,9 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
 }
 
 function registerIpc(): void {
+  ipcMain.handle(channels.convexSyncStatus, () => convexSync.status())
+  ipcMain.handle(channels.convexSyncConfigure, (_, config: ConvexSyncConfig, key?: string) => convexSync.configure(config, key))
+  ipcMain.handle(channels.convexSyncNow, () => convexSync.sync())
   ipcMain.handle(channels.appVersion, () => app.getVersion())
   ipcMain.handle(channels.snapshot, () => database.getSnapshot())
   ipcMain.handle(channels.history, (_, days?: number) => database.getHistory(days))
@@ -749,6 +756,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.suggestTask, (_, taskId: string) => gemini.suggestTask(taskId))
   ipcMain.handle(channels.interpretVoiceTask, (_, input: VoiceInput, taskId?: string) => gemini.interpretVoiceTask(input, taskId))
+  ipcMain.handle(channels.interpretPlannedVoice, (_, input: VoiceInput) => gemini.interpretVoiceTask(input, undefined, true))
   ipcMain.handle(channels.transcribeVoice, (_, input: VoiceInput) => gemini.transcribeVoice(input))
   ipcMain.handle(channels.summarizeDay, () => gemini.summarizeDay())
   ipcMain.handle(channels.notify, (_, input: NotificationInput) => showNotification(input))
@@ -970,6 +978,14 @@ else {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
       return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
     })
+    convexSync = new ConvexSyncService(database, {
+      encrypt: (key) => {
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
+        return safeStorage.encryptString(key).toString('base64')
+      },
+      decrypt: (key) => safeStorage.decryptString(Buffer.from(key, 'base64'))
+    })
+    convexSync.start()
     registerIpc()
     try {
       localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
@@ -1021,6 +1037,7 @@ app.on('before-quit', () => {
   clearTimeout(notchTravelTimer)
   reminders?.stop()
   void localServer?.stop()
+  convexSync?.stop()
   database?.close()
 })
 

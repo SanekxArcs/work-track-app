@@ -782,3 +782,30 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 .split-slider { width: 100%; min-height: 28px; accent-color: #b8e986; cursor: pointer; }
 .task-split .task-time-range { display: grid; gap: 10px; }
 .task-split input[type="datetime-local"] { width: 100%; box-sizing: border-box; }
+
+.planned-task-row .planned-task-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.day-smart-merge { margin-top: 12px; padding: 10px; border: 1px solid rgba(205,180,219,.2); border-radius: 11px; background: rgba(205,180,219,.045); }
+.day-smart-merge__heading { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #dcc8e7; font-size: 9px; }
+.day-smart-merge__heading span { margin-left: auto; color: var(--muted); font-size: 8px; }
+.day-smart-merge > p { margin: 6px 0 9px; color: var(--muted); font-size: 8.5px; line-height: 1.5; }
+.day-smart-merge__suggestion { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.day-smart-merge__suggestion:last-child { padding-bottom: 0; }
+.day-smart-merge__suggestion > button { flex: 0 0 auto; }
+.day-smart-merge__copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.day-smart-merge__copy > strong { display: flex; align-items: center; gap: 5px; font-size: 9px; }
+.day-smart-merge__copy i { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.day-smart-merge__copy strong span { color: var(--muted); font-size: 8px; font-variant-numeric: tabular-nums; }
+.day-smart-merge__copy ul { margin: 5px 0; padding-left: 12px; color: var(--muted); font-size: 8.5px; line-height: 1.5; }
+.day-smart-merge__copy small { display: block; color: #dcc8e7; font-size: 8px; line-height: 1.5; }
+.day-smart-merge button:disabled { opacity: .45; cursor: default; }
+
+.convex-sync-settings { display: flex; flex-direction: column; gap: 12px; }
+.convex-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
+.convex-field input { width: 100%; min-width: 0; }
+.convex-frequency, .convex-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.convex-frequency button { flex: none; min-height: 30px; padding: 0 9px; }
+.convex-sync-settings .settings-note { overflow-wrap: anywhere; }
+
+.convex-sync-settings .settings-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.convex-field input { min-height: 36px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); padding: 8px 10px; font-size: 11px; }

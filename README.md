@@ -15,6 +15,7 @@ The interface is available in Ukrainian and English.
 - Per-day `.ics` calendar export for manual import into any calendar
 - Tray controls, autostart, reminders, custom sounds, and desktop-transparent UI
 - Local SQLite storage; the tracker works offline
+- Optional scheduled Convex uploads and read-only access for other apps ([setup guide](docs/convex-sync.md))
 
 ## Tech stack
 

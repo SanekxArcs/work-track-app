@@ -6,6 +6,7 @@ import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
 import { dayIntervals, formatClock, formatDuration, intervalDuration, overlapDuration, taskDuration, unionDuration } from '../lib/time'
 import { dayPlannedEndAt, dayStartedAt, workdayLunchAllowanceMs, workdayOvertimeMs, workdayPlannedDurationMs } from '@shared/workday'
+import { suggestTaskMerges } from '@shared/task-merge-suggestions'
 import { localDateKey, localDayBounds, localDaysBefore } from '@shared/local-date'
 import { AnimatedDuration, AnimatedNumber, AnimatedText, Collapse, ease, StackCollapse } from './Animated'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -120,7 +121,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       setHistoricalSnapshot(null)
       return
     }
-    void window.workBuddy.getDaySnapshot(selectedDate).then(setHistoricalSnapshot).catch(() => undefined)
+    let cancelled = false
+    void window.workBuddy.getDaySnapshot(selectedDate).then((day) => { if (!cancelled) setHistoricalSnapshot(day) }).catch(() => undefined)
+    return () => { cancelled = true }
   }, [isHistorical, selectedDate, snapshot])
 
   const reportSnapshot = isHistorical && historicalSnapshot ? historicalSnapshot : snapshot
@@ -158,7 +161,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
     : overtimeDay?.overtimeMs ?? 0
-  const canMergeTasks = tasks.length > 1
+  const dayReady = !isHistorical || Boolean(historicalSnapshot && localDateKey(historicalSnapshot.now) === selectedDate)
+  const canMergeTasks = dayReady && tasks.length > 1
+  const mergeSuggestions = dayReady ? suggestTaskMerges(tasks).filter((group) => reportSnapshot.projects.some((project) => project.id === group.projectId)) : []
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
   const canContinueDay = Boolean(snapshot.workday && snapshot.workday.endedAt !== null && snapshot.workday.startedAt >= todayStart)
   const canResetDay = !isHistorical && Boolean(snapshot.workday && (snapshot.workday.endedAt === null || snapshot.workday.startedAt >= todayStart))
@@ -183,9 +188,9 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
     setMergeError('')
   }
 
-  const mergeTasks = async (): Promise<void> => {
-    const [targetId, ...sourceIds] = mergeTaskIds
-    if (!targetId || !sourceIds.length) return
+  const mergeTasks = async (ids = mergeTaskIds): Promise<void> => {
+    const [targetId, ...sourceIds] = ids
+    if (mergeBusy || !dayReady || !targetId || !sourceIds.length) return
     setMergeBusy(true)
     setMergeError('')
     try {
@@ -324,7 +329,23 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       {hasDayDetails && <RestSummary snapshot={reportSnapshot} now={reportNow} t={t} onSnapshot={onSnapshot} allowActions={!isHistorical} />}
 
       {tasks.length > 0 && <section className="panel day-tasks-panel">
-        <div className="section-heading"><div><span className="eyebrow">{t('tasksEyebrow')}</span><h3>{isHistorical ? t('dayTasks') : t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        <div className="section-heading"><div><span className="eyebrow">{t('tasksEyebrow')}</span><h3>{isHistorical ? t('dayTasks') : t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" disabled={mergeBusy} onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        {!mergeMode && mergeSuggestions.length > 0 && <div className="day-smart-merge">
+          <div className="day-smart-merge__heading"><Sparkles size={12} /><strong>{t('smartMerge')}</strong><span>{t('smartMergeReason')}</span></div>
+          <p>{t('smartMergeHint')}</p>
+          {mergeSuggestions.map(({ projectId, tasks: suggested }) => {
+            const project = reportSnapshot.projects.find((item) => item.id === projectId)!
+            return <div className="day-smart-merge__suggestion" key={projectId}>
+              <div className="day-smart-merge__copy">
+                <strong><i style={{ background: project.color }} />{project.name}<span>{suggested.length}</span></strong>
+                <ul>{suggested.map((task) => <li key={task.id}>{taskLabel(task, t)}</li>)}</ul>
+                <small>{t('smartMergeKeeps')} {taskLabel(suggested[0], t)}</small>
+              </div>
+              <button type="button" className="day-merge-toggle" disabled={mergeBusy} aria-label={`${t('mergeTasks')}: ${project.name} (${suggested.length})`} onClick={() => void mergeTasks(suggested.map((task) => task.id))}><GitBranch size={12} />{t('mergeTasks')}</button>
+            </div>
+          })}
+        </div>}
+        {!mergeMode && mergeError && <p className="form-error" role="alert">{mergeError}</p>}
         <Collapse open={mergeMode}><div className="day-merge-controls"><p>{t('mergeTasksHint')}</p><Collapse open={Boolean(mergeError)}><small>{mergeError}</small></Collapse><div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div></Collapse>
         <div className="day-task-list">
           {tasks.map((task) => {

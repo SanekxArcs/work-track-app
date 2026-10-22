@@ -100,7 +100,7 @@ Data: ${JSON.stringify(work)}`
     return this.generate(snapshot.settings.ai.model, prompt, false, voice)
   }
 
-  async interpretVoiceTask(voice: VoiceInput, taskId?: string): Promise<VoiceTaskDraft> {
+  async interpretVoiceTask(voice: VoiceInput, taskId?: string, planned = false): Promise<VoiceTaskDraft> {
     const snapshot = this.database.getSnapshot()
     const task = taskId ? snapshot.tasks.find((item) => item.id === taskId) : undefined
     const language = snapshot.settings.locale === 'uk' ? 'Ukrainian' : 'English'
@@ -112,11 +112,15 @@ Data: ${JSON.stringify(work)}`
     const prompt = `You are the voice-command parser for a personal time tracker. Listen to the short voice note and reply only as JSON.
 The user interface language is ${language}. Current task fields: ${JSON.stringify(current)}.
 Known project names: ${JSON.stringify(projects)}.
-Interpret only details actually spoken. The tracker has no task name or tags. For a field the user did not specify, return null. startTime and endTime must be HH:MM in 24-hour format or null. Do not infer planned tasks.
+Interpret only details actually spoken. ${planned ? `This is a PLANNED task. The user normally says the project first, then the task description.
+Put only the task description in notes, preserving all spoken details except the project assignment and reminder scheduling instructions. Never repeat the project or the full transcript in notes.
+A bare known project name at the beginning identifies the project. A new project must be explicitly identified as a project.
+Put an explicitly spoken reminder/appointment clock time in startTime (HH:MM, 24-hour); endTime must be null. Understand Ukrainian, Russian, Polish and English spoken times (for example, "о п'ятнадцятій тридцять" means "15:30"). A duration such as "задача на дві години" is not a clock time. Do not invent a reminder when no clock time was spoken. Keep durations and other task details in notes.` : 'The tracker has no task name or tags.'} For a field the user did not specify, return null. startTime and endTime must be HH:MM in 24-hour format or null. ${planned ? '' : 'Do not infer planned tasks.'}
 For projectName: return the exact known project name when it clearly matches one. If the user explicitly names a new project, return that name. Otherwise return null.
 JSON schema: {"transcript":"string","projectName":"string|null","notes":"string|null","startTime":"HH:MM|null","endTime":"HH:MM|null"}`
     const raw = await this.generate(snapshot.settings.ai.model, prompt, true, voice)
     const result = parseJson<{ transcript?: string; projectName?: string | null; notes?: string | null; startTime?: string | null; endTime?: string | null }>(raw)
+    if (planned && !result.transcript?.trim()) throw new Error('Voice note contains no text')
     const projectName = result.projectName?.trim() || null
     const matched = projectName ? snapshot.projects.find((project) => project.name.localeCompare(projectName, undefined, { sensitivity: 'base' }) === 0) : undefined
     const validTime = (value: string | null | undefined): string | null => value && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : null

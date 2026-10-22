@@ -352,6 +352,9 @@ export interface ExtensionServerStatus {
 }
 
 export interface WorkBuddyApi {
+  getConvexSyncStatus: () => Promise<import('./convex-sync').ConvexSyncStatus>
+  configureConvexSync: (config: import('./convex-sync').ConvexSyncConfig, key?: string) => Promise<import('./convex-sync').ConvexSyncStatus>
+  syncConvexNow: () => Promise<import('./convex-sync').ConvexSyncStatus>
   getAppVersion: () => Promise<string>
   getSnapshot: () => Promise<AppSnapshot>
   getHistory: (days?: number) => Promise<HistoryDay[]>
@@ -400,6 +403,7 @@ export interface WorkBuddyApi {
   exportRangeCalendar: (from: string, to: string) => Promise<{ path: string } | null>
   suggestTask: (taskId: string) => Promise<AiTaskSuggestion>
   interpretVoiceTask: (input: VoiceInput, taskId?: string) => Promise<VoiceTaskDraft>
+  interpretPlannedVoice: (input: VoiceInput) => Promise<VoiceTaskDraft>
   transcribeVoice: (input: VoiceInput) => Promise<string>
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
