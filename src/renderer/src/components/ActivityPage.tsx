@@ -1,3 +1,5 @@
+import { ActivityLearning } from './ActivityLearning'
+import { ActivityWorkSuggestions } from './ActivityWorkSuggestions'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronLeft,
@@ -24,7 +26,7 @@ import { CustomSelect } from './CustomSelect'
 import { ConfirmDialog } from './ConfirmDialog'
 
 type Preview = Awaited<ReturnType<Window['workBuddy']['previewActivityRecap']>>
-export function ActivityPage({ snapshot }: { snapshot: AppSnapshot }): React.JSX.Element {
+export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; onSnapshot:(snapshot:AppSnapshot)=>void }): React.JSX.Element {
   const uk = snapshot.settings.locale === 'uk',
     l = (en: string, ua: string) => (uk ? ua : en)
   const [groupBy, setGroupBy] = useState<'app' | 'project'>('app')
@@ -203,6 +205,7 @@ export function ActivityPage({ snapshot }: { snapshot: AppSnapshot }): React.JSX
           </button>
         </div>
       )}
+      {data && <ActivityLearning key={day} data={data} snapshot={manual} reload={()=>load()}/>}
       {settingsOpen && config && (
         <section className="activity-card activity-preferences">
           <h3>{l('Recording & privacy', 'Запис і приватність')}</h3>
@@ -490,6 +493,7 @@ export function ActivityPage({ snapshot }: { snapshot: AppSnapshot }): React.JSX
               ))}
             </details>
           )}
+          {data&&<ActivityWorkSuggestions data={data} snapshot={manual} onRecorded={async result=>{onSnapshot(result);setSummary('');setPreview(undefined);await load()}}/>}
           <section className="activity-card activity-timeline">
             <div className="activity-section-title">
               <h3>{l('Evidence timeline', 'Хронологія спостережень')}</h3>

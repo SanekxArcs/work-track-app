@@ -54,6 +54,11 @@ export interface ActivityDay {
   status: ActivityStatus
   assignments: ActivityAssignment[]
   rules: import('./activity-review').ActivityRule[]
+  projectLinks?: import('./activity-learning').ActivityProjectLink[]
+  matching?: import('./activity-matching').ActivityMatchingResult
+  matchDecisions?: import('./activity-matching').ActivityMatchDecision[]
+  dailyNote?: string
+  reviewStatus?: {reviewedAt:number|null;current:boolean}
   recap?: ActivityRecap
   cloudFetchedAt: number | null
 }
@@ -99,6 +104,10 @@ export interface ActivityReport {
 }
 export function validActivityId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value)
+}
+// Browser tracker IDs include a colon before their calendar-day suffix.
+export function validActivityRecordId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_:-]{1,160}$/.test(value)
 }
 export function validActivityDay(value: unknown): value is string {
   if (typeof value !== 'string') return false
@@ -155,7 +164,7 @@ export function validateActivityEnvelope(raw: unknown, now = Date.now()): Activi
   const records = data.records.map((r): ActivityRecord => {
     if (
       !r ||
-      !validActivityId(r.id) ||
+      !validActivityRecordId(r.id) ||
       ids.has(r.id) ||
       r.sourceId !== data.sourceId ||
       r.deviceId !== data.deviceId ||

@@ -1,0 +1,125 @@
+const {_electron}=require('../../tabs-manager/node_modules/playwright')
+const {mkdtempSync,writeFileSync,mkdirSync}=require('node:fs')
+const {execFileSync}=require('node:child_process')
+const {tmpdir}=require('node:os'),path=require('node:path'),assert=require('node:assert/strict')
+const root=path.resolve(__dirname,'..'),profile=mkdtempSync(path.join(tmpdir(),'work-buddy-window-')),output=path.join(root,'.artifacts/window-modes')
+mkdirSync(output,{recursive:true})
+const bootstrap=path.join(profile,'bootstrap.cjs')
+writeFileSync(bootstrap,`const {app}=require('electron');app.setLoginItemSettings=()=>{};app.setPath('userData',${JSON.stringify(profile)});app.whenReady().then(()=>{const {screen}=require('electron');const cursor=screen.getCursorScreenPoint;screen.getCursorScreenPoint=()=>globalThis.__cursor??cursor()});require(${JSON.stringify(path.join(root,'out/main/index.js'))});`)
+;(async()=>{
+ const electron=await _electron.launch({executablePath:path.join(root,'node_modules/electron/dist/electron.exe'),args:[bootstrap],env:{...process.env,ELECTRON_ENABLE_LOGGING:'0'}})
+ try{
+ const page=await electron.firstWindow();page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.waitForLoadState('domcontentloaded')
+ const handle=await electron.browserWindow(page),bounds=()=>handle.evaluate(w=>w.getBounds())
+ const hwnd=await handle.evaluate(w=>w.getNativeWindowHandle().readBigUInt64LE().toString())
+ const region=()=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-File',path.join(root,'scripts/inspect-window-region.ps1'),'-WindowHandle',hwnd],{encoding:'utf8',windowsHide:true}))
+ const area=await electron.evaluate(({screen})=>screen.getPrimaryDisplay().workArea)
+ await electron.evaluate((_,point)=>{globalThis.__cursor=point},{x:area.x+area.width/2,y:area.y+30})
+ await page.evaluate(async()=>{const s=await window.workBuddy.getSnapshot();await window.workBuddy.updateSettings({...s.settings,locale:'en',notchEnabled:true});await window.workBuddy.startWorkday();await window.workBuddy.startTask({mode:'parallel'})})
+ console.log('Checking collapsed contour');await page.getByRole('button',{name:'Tuck into notch',exact:true}).click()
+ await page.locator('.notch[data-notch-state=collapsed]').waitFor();assert.equal(await page.locator('.notch-pill-row .notch-drag-handle').count(),2)
+ await page.waitForFunction(()=>document.querySelector('.notch')?.getBoundingClientRect().height<31)
+ const firstBounds=await bounds()
+ await electron.evaluate((_,point)=>{globalThis.__cursor=point},{x:firstBounds.x+firstBounds.width/2,y:firstBounds.y+15})
+ await page.evaluate(()=>window.workBuddy.dragNotch('start'))
+ await electron.evaluate((_,point)=>{globalThis.__cursor=point},{x:area.x+area.width*.25,y:area.y+15})
+ await page.evaluate(async()=>{await window.workBuddy.dragNotch('move');await window.workBuddy.dragNotch('end')})
+ let r=region();assert.equal(r.kind,3);assert.equal(r.bottomCorner,false);assert.equal(r.corner,true);assert.equal(r.middle,true)
+ assert.equal(await handle.evaluate(w=>w.hasShadow()),false)
+ const initial=await bounds();assert.equal(initial.width,264);assert.ok(initial.height>=30)
+ console.log('Checking open notch');await page.locator('.notch-pill').dispatchEvent('click');await page.locator('.notch--open').waitFor()
+ await page.waitForFunction(()=>document.querySelector('.notch--open')?.getBoundingClientRect().width>420)
+ await page.locator('.brand-lockup').dispatchEvent('click');assert.equal(await page.locator('.notch--open').count(),1,'Header clicks must stay in notch mode')
+ assert.equal(await page.getByRole('button',{name:'Exit notch mode',exact:true}).count(),1)
+ assert.equal(await page.locator('.app-header .notch-drag-handle').count(),1,'Expanded view has only one grip')
+ r=region();assert.equal(r.material,0,'The transparent UI must never enable native acrylic')
+ const task=page.locator('.task-card').first();await task.waitFor();await task.dblclick()
+ await page.locator('.modal-sheet').waitFor();assert.equal(await page.locator('.notch--open').count(),1,'Editor stays within notch mode')
+ await page.locator('.modal-header button').click();await page.locator('.modal-sheet').waitFor({state:'hidden'})
+ await page.screenshot({path:path.join(output,'notch-open.png')})
+ const composite=await electron.evaluate(async({BrowserWindow,desktopCapturer,screen},output)=>{
+   const win=BrowserWindow.getAllWindows()[0],b=win.getBounds(),display=screen.getDisplayMatching(b)
+   const underlay=new BrowserWindow({x:b.x-10,y:b.y,width:b.width+20,height:b.height+20,frame:false,show:false,skipTaskbar:true,hasShadow:false,alwaysOnTop:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}})
+   try{
+     await underlay.loadURL('data:text/html,<body style="margin:0;height:100vh;background:repeating-linear-gradient(90deg,%23e555da 0 16px,%23659cf4 16px 32px)"></body>')
+     underlay.showInactive();win.moveTop();win.focus();win.emit('focus')
+     await new Promise(resolve=>setTimeout(resolve,250))
+     const sources=await desktopCapturer.getSources({types:['screen'],thumbnailSize:{width:Math.round(display.bounds.width*display.scaleFactor),height:Math.round(display.bounds.height*display.scaleFactor)}})
+     const source=sources.find(s=>s.display_id===String(display.id)),scale=source.thumbnail.getSize().width/display.bounds.width
+     const crop=source.thumbnail.crop({x:Math.round((b.x-display.bounds.x)*scale),y:Math.round((b.y-display.bounds.y)*scale),width:Math.round(b.width*scale),height:Math.round(b.height*scale)})
+     const png=crop.toPNG().toString('base64')
+     const bitmap=crop.toBitmap(),size=crop.getSize(),offset=((size.height-1)*size.width)*4
+     return {corner:[...bitmap.subarray(offset,offset+3)],size,png}
+   }finally{underlay.destroy();win.moveTop()}
+ },path.join(output,'native-rounded-corner.png'))
+ writeFileSync(path.join(output,'native-rounded-corner.png'),Buffer.from(composite.png,'base64'))
+ assert.ok(Math.max(...composite.corner)>150,'The native rounded corner must show the bright underlay, not a dark rectangular backing')
+
+ console.log('Checking collapse and exit compositing')
+ const originalBounds=await bounds()
+ const mainId=await handle.evaluate(w=>w.id)
+ await electron.evaluate(async({BrowserWindow},args)=>{
+  const main=BrowserWindow.fromId(args.id)
+  const underlay=new BrowserWindow({x:args.bounds.x-10,y:args.area.y,width:args.bounds.width+20,height:args.area.height,frame:false,show:false,skipTaskbar:true,hasShadow:false,alwaysOnTop:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}})
+  await underlay.loadURL('data:text/html,<body style="margin:0;height:100vh;background:repeating-linear-gradient(90deg,%23e555da 0 16px,%23659cf4 16px 32px)"></body>')
+  globalThis.__backdropTestUnderlay=underlay;underlay.showInactive();main.moveTop();main.emit('focus')
+ },{id:mainId,bounds:originalBounds,area})
+ const capture=async(name,rect,point)=>{
+  const result=await electron.evaluate(async({desktopCapturer,screen},args)=>{
+   const display=screen.getDisplayMatching(args.rect),sources=await desktopCapturer.getSources({types:['screen'],thumbnailSize:{width:Math.round(display.bounds.width*display.scaleFactor),height:Math.round(display.bounds.height*display.scaleFactor)}})
+   const source=sources.find(s=>s.display_id===String(display.id)),scale=source.thumbnail.getSize().width/display.bounds.width
+   const image=source.thumbnail.crop({x:Math.round((args.rect.x-display.bounds.x)*scale),y:Math.round((args.rect.y-display.bounds.y)*scale),width:Math.round(args.rect.width*scale),height:Math.round(args.rect.height*scale)})
+   const size=image.getSize(),offset=(Math.min(size.height-1,Math.round(args.point.y*scale))*size.width+Math.min(size.width-1,Math.round(args.point.x*scale)))*4
+   return {png:image.toPNG().toString('base64'),pixel:[...image.toBitmap().subarray(offset,offset+3)]}
+  },{rect,point})
+  writeFileSync(path.join(output,name+'.png'),Buffer.from(result.png,'base64'))
+  assert.ok(result.pixel[1]<210&&Math.max(...result.pixel)>100,'Expected the colored underlying desktop, not a white/gray/black window backing: '+JSON.stringify(result.pixel))
+ }
+ const backdropVisible=()=>electron.evaluate(({BaseWindow})=>BaseWindow.getAllWindows().some(w=>w.getTitle()==='Work Buddy notch backdrop'&&w.isVisible()))
+ const waitOpenSurface=async()=>{await page.waitForFunction(()=>{const r=document.querySelector('.notch--open')?.getBoundingClientRect();return r&&r.width>420&&Math.abs(r.height-window.innerHeight)<1});assert.equal(await backdropVisible(),false,'No auxiliary blur window should exist')}
+ await waitOpenSurface()
+ await page.evaluate(()=>document.querySelector('.notch').dispatchEvent(new MouseEvent('mouseout',{bubbles:true,relatedTarget:document.body})))
+ await page.waitForFunction(()=>{const r=document.querySelector('.notch')?.getBoundingClientRect();return r&&r.height<window.innerHeight-80&&r.height>35})
+ assert.equal(await backdropVisible(),false,'Blur is hidden before the closing animation')
+ await capture('collapse-without-backdrop-leak',originalBounds,{x:originalBounds.width/2,y:originalBounds.height-20})
+ await page.locator('.notch[data-notch-state=collapsed]').waitFor()
+ for(let i=0;i<3;i++){
+  await page.locator('.notch-pill').dispatchEvent('click');await page.locator('.notch--open').waitFor();await waitOpenSurface()
+  await page.getByRole('button',{name:'Exit notch mode',exact:true}).click();await page.locator('.app-shell--notch').waitFor({state:'hidden'})
+  assert.equal(await backdropVisible(),false)
+  assert.equal(region().material,0,'Leaving notch mode cannot change the UI backdrop material')
+  await capture('exit-with-transparent-background-'+i,await bounds(),{x:2,y:80})
+  await page.getByRole('button',{name:'Tuck into notch',exact:true}).click();await page.locator('.notch[data-notch-state=collapsed]').waitFor()
+ }
+ await page.locator('.notch-pill').dispatchEvent('click');await page.locator('.notch--open').waitFor();await waitOpenSurface()
+ await electron.evaluate(()=>{globalThis.__backdropTestUnderlay.destroy();globalThis.__backdropTestUnderlay=null})
+
+ // Exercise the main-process cursor-driven drag without moving the user's actual pointer.
+ let b=await bounds();await electron.evaluate((_,point)=>{globalThis.__cursor=point},{x:b.x+b.width/2,y:b.y+20})
+ await page.evaluate(()=>window.workBuddy.dragNotch('start'))
+ await electron.evaluate((_,point)=>{globalThis.__cursor=point},{x:area.x+area.width*.7,y:area.y+area.height-10})
+ await page.evaluate(async()=>{await window.workBuddy.dragNotch('move');await window.workBuddy.dragNotch('end')})
+ await page.locator('.app-shell--notch-bottom').waitFor();await waitOpenSurface();b=await bounds();assert.equal(b.y+b.height,area.y+area.height)
+ await page.evaluate(()=>document.querySelector('.notch').dispatchEvent(new MouseEvent('mouseout',{bubbles:true,relatedTarget:document.body})))
+ await page.locator('.notch[data-notch-state=collapsed]').waitFor();await page.waitForFunction(()=>document.querySelector('.notch')?.getBoundingClientRect().height<31)
+ b=await bounds();assert.equal(b.y+b.height,area.y+area.height);assert.ok(b.height>=30)
+ r=region();assert.equal(r.corner,false);assert.equal(r.bottomCorner,true)
+ await page.screenshot({path:path.join(output,'notch-bottom.png')})
+ await page.locator('.notch-pill').dispatchEvent('click');await page.locator('.notch--open').waitFor()
+ await page.getByRole('button',{name:'Collapse to screen edge',exact:true}).click();await page.locator('.dock-timer').waitFor()
+ b=await bounds();assert.equal(b.width,104);assert.equal(b.height,46)
+ await page.locator('.dock-timer').click();await page.locator('.app-header').waitFor()
+ await page.getByRole('button',{name:'Tuck into notch',exact:true}).click();await page.locator('.app-shell--notch-bottom').waitFor()
+ await page.locator('.notch-pill').dispatchEvent('click');await page.locator('.notch--open').waitFor()
+ await page.getByRole('button',{name:'Exit notch mode',exact:true}).click();await page.locator('.app-shell--notch').waitFor({state:'hidden'})
+ for(let i=0;i<3;i++){
+  await handle.evaluate((w,area)=>w.setPosition(area.x+Math.round(area.width/2)-215,area.y+150,false),area)
+  await page.getByRole('button',{name:'Collapse to screen edge',exact:true}).click();await page.locator('.dock-timer').waitFor()
+  b=await bounds();assert.equal(b.width,104);assert.equal(b.height,46);assert.ok(b.x===area.x||b.x+b.width===area.x+area.width)
+  assert.equal(await page.locator('.dock-open').count(),0)
+  await page.locator('.dock-timer').click();await page.locator('.app-header').waitFor();assert.equal((await bounds()).width,430)
+ }
+ assert.deepEqual(errors,[])
+ console.log(JSON.stringify({windowModes:'passed',twoHandles:true,bottomAnchoring:true,nativeHitRegion:true,blurLayerRemoved:true,editorKeepsMode:true,dockFromCenter:true,profileIsolated:true,screenshots:output}))
+ }finally{await electron.close()}
+})().catch(error=>{console.error(error);process.exitCode=1})

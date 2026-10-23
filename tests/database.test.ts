@@ -19,13 +19,13 @@ test('notch positions stay independent for each monitor and survive a restart', 
   try {
     database.setNotchPlacement({ displayId: 1, ratio: 0.25 })
     database.setNotchPlacement({ displayId: 2, ratio: 0.75 })
-    database.setNotchPlacement({ displayId: 3, ratio: 0.6 })
+    database.setNotchPlacement({ displayId: 3, ratio: 0.6,edge:'bottom' })
     database.setNotchPlacement({ displayId: 2, ratio: 0.8 })
     database.close()
     database = new WorkBuddyDatabase(path)
     assert.deepEqual(database.getNotchPlacement(1), { displayId: 1, ratio: 0.25 })
     assert.deepEqual(database.getNotchPlacement(2), { displayId: 2, ratio: 0.8 })
-    assert.deepEqual(database.getNotchPlacement(3), { displayId: 3, ratio: 0.6 })
+    assert.deepEqual(database.getNotchPlacement(3), { displayId: 3, ratio: 0.6,edge:'bottom' })
     assert.equal(database.getNotchPlacement(4), null)
   } finally {
     database.close()

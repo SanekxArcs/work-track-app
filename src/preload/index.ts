@@ -3,6 +3,8 @@ import { channels } from '../shared/channels'
 import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
+  activityLearning:(action,input)=>ipcRenderer.invoke(channels.activityLearning,action,input),
+  acceptActivityDrafts: (input) => ipcRenderer.invoke(channels.activityAcceptDrafts,input),
   getActivityDay: (day) => ipcRenderer.invoke(channels.activityDay,day),
   configureActivity: (config,writeKey,readKey) => ipcRenderer.invoke(channels.activityConfigure,config,writeKey,readKey),
   importActivityConnection: () => ipcRenderer.invoke(channels.activityImport),
@@ -75,6 +77,8 @@ const api: WorkBuddyApi = {
   notify: (input: NotificationInput) => ipcRenderer.invoke(channels.notify, input),
   setWindowMode: (mode, rows) => ipcRenderer.invoke(channels.windowMode, mode, rows),
   dragNotch: (phase) => ipcRenderer.invoke(channels.notchDrag, phase),
+  setNotchSurface:(rect)=>ipcRenderer.invoke(channels.notchSurface,rect),
+  onNotchEdge:(callback)=>{const listener=(_event:Electron.IpcRendererEvent,edge:'top'|'bottom'):void=>callback(edge);ipcRenderer.on(channels.notchEdge,listener);return ()=>ipcRenderer.removeListener(channels.notchEdge,listener)},
   onNotchTravel: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, hidden: boolean): void => callback(hidden)
     ipcRenderer.on(channels.notchTravel, listener)

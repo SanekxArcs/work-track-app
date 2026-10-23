@@ -1,3 +1,4 @@
+import { normalizeActivityRanges, type ActivityTaskImport } from '../shared/activity-drafts'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { dailyRestBalance, restElapsed, restRemaining } from '../shared/rest'
@@ -524,6 +525,11 @@ export class WorkBuddyDatabase {
         ended_at INTEGER
       );
 
+      CREATE TABLE IF NOT EXISTS activity_task_imports (
+        source_key TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS app_settings (
         id INTEGER PRIMARY KEY CHECK(id = 1),
         json TEXT NOT NULL
@@ -644,7 +650,7 @@ export class WorkBuddyDatabase {
   }
 
   /** Where the user dragged the notch to: a display and the pill centre as a share of its width. */
-  getNotchPlacement(displayId?: number): { displayId: number; ratio: number } | null {
+  getNotchPlacement(displayId?: number): { displayId: number; ratio: number; edge?:'top'|'bottom' } | null {
     const key = displayId === undefined ? 'notch_placement' : `notch_placement:${displayId}`
     let row = this.db.prepare('SELECT value FROM ui_state WHERE key = ?').get(key) as { value: string } | undefined
     if (!row && displayId !== undefined) {
@@ -654,14 +660,14 @@ export class WorkBuddyDatabase {
     try {
       const value = row ? JSON.parse(row.value) as unknown : null
       return isRecord(value) && Number.isFinite(value.displayId) && Number.isFinite(value.ratio) && (value.ratio as number) >= 0 && (value.ratio as number) <= 1
-        ? { displayId: value.displayId as number, ratio: value.ratio as number }
+        ? { displayId: value.displayId as number, ratio: value.ratio as number, ...(value.edge==='bottom'||value.edge==='top'?{edge:value.edge}:{}) }
         : null
     } catch {
       return null
     }
   }
 
-  setNotchPlacement(placement: { displayId: number; ratio: number }): void {
+  setNotchPlacement(placement: { displayId: number; ratio: number; edge?:'top'|'bottom' }): void {
     this.db.prepare('INSERT INTO ui_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`notch_placement:${placement.displayId}`, JSON.stringify(placement))
   }
 
@@ -1440,6 +1446,41 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
+  hasActivityImport(key:string):boolean {
+    return Boolean(this.db.prepare('SELECT task_id FROM activity_task_imports WHERE source_key=?').get(key))
+  }
+
+  /** Import only explicitly reviewed, closed ranges. Never starts a timer or workday. */
+  recordActivityTasks(day:string,entries:ActivityTaskImport[]):{snapshot:AppSnapshot;taskIds:string[];created:number} {
+    const now=Date.now(),[dayStart,dayEnd]=localDayBounds(localDateTimestamp(day))
+    if(!Array.isArray(entries)||!entries.length||entries.length>50)throw new Error('Review between 1 and 50 entries')
+    const keys=new Set<string>()
+    const clean=entries.map(entry=>{
+      if(!entry||typeof entry.key!=='string'||!/^[a-f0-9]{64}$/.test(entry.key)||keys.has(entry.key)||typeof entry.notes!=='string'||!entry.notes.trim()||entry.notes.length>2000||!Array.isArray(entry.intervals)||!entry.intervals.length||entry.intervals.length>2000)throw new Error('Invalid reviewed work entry')
+      keys.add(entry.key)
+      if(entry.projectId!==null&&!this.db.prepare('SELECT id FROM projects WHERE id=? AND archived=0').get(entry.projectId))throw new Error('Choose an existing active project')
+      const intervals=normalizeActivityRanges(entry.intervals)
+      if(intervals.some(r=>r.start<dayStart||r.end>dayEnd||r.end>now))throw new Error('Work ranges must be in the reviewed day and in the past')
+      return {...entry,notes:entry.notes.trim(),intervals}
+    })
+    const taskIds:string[]=[],createdIds:string[]=[]
+    this.transaction(()=>{
+      const overlap=this.db.prepare('SELECT id FROM time_intervals WHERE started_at < ? AND COALESCE(ended_at,?) > ? LIMIT 1')
+      const restOverlap=this.db.prepare('SELECT id FROM rest_intervals WHERE started_at < ? AND COALESCE(ended_at,?) > ? LIMIT 1')
+      for(const entry of clean){
+        const previous=this.db.prepare('SELECT task_id FROM activity_task_imports WHERE source_key=?').get(entry.key) as {task_id:string}|undefined
+        if(previous){taskIds.push(previous.task_id);continue}
+        for(const range of entry.intervals)if(overlap.get(range.end,now,range.start)||restOverlap.get(range.end,now,range.start))throw new Error('Tracked work or a break now overlaps this activity. Refresh and review again.')
+        const id=randomUUID()
+        this.db.prepare("INSERT INTO tasks (id,title,project_id,planned_task_id,notes,tags_json,status,created_at,updated_at) VALUES (?,'',?,NULL,?,'[]','stopped',?,?)").run(id,entry.projectId,entry.notes,entry.intervals[0].start,now)
+        const insert=this.db.prepare('INSERT INTO time_intervals (id,task_id,started_at,ended_at) VALUES (?,?,?,?)')
+        for(const range of entry.intervals)insert.run(randomUUID(),id,range.start,range.end)
+        this.db.prepare('INSERT INTO activity_task_imports VALUES (?,?)').run(entry.key,id)
+        taskIds.push(id);createdIds.push(id)
+      }
+    })
+    return {snapshot:this.getSnapshot(),taskIds,created:createdIds.length}
+  }
   updateTask(input: TaskUpdateInput): AppSnapshot {
     this.normalizeStaleWorkday(Date.now())
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined

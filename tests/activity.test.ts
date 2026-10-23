@@ -305,3 +305,14 @@ test('pausing preserves saved recaps, privacy changes clear them, and invalid ke
     h.cleanup()
   }
 })
+
+test('browser tracker colon-day IDs upload unchanged and can receive project corrections',()=>{
+  const h=harness(),day=localDateKey(base),id='7e8c0022-b616-4594-ae70-23e1a47da248:'+day
+  try{
+    const data=validateActivityEnvelope({schemaVersion:1,sourceId:'browser',deviceId:'pc',kind:'browser',day,capturedAt:Date.now(),retentionDays:30,records:[row(id,0,2000,{sourceId:'browser',kind:'browser',app:'chrome.exe',url:'https://docs.test/'})]})
+    assert.equal(data.records[0].id,id)
+    h.service.assign({recordId:id,projectId:null,excluded:false,note:'Browser context'})
+    assert.equal(h.service.assignments()[0].recordId,id)
+    assert.throws(()=>validateActivityEnvelope({...data,sourceId:'unsafe:source'}))
+  }finally{h.cleanup()}
+})

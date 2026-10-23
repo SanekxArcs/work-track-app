@@ -1,4 +1,6 @@
 export const channels = {
+  activityLearning:'activity:learning',
+  activityAcceptDrafts: 'activity:accept-drafts',
   activityDay: 'activity:day',
   activityConfigure: 'activity:configure',
   activityImport: 'activity:import',
@@ -66,6 +68,8 @@ export const channels = {
   summarizeDay: 'ai:summarize-day',
   notify: 'notification:show',
   windowMode: 'window:mode',
+  notchSurface:'window:notch-surface',
+  notchEdge:'window:notch-edge',
   notchDrag: 'window:notch-drag',
   notchTravel: 'window:notch-travel',
   windowHeight: 'window:height',

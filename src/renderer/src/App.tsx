@@ -1,7 +1,7 @@
 import { ActivityPage } from './components/ActivityPage'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Monitor, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Pin, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
+import { ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Monitor, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
@@ -65,6 +65,9 @@ export default function App(): React.JSX.Element {
   const [compactAnchor, setCompactAnchor] = useState<'top' | 'bottom'>('top')
   const [dockSide, setDockSide] = useState<'left' | 'right' | null>(null)
   const [slideIndex, setSlideIndex] = useState(0)
+  const [notchEdge,setNotchEdge]=useState<'top'|'bottom'>('top')
+  const notchElement=useRef<HTMLDivElement>(null)
+  useEffect(()=>window.workBuddy.onNotchEdge(setNotchEdge),[])
   const [notch, setNotchState] = useState<NotchState | null>(null)
   const [notchTravelHidden, setNotchTravelHidden] = useState(false)
   const notchTravelling = useRef(false)
@@ -74,10 +77,31 @@ export default function App(): React.JSX.Element {
     if (hidden) window.clearTimeout(notchOpenTimer.current)
   }), [])
   const [windowLeaving, setWindowLeaving] = useState(false)
+  useEffect(()=>{
+    if(!notch)return
+    let frame=0,last='',stable=0
+    const update=()=>{
+      frame=0
+      const element=notchElement.current
+      if(element){
+        const r=element.getBoundingClientRect(),style=getComputedStyle(element)
+        const rect={x:r.x,y:r.y,width:r.width,height:r.height,radius:Math.max(parseFloat(style.borderTopLeftRadius)||0,parseFloat(style.borderBottomLeftRadius)||0)}
+        const key=JSON.stringify(rect)
+        if(key!==last){last=key;stable=0;void window.workBuddy.setNotchSurface(rect)}else stable++
+      }else stable++
+      if(stable<8)frame=requestAnimationFrame(update)
+    }
+    const sample=()=>{stable=0;if(!frame)frame=requestAnimationFrame(update)}
+    const observer=new ResizeObserver(sample)
+    if(notchElement.current)observer.observe(notchElement.current)
+    window.addEventListener('resize',sample)
+    sample()
+    return ()=>{cancelAnimationFrame(frame);observer.disconnect();window.removeEventListener('resize',sample)}
+  },[notch,notchEdge,notchTravelHidden,windowLeaving])
   const notchRef = useRef<NotchState | null>(null)
   const notchOpenTimer = useRef<number | undefined>(undefined)
   const notchCloseTimer = useRef<number | undefined>(undefined)
-  const notchDrag = useRef<{ startX: number; moved: boolean; pending: boolean } | null>(null)
+  const notchDrag = useRef<{ startX: number; startY:number; moved: boolean; pending: boolean } | null>(null)
   const notchHoverBlocked = useRef(false)
   const notchHovered = useRef(false)
   const notchCloseFinishing = useRef(false)
@@ -236,16 +260,16 @@ export default function App(): React.JSX.Element {
   }, [compact, compactRows, docked, notch])
 
   useEffect(() => {
-    if (compact || docked || notch) return
+    if (compact || docked || (notch&&notch!=='open')) return
     void window.workBuddy.setWindowEditor(editorOpen)
   }, [compact, docked, notch, editorOpen])
 
-  // Editing from the open notch, or turning the notch look off, leaves it as a normal window.
+  // Only explicitly disabling the notch setting leaves this mode automatically.
   const notchEnabled = snapshot?.settings.notchEnabled ?? false
   useEffect(() => {
-    if (!notch || (notchEnabled && !(editorOpen && notch === 'open'))) return
+    if (!notch || notchEnabled) return
     void window.workBuddy.setWindowMode('expanded').then(() => setNotch(null))
-  }, [notch, notchEnabled, editorOpen])
+  }, [notch, notchEnabled])
 
   // With auto height on, every change in the page's size (a tab switch, a new or edited task,
   // a panel opening) refits the window, after the motion settles. The task editor sizes the
@@ -329,15 +353,16 @@ export default function App(): React.JSX.Element {
     if (editorOpen) return Promise.resolve()
     return switchWindow(async () => {
       resetCompactHover()
-      await window.workBuddy.setWindowMode('notch')
+      const edge=await window.workBuddy.setWindowMode('notch')
+      setNotchEdge(edge==='bottom'?'bottom':'top')
       setCompact(false)
       setDockSide(null)
       setNotch('collapsed')
     })
   }
 
-  /** Keeps the notch open as a normal window that can be moved and resized. */
-  const pinNotch = async (): Promise<void> => {
+  /** Explicitly leaves notch mode for a normal movable window. */
+  const exitNotch = async (): Promise<void> => {
     window.clearTimeout(notchOpenTimer.current)
     window.clearTimeout(notchCloseTimer.current)
     if (notchRef.current === 'open') {
@@ -390,19 +415,19 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  /** Dragging the collapsed pill slides it along the top edge; a click without movement pins it open. */
+  /** Drag the pill to either edge; clicking only expands it within notch mode. */
   const notchPointer = {
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>): void => {
       if (event.button !== 0) return
       event.currentTarget.setPointerCapture(event.pointerId)
       window.clearTimeout(notchOpenTimer.current)
       window.clearTimeout(notchCloseTimer.current)
-      notchDrag.current = { startX: event.screenX, moved: false, pending: false }
+      notchDrag.current = { startX: event.screenX,startY:event.screenY, moved: false, pending: false }
       void window.workBuddy.dragNotch('start')
     },
     onPointerMove: (event: React.PointerEvent<HTMLButtonElement>): void => {
       const drag = notchDrag.current
-      if (!drag || (!drag.moved && Math.abs(event.screenX - drag.startX) < 4) || drag.pending) return
+      if (!drag || (!drag.moved && Math.hypot(event.screenX-drag.startX,event.screenY-drag.startY)<4) || drag.pending) return
       drag.moved = true
       drag.pending = true
       void window.workBuddy.dragNotch('move').finally(() => { drag.pending = false })
@@ -410,17 +435,18 @@ export default function App(): React.JSX.Element {
     onPointerUp: (): void => {
       const drag = notchDrag.current
       notchDrag.current = null
-      if (!drag?.moved) return
+      if(!drag)return
+      void window.workBuddy.dragNotch('end')
+      if (!drag.moved) return
       notchSuppressClick.current = true
       notchHoverBlocked.current = true
-      void window.workBuddy.dragNotch('end')
     },
     onClick: (): void => {
       if (notchSuppressClick.current) {
         notchSuppressClick.current = false
         return
       }
-      void pinNotch()
+      void openNotch()
     }
   }
   const { onPointerUp: endNotchDrag } = notchPointer
@@ -506,7 +532,7 @@ export default function App(): React.JSX.Element {
   const endDay = async (): Promise<void> => {
     const result = await window.workBuddy.endWorkday()
     setSnapshot(result)
-    setTab('day')
+    setTab('activity')
   }
 
   const fitWindowToContent = (): void => {
@@ -531,18 +557,14 @@ export default function App(): React.JSX.Element {
   } as const
 
   if (dockSide) {
-    const DockIcon = dockSide === 'left' ? ArrowRightToLine : ArrowLeftToLine
-    const drag = (
-      <div className="dock-drag drag-region" title={formatDuration(workedMs)}>
-        <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
-        <strong><AnimatedHm ms={workedMs} /></strong>
-      </div>
-    )
-    const open = <button className="dock-open no-drag" onClick={() => void undock()} title={t('dockedOpen')} aria-label={t('dockedOpen')}><DockIcon size={15} /></button>
     return (
       <motion.main className="app-shell app-shell--docked" {...stage} style={{ transformOrigin: dockSide === 'left' ? '0% 50%' : '100% 50%' }}>
         <div className={`dock-pill dock-pill--${dockSide}`}>
-          {dockSide === 'left' ? <>{drag}{open}</> : <>{open}{drag}</>}
+          <div className="dock-grip drag-region" title={t('dockDrag')} />
+          <button className="dock-timer no-drag" onClick={()=>void undock()} title={t('dockedOpen')} aria-label={t('dockedOpen')}>
+            <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
+            <strong><AnimatedHm ms={workedMs}/></strong>
+          </button>
         </div>
       </motion.main>
     )
@@ -550,7 +572,7 @@ export default function App(): React.JSX.Element {
 
   const notchOpen = notch === 'open'
   const appHeader = (
-    <header className={`app-header ${notch ? 'app-header--notch' : 'drag-region'}`} onClick={notch ? (event) => { if (!(event.target as HTMLElement).closest('button')) void pinNotch() } : undefined} title={notch ? t('notchPin') : undefined}>
+    <header className={`app-header ${notch ? 'app-header--notch' : 'drag-region'}`}>
       <div className="brand-lockup">
         <div className="brand-mark"><span /></div>
         <div className="brand-copy">
@@ -565,7 +587,8 @@ export default function App(): React.JSX.Element {
       <div className="window-actions no-drag">
         {notch ? <>
           {notchDragButton}
-          <button className="icon-button icon-button--quiet" onClick={() => void pinNotch()} title={t('notchPin')} aria-label={t('notchPin')}><Pin size={15} /></button>
+          <button className="icon-button icon-button--quiet" onClick={() => void exitNotch()} title={t('notchPin')} aria-label={t('notchPin')}><ArrowDownFromLine size={15} /></button>
+          <button className="icon-button icon-button--quiet" onClick={()=>void dock()} title={t('dockToEdge')} aria-label={t('dockToEdge')}><ArrowRightToLine size={15}/></button>
           <button className="icon-button icon-button--quiet" onClick={() => window.workBuddy.minimizeToTray()} title={t('tray')}><Minus size={15} /></button>
         </> : <>
           {notchEnabled && <button className="icon-button icon-button--quiet" onClick={() => void enterNotch()} title={t('notchMode')} aria-label={t('notchMode')}><ArrowUpToLine size={15} /></button>}
@@ -672,7 +695,7 @@ export default function App(): React.JSX.Element {
 
                 {tab === 'projects' && <ProjectsPage key="projects" snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />}
 
-                {tab === 'activity' && <ActivityPage key="activity" snapshot={snapshot} />}
+                {tab === 'activity' && <ActivityPage key="activity" snapshot={snapshot} onSnapshot={setSnapshot} />}
                 {tab === 'settings' && <SettingsPage key="settings" snapshot={snapshot} t={t} onSnapshot={setSnapshot} />}
               </AnimatePresence>
             </div>
@@ -685,11 +708,27 @@ export default function App(): React.JSX.Element {
     </AnimatePresence>
   )
 
+  const taskEditor=(
+      <TaskEditor
+        open={editorOpen}
+        task={editingTask}
+        intervalId={editingIntervalId}
+        defaultMode={defaultMode}
+        snapshot={snapshot}
+        t={t}
+        onClose={handleEditorClose}
+        onSnapshot={setSnapshot}
+        onSaved={handleEditorSaved}
+      />
+  )
+
   if (notch) {
     // A dark pill hanging from the top edge; hovering grows it into the full view in place.
     return (
-      <motion.main className="app-shell app-shell--notch" {...stage}>
+      <motion.main className={`app-shell app-shell--notch app-shell--notch-${notchEdge}`} {...stage}>
         <motion.div
+          data-notch-state={notch}
+          ref={notchElement}
           className={`notch ${notchOpen ? 'notch--open' : ''} ${notchTravelHidden ? 'notch--travelling' : ''}`}
           onMouseEnter={() => hoverNotch(true)}
           onMouseLeave={() => hoverNotch(false)}
@@ -703,6 +742,7 @@ export default function App(): React.JSX.Element {
               ? <motion.div key="full" className="notch__full" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.08, duration: 0.2 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
                 {appHeader}
                 {expandedView}
+                {taskEditor}
               </motion.div>
               : <motion.div key="pill" className="notch-pill-row" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12, duration: 0.18 } }} exit={{ opacity: 0, transition: { duration: 0.08 } }}>
                 {notchDragButton}
@@ -714,6 +754,7 @@ export default function App(): React.JSX.Element {
                   </motion.span>}
                 </AnimatePresence>
                 </button>
+                {notchDragButton}
               </motion.div>}
           </AnimatePresence>
         </motion.div>
@@ -806,17 +847,7 @@ export default function App(): React.JSX.Element {
       {!compact && <button className="resize-fit-handle no-drag" onDoubleClick={fitWindowToContent} title={t('fitWindowToContent')} aria-label={t('fitWindowToContent')}><span /></button>}
       {!compact && tab !== 'focus' && <div className="resize-corner" aria-hidden="true" />}
 
-      <TaskEditor
-        open={editorOpen}
-        task={editingTask}
-        intervalId={editingIntervalId}
-        defaultMode={defaultMode}
-        snapshot={snapshot}
-        t={t}
-        onClose={handleEditorClose}
-        onSnapshot={setSnapshot}
-        onSaved={handleEditorSaved}
-      />
+      {taskEditor}
     </motion.main>
   )
 }

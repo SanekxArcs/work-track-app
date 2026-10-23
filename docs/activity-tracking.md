@@ -50,4 +50,33 @@ Connection keys cover this existing personal deployment, including its sources; 
 - Built extension verified in isolated Chromium: connection-file import, optional host permission, sanitized upload, deletion and compact connection layout. Existing foreground/browser activity regression also passed.
 - Live Convex verification used synthetic observations only: matching environment files, desktop/browser sources on a shared PC ID, read/write key separation, cleaned readback, and browser-origin uploads/deletions. Test observations were emptied afterward.
 
-Still needs ordinary use: full-day coverage, actual lock/sleep/resume across this machine's Windows configuration, and real AI summary quality. Future stages can add editable activity splits/merges, bidirectional project mapping, suggestion acceptance into manual work entries, and measured optional automatic recording of work.
+Still needs ordinary use: full-day coverage, actual lock/sleep/resume across this machine's Windows configuration, and real AI summary quality. Shared project mapping and AI matching are now available. Fully automatic work recording remains outside this release. Reviewed work recovery is now available as described below.
+
+## Recovering work from activity · next phase
+
+In **PC activity**, open **Recover untracked work**. Suggestions contain active observations outside existing task timers and recorded breaks. The minimum duration can be 30 seconds, 1 minute or 5 minutes. Project suggestions use your explicit correction first, then a remembered browser-project/domain/app rule, then a unique matching Work Buddy project name. Unmatched or ambiguous periods remain unassigned.
+
+Choose one period to review, or select several. You can keep separate drafts, merge them, trim their start/end, or split a draft into independently described work entries. Merging preserves observed gaps; it never turns missing observations or breaks into work. Exact original seconds remain until you edit a clock boundary. Add a description and review the project before choosing **Record reviewed work** and confirming the concrete entries.
+
+Confirmed drafts become ordinary stopped tasks with closed intervals. They appear in the selected day's history and project totals and are included in normal manual-work backups and snapshot sync. Recording a historical day does not start or resume a workday, pause a running task, or alter existing timers. Suggestions are recalculated after recording, and a saved AI recap for that day is invalidated because manual coverage changed.
+
+The final save checks the current source observations and task/break intervals again. Stale or overlapping batches are rejected atomically. A local import journal prevents a repeated submission from creating duplicate tasks. Drafts themselves are temporary review state; closing the app discards unsaved drafts, while the source observations remain.
+
+### Browser HTTP 400 compatibility fix
+
+The browser tracker emits IDs such as `visit-uuid:2026-10-23`. The initial shared validator rejected their colon, although the earlier artificial test IDs used hyphens. The deployed validator now accepts the real record-ID format for uploads, readback and local corrections, while keeping source/device IDs restricted. Browser rejection messages now include the affected day and a safe server reason. Connection keys and recorded titles/addresses are not included in diagnostics. Reload Nested Tab Manager after updating its build and install the new desktop version so browser readback and corrections use the compatible validator too.
+
+Validated with real-format IDs against the live Convex backend, producer-based browser regression coverage, and an isolated built Electron flow that splits a suggestion and confirms two stopped entries with the exact original total duration. No real AI call is needed to generate or review work suggestions.
+
+
+## Shared projects, learning, and end-of-day review
+
+In **PC activity → Project links & learned rules**, refresh shared projects and link a browser folder to an existing Work Buddy project. In Tabs Manager, use **Tracker → Options → Work Buddy connection → Shared project links**. Refresh projects, then choose the Work Buddy project beside a folder. Both screens edit the same Convex mapping. Stable folder/project/profile IDs keep links intact across renames and moves. Stale concurrent edits are rejected; refresh before retrying. Folder labels (including archived flags) are shared, without tabs, URLs, notes, or page content. The project catalog is separate from the activity retention window and is updated when a producer next syncs. Links can be removed in either app. Existing links cached in Work Buddy continue matching offline.
+
+Learned rules stay local to Work Buddy. Each can be edited, disabled, or deleted individually. Supported patterns: exact app name, domain including subdomains, stable browser project ID (optionally scoped to a browser source), and text contained in a window title (optionally restricted to an app). Rules at the same priority that disagree remain ambiguous. Explicit observation corrections take precedence, followed by shared links, browser-project rules, window-title rules, domain rules, app rules, then a unique project-name match. These preferences do not train the model.
+
+The **End-of-day review** card saves a manual daily note and marks a day reviewed. New observations, task edits, rules or mappings make the reviewed badge stale. Ending a workday opens this review page. Marking reviewed is a local checklist action; it does not stop collectors or hide later observations.
+
+**AI project matching** offers settled ambiguous activity outside task timers and breaks. Preview the exact JSON before choosing **Send to Gemini and match**. Saved notes, active project labels, manual task context, and bounded evidence are included. The model can suggest only existing project IDs and known evidence refs; uncertain matches can remain unassigned. Confirm a suggested project or choose another one. Confirmation applies only to that reviewed interval and appears in the work-recovery drafts and recap; it does not create a task. Changed source ranges require a fresh review. Optional remembering creates a visible local rule only when explicitly selected. Use the shared-project editor for a preference that should also appear in Tabs Manager.
+
+Matching results, notes, decisions and review badges are stored locally in the activity database and follow its retention period. They are not included in manual-work backups. AI matching and recaps use the configured Gemini key; no AI request is automatic. Model output is advisory, and real full-day AI quality still needs your test.

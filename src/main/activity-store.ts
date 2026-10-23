@@ -38,22 +38,32 @@ export class ActivityStore {
       } satisfies ActivityConfig)
   }
   get<T>(key: string): T | undefined {
-    const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as { value: string } | undefined
+    const row = this.db
+      .prepare('SELECT value FROM meta WHERE key=?')
+      .get(key) as { value: string } | undefined
     return row ? (JSON.parse(row.value) as T) : undefined
   }
   set(key: string, value: unknown): void {
-    this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run(key, JSON.stringify(value))
+    this.db
+      .prepare('INSERT OR REPLACE INTO meta VALUES (?,?)')
+      .run(key, JSON.stringify(value))
   }
   config(): ActivityConfig {
     return this.get<ActivityConfig>('config')!
   }
   mark(day: string): void {
-    this.db.prepare('INSERT INTO dirty VALUES (?,1) ON CONFLICT(day) DO UPDATE SET revision=revision+1').run(day)
+    this.db
+      .prepare(
+        'INSERT INTO dirty VALUES (?,1) ON CONFLICT(day) DO UPDATE SET revision=revision+1'
+      )
+      .run(day)
   }
   put(day: string, record: ActivityRecord): void {
     this.db.exec('BEGIN')
     try {
-      this.db.prepare('INSERT OR REPLACE INTO intervals VALUES (?,?,?)').run(record.id, day, JSON.stringify(record))
+      this.db
+        .prepare('INSERT OR REPLACE INTO intervals VALUES (?,?,?)')
+        .run(record.id, day, JSON.stringify(record))
       this.mark(day)
       this.db.exec('COMMIT')
     } catch (error) {
@@ -62,25 +72,40 @@ export class ActivityStore {
     }
   }
   local(day: string): ActivityRecord[] {
-    return (this.db.prepare('SELECT body FROM intervals WHERE day=?').all(day) as Array<{ body: string }>).map(
-      (r) => JSON.parse(r.body) as ActivityRecord
-    )
+    return (
+      this.db
+        .prepare('SELECT body FROM intervals WHERE day=?')
+        .all(day) as Array<{ body: string }>
+    ).map((r) => JSON.parse(r.body) as ActivityRecord)
   }
   days(): string[] {
-    return (this.db.prepare('SELECT DISTINCT day FROM intervals ORDER BY day').all() as Array<{ day: string }>).map(
-      (r) => r.day
-    )
+    return (
+      this.db
+        .prepare('SELECT DISTINCT day FROM intervals ORDER BY day')
+        .all() as Array<{ day: string }>
+    ).map((r) => r.day)
   }
   dirty(): Array<{ day: string; revision: number }> {
-    return this.db.prepare('SELECT * FROM dirty ORDER BY day').all() as Array<{ day: string; revision: number }>
+    return this.db.prepare('SELECT * FROM dirty ORDER BY day').all() as Array<{
+      day: string
+      revision: number
+    }>
   }
   ack(day: string, revision: number): void {
-    this.db.prepare('DELETE FROM dirty WHERE day=? AND revision=?').run(day, revision)
+    this.db
+      .prepare('DELETE FROM dirty WHERE day=? AND revision=?')
+      .run(day, revision)
   }
   remote(day: string, deviceId: string): ActivityRecord[] {
-    return (this.db.prepare('SELECT body FROM remote WHERE day=?').all(day) as Array<{ body: string }>).flatMap((r) => {
+    return (
+      this.db.prepare('SELECT body FROM remote WHERE day=?').all(day) as Array<{
+        body: string
+      }>
+    ).flatMap((r) => {
       const env = JSON.parse(r.body) as ActivityEnvelope
-      return env.deviceId === deviceId && env.sourceId !== this.sourceId ? env.records : []
+      return env.deviceId === deviceId && env.sourceId !== this.sourceId
+        ? env.records
+        : []
     })
   }
   cache(day: string, envelopes: ActivityEnvelope[]): void {
@@ -88,7 +113,9 @@ export class ActivityStore {
     try {
       this.db.prepare('DELETE FROM remote WHERE day=?').run(day)
       for (const env of envelopes)
-        this.db.prepare('INSERT OR REPLACE INTO remote VALUES (?,?,?)').run(env.sourceId, day, JSON.stringify(env))
+        this.db
+          .prepare('INSERT OR REPLACE INTO remote VALUES (?,?,?)')
+          .run(env.sourceId, day, JSON.stringify(env))
       this.set('fetched:' + day, Date.now())
       this.db.exec('COMMIT')
     } catch (error) {
@@ -97,33 +124,55 @@ export class ActivityStore {
     }
   }
   recap(day: string): ActivityRecap | undefined {
-    const row = this.db.prepare('SELECT body FROM recaps WHERE day=?').get(day) as { body: string } | undefined
+    const row = this.db
+      .prepare('SELECT body FROM recaps WHERE day=?')
+      .get(day) as { body: string } | undefined
     return row ? JSON.parse(row.body) : undefined
   }
   saveRecap(day: string, recap: ActivityRecap): void {
-    this.db.prepare('INSERT OR REPLACE INTO recaps VALUES (?,?)').run(day, JSON.stringify(recap))
+    this.db
+      .prepare('INSERT OR REPLACE INTO recaps VALUES (?,?)')
+      .run(day, JSON.stringify(recap))
+  }
+  clearMatching(day?: string): void {
+    if (day)
+      this.db.prepare('DELETE FROM meta WHERE key=?').run('matching:' + day)
+    else this.db.prepare("DELETE FROM meta WHERE key LIKE 'matching:%'").run()
   }
   clearRecaps(day?: string): void {
     if (day) this.db.prepare('DELETE FROM recaps WHERE day=?').run(day)
     else this.db.exec('DELETE FROM recaps')
   }
   assign(value: ActivityAssignment): void {
-    this.db.prepare('INSERT OR REPLACE INTO assignments VALUES (?,?)').run(value.recordId, JSON.stringify(value))
+    this.db
+      .prepare('INSERT OR REPLACE INTO assignments VALUES (?,?)')
+      .run(value.recordId, JSON.stringify(value))
   }
   assignments(): ActivityAssignment[] {
-    return (this.db.prepare('SELECT body FROM assignments').all() as Array<{ body: string }>).map((r) =>
-      JSON.parse(r.body)
-    )
+    return (
+      this.db.prepare('SELECT body FROM assignments').all() as Array<{
+        body: string
+      }>
+    ).map((r) => JSON.parse(r.body))
   }
   deleteDay(day: string): void {
-    for (const record of this.local(day)) this.db.prepare('DELETE FROM assignments WHERE recordId=?').run(record.id)
+    for (const prefix of ['matching:', 'decisions:', 'note:', 'review:'])
+      this.db.prepare('DELETE FROM meta WHERE key=?').run(prefix + day)
+    for (const record of this.local(day))
+      this.db.prepare('DELETE FROM assignments WHERE recordId=?').run(record.id)
     this.db.prepare('DELETE FROM recaps WHERE day=?').run(day)
     this.db.prepare('DELETE FROM intervals WHERE day=?').run(day)
     this.mark(day)
   }
   prune(now = Date.now()): void {
-    const cutoff = localDateKey(localDaysBefore(now, this.config().retentionDays - 1))
+    const cutoff = localDateKey(
+      localDaysBefore(now, this.config().retentionDays - 1)
+    )
     for (const day of this.days()) if (day < cutoff) this.deleteDay(day)
+    for (const prefix of ['matching:', 'decisions:', 'note:', 'review:'])
+      this.db
+        .prepare('DELETE FROM meta WHERE key LIKE ? AND substr(key,?)<?')
+        .run(prefix + '%', prefix.length + 1, cutoff)
     this.db.prepare('DELETE FROM remote WHERE day<?').run(cutoff)
     this.db.prepare('DELETE FROM recaps WHERE day<?').run(cutoff)
     // No need to upload expired tombstones: the server applies the same retention window.

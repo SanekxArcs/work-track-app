@@ -11,6 +11,7 @@
 import type * as activity from "../activity.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as projects from "../projects.js";
 import type * as snapshots from "../snapshots.js";
 import type * as validation from "../validation.js";
 
@@ -24,6 +25,7 @@ declare const fullApi: ApiFromModules<{
   activity: typeof activity;
   crons: typeof crons;
   http: typeof http;
+  projects: typeof projects;
   snapshots: typeof snapshots;
   validation: typeof validation;
 }>;

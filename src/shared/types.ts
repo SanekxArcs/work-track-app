@@ -182,7 +182,7 @@ export interface AppSettings {
   }
 }
 
-/** notch is the collapsed pill at the top centre of the screen; notch-open is it expanded on hover. */
+/** notch is the collapsed pill at the top or bottom edge of the screen; notch-open is it expanded on hover. */
 export type WindowMode = 'compact' | 'expanded' | 'docked' | 'notch' | 'notch-open'
 
 export interface AppSnapshot {
@@ -352,6 +352,8 @@ export interface ExtensionServerStatus {
 }
 
 export interface WorkBuddyApi {
+  activityLearning:(action:'projects'|'link'|'saveRule'|'deleteRule'|'note'|'complete'|'preview'|'generate'|'confirm',input?:unknown)=>Promise<import('./activity-learning').ActivityLearningResponse>
+  acceptActivityDrafts: (input:{day:string;drafts:import('./activity-drafts').ActivityDraft[]}) => Promise<{snapshot:AppSnapshot;taskIds:string[];created:number}>
   getActivityDay: (day:string) => Promise<import('./activity').ActivityDay>
   configureActivity: (config:import('./activity').ActivityConfig,writeKey?:string,readKey?:string) => Promise<import('./activity').ActivityStatus>
   importActivityConnection: () => Promise<import('./activity').ActivityStatus|null>
@@ -418,8 +420,10 @@ export interface WorkBuddyApi {
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
   setWindowMode: (mode: WindowMode, rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
-  /** Drags the notch along the top edge; the main process follows the cursor. */
+  /** Drags the notch along the top or bottom edge; the main process follows the cursor. */
   dragNotch: (phase: 'start' | 'move' | 'end') => Promise<void>
+  setNotchSurface:(rect:{x:number;y:number;width:number;height:number;radius?:number})=>Promise<void>
+  onNotchEdge:(callback:(edge:'top'|'bottom')=>void)=>()=>void
   onNotchTravel: (callback: (hidden: boolean) => void) => () => void
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>

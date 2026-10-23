@@ -1,3 +1,6 @@
+import { surfaceRegion,notchBounds } from './window-shape'
+import { ActivityLearningService } from './activity-learning'
+import { acceptActivityDrafts } from './activity-import'
 import { ActivityStore } from './activity-store'
 import { ActivityService } from './activity'
 import { activityReview } from '../shared/activity-review'
@@ -22,6 +25,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let learning:ActivityLearningService
 let activity: ActivityService
 const activityPreviews = new Map<string,{expires:number;epoch:number;review:ReturnType<typeof activityReview>}>()
 let convexSync: ConvexSyncService
@@ -44,7 +48,23 @@ let dockedSide: 'left' | 'right' | null = null
 let dockRestoreBounds: Electron.Rectangle | null = null
 let dockRestoreSide: 'left' | 'right' | null = null
 let notchState: 'collapsed' | 'open' | null = null
+let notchEdge:'top'|'bottom'='top'
+let notchGrabStart={x:0,y:0}
+let notchVerticalDrag=false
 let notchGrabOffset = 0
+let notchSurface:(Electron.Rectangle&{radius?:number})|null=null
+function setNotchEdge(edge:'top'|'bottom'):void {if(edge===notchEdge)return;notchEdge=edge;mainWindow?.webContents.send(channels.notchEdge,edge)}
+function syncNativeSurface():void {
+ if(!mainWindow||mainWindow.isDestroyed())return
+
+ if(process.platform!=='win32'&&process.platform!=='linux')return
+ const {width,height}=mainWindow.getContentBounds()
+ const rect=notchSurface??{x:0,y:0,width,height}
+ const region=notchState?surfaceRegion(rect,notchSurface?.radius??(notchState==='open'?20:11),notchEdge==='bottom',notchEdge==='top'):dockedSide?surfaceRegion({x:0,y:0,width,height},16,true,true,dockedSide==='right',dockedSide==='left'):null
+ mainWindow.setIgnoreMouseEvents(region?.length===0,{forward:true})
+ mainWindow.setShape(region??[])
+
+}
 let notchDisplayId: number | null = null
 let notchDragging = false
 let notchFollowTimer: NodeJS.Timeout | undefined
@@ -56,6 +76,15 @@ const chosenSoundPaths = new Set<string>()
 const WINDOW_WIDTH = 430
 const DOCK_SIZE = { width: 104, height: 46 }
 const NOTCH_SIZE = { width: 264, height: 30 }
+
+/** Windows can enforce a native minimum height larger than the painted 30px pill. */
+function positionNotch(area:Electron.Rectangle,center:number,size:{width:number;height:number}):void {
+ if(!mainWindow)return
+ mainWindow.setBounds(notchBounds(area,center,size,notchEdge),false)
+ const actual=mainWindow.getBounds()
+ if(notchEdge==='bottom'&&actual.y+actual.height!==area.y+area.height)mainWindow.setPosition(actual.x,area.y+area.height-actual.height,false)
+ syncNativeSurface()
+}
 
 function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
   const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
@@ -72,13 +101,14 @@ function clampNotchCenter(center: number, area: Electron.Rectangle): number {
 }
 
 /** The saved notch spot, or the top centre of the screen the window is on. */
-function notchAnchor(): { area: Electron.Rectangle; center: number } {
+function notchAnchor(): { area: Electron.Rectangle; center: number;edge:'top'|'bottom' } {
   const display = screen.getAllDisplays().find((item) => item.id === notchDisplayId)
     ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   notchDisplayId = display.id
   const placement = database.getNotchPlacement(display.id)
   const area = display.workArea
-  return { area, center: clampNotchCenter(area.x + (placement?.ratio ?? 0.5) * area.width, area) }
+  if(!notchDragging)setNotchEdge(placement?.edge??'top')
+  return { area,edge:notchEdge, center: clampNotchCenter(area.x + (placement?.ratio ?? 0.5) * area.width, area) }
 }
 
 function cancelNotchTravel(): void {
@@ -101,8 +131,9 @@ function followNotchCursor(): void {
     // Also restore a reachable position after resolution, scale or taskbar changes.
     const x = Math.round(center - NOTCH_SIZE.width / 2)
     const current = mainWindow.getBounds()
-    if (current.x !== x || current.y !== area.y) {
-      mainWindow.setPosition(x, area.y, false)
+    const y=notchEdge==='bottom'?area.y+area.height-current.height:area.y
+    if (current.x !== x || current.y !== y) {
+      mainWindow.setPosition(x, y, false)
       restoreWindowTopmost()
     }
     return
@@ -121,7 +152,7 @@ function followNotchCursor(): void {
     // Use the latest cursor location if it crossed another screen during the exit.
     notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
     const target = notchAnchor()
-    mainWindow.setPosition(Math.round(target.center - NOTCH_SIZE.width / 2), target.area.y, false)
+    positionNotch(target.area,target.center,NOTCH_SIZE)
     restoreWindowTopmost()
     notchTravelTimer = setTimeout(cancelNotchTravel, 50)
   }, 200)
@@ -136,7 +167,7 @@ function syncWindowMaxHeight(): void {
     const size = notchState === 'collapsed' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
     mainWindow.setMinimumSize(size.width, size.height)
     mainWindow.setMaximumSize(size.width, size.height)
-    mainWindow.setBounds({ x: Math.round(center - size.width / 2), y: area.y, ...size }, false)
+    positionNotch(area,center,size)
     return
   }
   if (compactWindow) return
@@ -274,6 +305,7 @@ function applyAppSettings(settings: AppSettings, ensureGlobalShortcut = false): 
   const result = database.updateSettings(settings)
   app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
   syncWindowTopmost(mainWindow, result.settings.alwaysOnTop)
+  syncNativeSurface()
   updateTrayMenu()
   return result
 }
@@ -324,6 +356,7 @@ function createWindow(): void {
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
+    hasShadow:false,
     show: false,
     resizable: true,
     maximizable: false,
@@ -346,10 +379,11 @@ function createWindow(): void {
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
-  mainWindow.on('show', restoreWindowTopmost)
+  mainWindow.on('show', ()=>{restoreWindowTopmost();syncNativeSurface()})
   mainWindow.on('restore', restoreWindowTopmost)
-  mainWindow.on('move', scheduleSnap)
+  mainWindow.on('move', ()=>{scheduleSnap();if(notchState)syncNativeSurface()})
   mainWindow.on('resize', () => {
+    if(notchState||dockedSide)syncNativeSurface()
     if (!compactWindow && mainWindow) {
       const nextHeight = mainWindow.getBounds().height
       if (programmaticHeight === nextHeight) {
@@ -519,7 +553,9 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
 }
 
 function registerIpc(): void {
-  ipcMain.handle(channels.activityDay,(_,day:string)=>activity.day(day))
+  ipcMain.handle(channels.activityLearning,(_,action,input)=>learning.run(action,input))
+  ipcMain.handle(channels.activityAcceptDrafts,(_,input)=>{const result=acceptActivityDrafts(activity,database,input);emitChanged();return result})
+  ipcMain.handle(channels.activityDay,(_,day:string)=>learning.day(day))
   ipcMain.handle(channels.activityConfigure,(_,config,writeKey,readKey)=>activity.configure(config,writeKey,readKey))
   ipcMain.handle(channels.activityImport,async()=>{
     const result=await dialog.showOpenDialog({title:'Import Work Buddy connection',properties:['openFile']})
@@ -528,7 +564,7 @@ function registerIpc(): void {
     if(contents.length>16384)throw new Error('Connection file is too large')
     return activity.importConnection(contents)
   })
-  ipcMain.handle(channels.activityRefresh,(_,day:string)=>activity.refresh(day))
+  ipcMain.handle(channels.activityRefresh,async(_,day:string)=>{await activity.refresh(day);return learning.day(day)})
   ipcMain.handle(channels.activityAssign,(_,value)=>activity.assign(value))
   ipcMain.handle(channels.activityRemember,(_,rule)=>{
     if(!database.getSnapshot().projects.some(p=>p.id===rule?.projectId))throw new Error('Choose an existing Work Buddy project')
@@ -801,6 +837,10 @@ function registerIpc(): void {
   ipcMain.handle(channels.windowMode, (_, mode: WindowMode, rows = 1) => {
     if (!mainWindow) return null
     cancelNotchTravel()
+    clearTimeout(snapTimer)
+    applyingSnap=true
+    notchSurface=null
+    try {
     let current = mainWindow.getBounds()
     if (mode === 'notch' || mode === 'notch-open') {
       if (!notchState) notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
@@ -818,9 +858,9 @@ function registerIpc(): void {
       mainWindow.setMinimumSize(size.width, size.height)
       mainWindow.setMaximumSize(size.width, size.height)
       programmaticHeight = size.height
-      mainWindow.setBounds({ x: Math.round(center - size.width / 2), y: area.y, ...size }, false)
+      positionNotch(area,center,size)
       restoreWindowTopmost()
-      return null
+      return notchEdge
     }
     if (notchState) {
       // Leaving the notch (pinning it open, compact or dock) starts from right under it.
@@ -830,7 +870,7 @@ function registerIpc(): void {
       mainWindow.setMovable(true)
       mainWindow.setMinimumSize(WINDOW_WIDTH, 64)
       mainWindow.setMaximumSize(WINDOW_WIDTH, area.height)
-      current = { x: Math.round(center - WINDOW_WIDTH / 2), y: area.y, width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+      current = notchBounds(area,center,{width:WINDOW_WIDTH,height:Math.min(manualHeight,area.height-24)},notchEdge)
     }
     if (mode === 'docked') {
       const area = screen.getDisplayMatching(current).workArea
@@ -849,7 +889,8 @@ function registerIpc(): void {
       mainWindow.setMaximumSize(DOCK_SIZE.width, DOCK_SIZE.height)
       const y = Math.min(Math.max(current.y, area.y), area.y + area.height - DOCK_SIZE.height)
       programmaticHeight = DOCK_SIZE.height
-      mainWindow.setBounds({ x: side === 'left' ? area.x : area.x + area.width - DOCK_SIZE.width, y, ...DOCK_SIZE }, true)
+      mainWindow.setBounds({ x: side === 'left' ? area.x : area.x + area.width - DOCK_SIZE.width, y, ...DOCK_SIZE }, false)
+      restoreWindowTopmost()
       return side
     }
     if (dockedSide) {
@@ -904,25 +945,36 @@ function registerIpc(): void {
     programmaticHeight = height
     mainWindow.setBounds({ ...current, x, y, height }, true)
     return nextCompact ? (keepBottom ? 'bottom' : 'top') : null
+    }finally{applyingSnap=false;syncNativeSurface()}
+  })
+  ipcMain.handle(channels.notchSurface,(_,rect:Electron.Rectangle&{radius?:number})=>{
+    if(!mainWindow||!notchState||!rect||![rect.x,rect.y,rect.width,rect.height].every(Number.isFinite))return
+    const bounds=mainWindow.getContentBounds()
+    if(rect.radius!==undefined&&(!Number.isFinite(rect.radius)||rect.radius<0||rect.radius>30))return
+    if(rect.width<0||rect.height<0||rect.width>bounds.width+2||rect.height>bounds.height+2)return
+    notchSurface=rect;syncNativeSurface()
   })
   ipcMain.handle(channels.notchDrag, (_, phase: 'start' | 'move' | 'end') => {
-    if (!mainWindow || !notchState) return
-    const cursor = screen.getCursorScreenPoint()
-    const bounds = mainWindow.getBounds()
+    if (!mainWindow || !notchState||!['start','move','end'].includes(phase)) return
+    const cursor = screen.getCursorScreenPoint(),bounds = mainWindow.getBounds()
     if (phase === 'start') {
-      cancelNotchTravel()
-      notchDragging = true
+      cancelNotchTravel();notchDragging = true;notchVerticalDrag=false;notchGrabStart=cursor
       notchGrabOffset = cursor.x - (bounds.x + bounds.width / 2)
       return
     }
-    // Slides along the top edge only, onto whichever screen the cursor is over.
-    const area = screen.getDisplayNearestPoint(cursor).workArea
-    notchDisplayId = screen.getDisplayNearestPoint(cursor).id
+    if(!notchDragging)return
+    if(phase==='end'&&Math.hypot(cursor.x-notchGrabStart.x,cursor.y-notchGrabStart.y)<4){notchDragging=false;syncNativeSurface();return}
+    const display=screen.getDisplayNearestPoint(cursor),area=display.workArea
+    notchDisplayId=display.id
+    if(Math.abs(cursor.y-notchGrabStart.y)>24)notchVerticalDrag=true
+    if(notchVerticalDrag)setNotchEdge(cursor.y<area.y+area.height/2?'top':'bottom')
     const center = clampNotchCenter(cursor.x - notchGrabOffset, area)
-    mainWindow.setBounds({ x: Math.round(center - bounds.width / 2), y: area.y, width: bounds.width, height: Math.min(bounds.height, area.height) }, false)
+    positionNotch(area,center,bounds)
+    syncNativeSurface()
     if (phase === 'end') {
       notchDragging = false
-      database.setNotchPlacement({ displayId: screen.getDisplayNearestPoint(cursor).id, ratio: (center - area.x) / area.width })
+      database.setNotchPlacement({displayId:display.id,ratio:(center-area.x)/area.width,edge:notchEdge})
+      syncNativeSurface()
     }
   })
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
@@ -936,9 +988,14 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle(channels.windowEditor, (_, open: boolean) => {
-    if (!mainWindow || compactWindow) return
+    if (!mainWindow || (compactWindow&&!notchState)) return
     const current = mainWindow.getBounds()
     const area = screen.getDisplayMatching(current).workArea
+    if(notchState==='open'){
+      if(open){if(!editorRestoreBounds)editorRestoreBounds=current;mainWindow.setMinimumSize(WINDOW_WIDTH,230);mainWindow.setMaximumSize(WINDOW_WIDTH,area.height);programmaticHeight=Math.min(Math.max(current.height,700),area.height-16);mainWindow.setBounds(notchBounds(area,current.x+current.width/2,{width:WINDOW_WIDTH,height:programmaticHeight},notchEdge),false)}
+      else if(editorRestoreBounds){mainWindow.setBounds(editorRestoreBounds,false);editorRestoreBounds=null}
+      syncNativeSurface();return
+    }
     if (open) {
       if (!editorRestoreBounds) editorRestoreBounds = current
       const requestedHeight = Math.max(current.height, Math.min(700, area.height - 16))
@@ -959,7 +1016,8 @@ function registerIpc(): void {
     if (notchState === 'open') {
       const { area, center } = notchAnchor()
       const current = mainWindow.getBounds()
-      const next = fitWindowHeight({ ...current, x: Math.round(center - WINDOW_WIDTH / 2), y: area.y }, area, requestedHeight, false, 230)
+      const next = fitWindowHeight({ ...current, x: Math.round(center - WINDOW_WIDTH / 2), y: area.y }, area, requestedHeight, notchEdge==='bottom', 230)
+      if(notchEdge==='bottom')next.y=area.y+area.height-next.height
       // Opening the notch fixes its native size; release those constraints before fitting.
       mainWindow.setMinimumSize(WINDOW_WIDTH, 230)
       mainWindow.setMaximumSize(WINDOW_WIDTH, Math.max(230, area.height - 16))
@@ -1027,6 +1085,8 @@ else {
       encrypt:(key)=>{if(!safeStorage.isEncryptionAvailable())throw new Error('Secure storage is unavailable');return safeStorage.encryptString(key).toString('base64')},
       decrypt:(key)=>safeStorage.decryptString(Buffer.from(key,'base64'))
     },()=>powerMonitor.getSystemIdleTime())
+    activity.setProjectProvider(()=>database.getSnapshot().projects.map(({id,name,color,archived})=>({id,name,color,archived:!!archived})))
+    learning=new ActivityLearningService(activity,database,gemini)
     activity.start()
     powerMonitor.on('suspend',()=>activity.system('suspend'))
     powerMonitor.on('resume',()=>activity.system('resume'))

@@ -48,3 +48,19 @@ test('Convex routes enforce separate read/write keys and validate before storing
     else process.env.WORK_BUDDY_READ_KEY = previousRead
   }
 })
+
+test('project catalog allows limited label access to browser write key while activity still requires read key',async()=>{
+ const oldW=process.env.WORK_BUDDY_WRITE_KEY,oldR=process.env.WORK_BUDDY_READ_KEY
+ process.env.WORK_BUDDY_WRITE_KEY='w'.repeat(32);process.env.WORK_BUDDY_READ_KEY='r'.repeat(32)
+ let mutation:unknown
+ const ctx={runQuery:async()=>({workProjects:[],browserProjects:[],links:[]}),runMutation:async(_:unknown,args:unknown)=>{mutation=args;return {conflict:false}}}
+ const call=async(path:string,method:'GET'|'PUT',key:string,body?:unknown)=>{const handler=http.lookup(path,method)![0] as unknown as {_handler:(ctx:unknown,request:Request)=>Promise<Response>};return handler._handler(ctx,new Request('https://test.convex.site'+path+'?deviceId=pc&day=2026-10-22',{method,headers:{Authorization:'Bearer '+key},...(body?{body:JSON.stringify(body)}:{})}))}
+ try{
+ assert.equal((await call('/work-buddy/projects','GET','w'.repeat(32))).status,200)
+ assert.equal((await call('/work-buddy/activity','GET','w'.repeat(32))).status,401)
+ assert.equal((await call('/work-buddy/projects','PUT','r'.repeat(32),{})).status,401)
+ assert.equal((await call('/work-buddy/projects','PUT','w'.repeat(32),{deviceId:'pc',sourceId:'browser',kind:'browser',capturedAt:Date.now(),projects:[{id:'folder',name:'Client',archived:false,secret:'must be stripped'}]})).status,200)
+ assert.equal(JSON.stringify(mutation).includes('secret'),false)
+ assert.equal((await call('/work-buddy/project-link','PUT','w'.repeat(32),{deviceId:'pc',browserSourceId:'browser',browserProjectId:'folder',projectId:null,expectedRevision:-1})).status,400)
+ }finally{if(oldW===undefined)delete process.env.WORK_BUDDY_WRITE_KEY;else process.env.WORK_BUDDY_WRITE_KEY=oldW;if(oldR===undefined)delete process.env.WORK_BUDDY_READ_KEY;else process.env.WORK_BUDDY_READ_KEY=oldR}
+})
