@@ -1,6 +1,8 @@
 import NumberFlow, { NumberFlowGroup } from '@number-flow/react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ReactNode } from 'react'
+import type { Locale } from '@shared/types'
+import { compactDurationUnits } from '../lib/time'
 
 /** One shared feel for every opening, closing and swapping element. */
 export const ease = [0.22, 1, 0.36, 1] as const
@@ -13,12 +15,13 @@ function durationParts(milliseconds: number): [hours: number, minutes: number, s
 }
 
 /** Same text as formatDuration, with digits that roll instead of jumping. */
-export function AnimatedDuration({ ms, compact = false, className }: { ms: number; compact?: boolean; className?: string }): React.JSX.Element {
+export function AnimatedDuration({ ms, compact = false, locale = 'en', className }: { ms: number; compact?: boolean; locale?: Locale; className?: string }): React.JSX.Element {
   const [hours, minutes, seconds] = durationParts(ms)
   if (compact) {
+    const units = compactDurationUnits(locale)
     return <NumberFlowGroup><span className={`animated-number ${className ?? ''}`}>
-      {hours > 0 && <><NumberFlow value={hours} suffix="h" /> </>}
-      <NumberFlow value={minutes} suffix="m" />
+      {hours > 0 && <><NumberFlow value={hours} suffix={units.hours} /> </>}
+      <NumberFlow value={minutes} suffix={units.minutes} />
     </span></NumberFlowGroup>
   }
   return <NumberFlowGroup><span className={`animated-number ${className ?? ''}`}>

@@ -12,6 +12,8 @@ import {
 } from '@shared/activity-drafts'
 import { localDateTimestamp } from '@shared/local-date'
 import { formatDuration } from '../lib/time'
+import { translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { CustomSelect } from './CustomSelect'
 import { TimeInput } from './TimeInput'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -26,7 +28,8 @@ export function ActivityWorkSuggestions({
   onRecorded: (snapshot: AppSnapshot) => Promise<void>
 }): React.JSX.Element {
   const uk = snapshot.settings.locale === 'uk',
-    l = (en: string, ua: string) => (uk ? ua : en)
+    l = (en: string, ua: string) => (uk ? ua : en),
+    t = translator(snapshot.settings.locale)
   const [minimum, setMinimum] = useState(60000),
     [selected, setSelected] = useState<string[]>([]),
     [drafts, setDrafts] = useState<ActivityDraft[]>([])
@@ -65,7 +68,7 @@ export function ActivityWorkSuggestions({
       setError('')
       setNotice('')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorText(e, t, 'actionFailed'))
     }
   }
   const update = (index: number, patch: Partial<ActivityDraft>) =>
@@ -103,7 +106,7 @@ export function ActivityWorkSuggestions({
       )
       await onRecorded(result.snapshot)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorText(e, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }

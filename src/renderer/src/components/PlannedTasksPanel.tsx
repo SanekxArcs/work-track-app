@@ -127,9 +127,11 @@ export function PlannedTasksPanel({ snapshot, t, onSnapshot }: PlannedTasksPanel
     <div className="planned-task-add">
       <input value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void add() }} placeholder={t('plannedTaskPlaceholder')} />
       <TimeInput className="planned-task-time" value={reminderTime} onChange={setReminderTime} ariaLabel={t('plannedTaskReminder')} allowEmpty />
-      <Fade show={Boolean(reminderTime)}><button className="icon-button icon-button--quiet" type="button" onClick={() => setReminderTime('')} title={t('clearReminder')}><X size={13} /></button></Fade>
-      <button className="icon-button icon-button--accent" disabled={busy || !title.trim()} onClick={add} title={t('add')}><Plus size={16} /></button>
-      {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <VoiceButton t={t} disabled={busy} onVoice={addVoice} onError={setVoiceMessage} />}
+      <div className="planned-task-add__actions">
+        <Fade show={Boolean(reminderTime)}><button className="icon-button icon-button--quiet" type="button" onClick={() => setReminderTime('')} title={t('clearReminder')} aria-label={t('clearReminder')}><X size={13} /></button></Fade>
+        <button className="icon-button icon-button--accent" disabled={busy || !title.trim()} onClick={add} title={t('add')} aria-label={t('add')}><Plus size={16} /></button>
+        {snapshot.settings.ai.enabled && snapshot.settings.ai.hasApiKey && <VoiceButton t={t} disabled={busy} onVoice={addVoice} onError={setVoiceMessage} />}
+      </div>
     </div>
     <div className="planned-task-add-project"><ProjectPicker value={projectId} snapshot={snapshot} ariaLabel={t('project')} t={t} activeOnly onChange={setProjectId} onSnapshot={onSnapshot} onError={setVoiceMessage} /></div>
     <Collapse open={Boolean(voiceMessage)}><p className="planned-voice-status">{voiceMessage}</p></Collapse>

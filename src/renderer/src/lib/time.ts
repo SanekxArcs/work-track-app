@@ -1,4 +1,9 @@
-import type { Task, TimeInterval } from '@shared/types'
+import type { Locale, Task, TimeInterval } from '@shared/types'
+
+/** Unit suffixes for the compact duration form: "1h 5m" in English, "1 год 5 хв" in Ukrainian. */
+export function compactDurationUnits(locale: Locale = 'en'): { hours: string; minutes: string } {
+  return locale === 'uk' ? { hours: ' год', minutes: ' хв' } : { hours: 'h', minutes: 'm' }
+}
 
 export function intervalDuration(interval: TimeInterval, now = Date.now()): number {
   return Math.max(0, Math.min(interval.endedAt ?? now, now) - interval.startedAt)
@@ -8,12 +13,15 @@ export function taskDuration(task: Task, now = Date.now()): number {
   return task.intervals.reduce((total, interval) => total + intervalDuration(interval, now), 0)
 }
 
-export function formatDuration(milliseconds: number, compact = false): string {
+export function formatDuration(milliseconds: number, compact = false, locale: Locale = 'en'): string {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
   const hours = Math.floor(totalSeconds / 3600)
   const minutes = Math.floor((totalSeconds % 3600) / 60)
   const seconds = totalSeconds % 60
-  if (compact) return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+  if (compact) {
+    const units = compactDurationUnits(locale)
+    return hours > 0 ? `${hours}${units.hours} ${minutes}${units.minutes}` : `${minutes}${units.minutes}`
+  }
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
 }
 

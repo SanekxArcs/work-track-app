@@ -7,6 +7,8 @@ import type {
   ActivityLearningResponse
 } from '@shared/activity-learning'
 import { activitySuggestions } from '@shared/activity-drafts'
+import { translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { CustomSelect } from './CustomSelect'
 export function ActivityLearning({
   data,
@@ -18,7 +20,8 @@ export function ActivityLearning({
   reload: () => Promise<void>
 }): React.JSX.Element {
   const uk = snapshot.settings.locale === 'uk',
-    l = (en: string, ua: string) => (uk ? ua : en)
+    l = (en: string, ua: string) => (uk ? ua : en),
+    t = translator(snapshot.settings.locale)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [registry, setRegistry] = useState<ActivityProjectRegistry>(),
@@ -47,7 +50,7 @@ export function ActivityLearning({
       await fn()
       await reload()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorText(e, t, 'actionFailed'))
     } finally {
       setBusy(false)
     }
@@ -213,12 +216,12 @@ export function ActivityLearning({
             <article className="activity-learning-proposal" key={p.periodId}>
               <strong>{period.context.join(' · ')}</strong>
               <small>
-                {new Date(period.intervals[0].start).toLocaleTimeString([], {
+                {new Date(period.intervals[0].start).toLocaleTimeString(uk ? 'uk-UA' : 'en-GB', {
                   hour: '2-digit',
                   minute: '2-digit'
                 })}{' '}
                 –{' '}
-                {new Date(period.intervals.at(-1)!.end).toLocaleTimeString([], {
+                {new Date(period.intervals.at(-1)!.end).toLocaleTimeString(uk ? 'uk-UA' : 'en-GB', {
                   hour: '2-digit',
                   minute: '2-digit'
                 })}

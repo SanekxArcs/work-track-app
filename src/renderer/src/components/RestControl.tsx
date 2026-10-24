@@ -13,6 +13,8 @@ interface RestControlProps {
   now: number
   t: Translator
   onSnapshot: (snapshot: AppSnapshot) => void
+  /** Runs an action; on failure shows the app-level error toast and resyncs (App's `attempt`). */
+  attempt: (action: () => Promise<unknown>) => Promise<void>
 }
 
 function restCopy(type: RestType, t: Translator): { title: string; due: string } {
@@ -21,11 +23,12 @@ function restCopy(type: RestType, t: Translator): { title: string; due: string }
     : { title: t('breakInProgress'), due: t('breakDueBody') }
 }
 
-export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps): React.JSX.Element | null {
+export function RestControl({ snapshot, now, t, onSnapshot, attempt }: RestControlProps): React.JSX.Element | null {
   const active = snapshot.rests.find((rest) => rest.status !== 'completed')
   const due = dueRestTypes(snapshot.settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
 
-  const mutate = async (promise: Promise<AppSnapshot>): Promise<void> => onSnapshot(await promise)
+  // Errors surface in the app toast and trigger a resync, so a failed call never leaves stale rest state behind.
+  const mutate = (promise: Promise<AppSnapshot>): Promise<void> => attempt(async () => onSnapshot(await promise))
   const start = (type: RestType): void => { void mutate(window.workBuddy.startRest(type)) }
   const skip = (type: RestType): void => { void mutate(window.workBuddy.skipRest(type)) }
 
@@ -34,7 +37,7 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
     <>
     <AnimatePresence initial={false}>
       {active ? (
-        <StackItem key={`rest-${active.id}`}><ActiveRest rest={active} now={now} t={t} mutate={mutate} /></StackItem>
+        <StackItem key={`rest-${active.id}`}><ActiveRest rest={active} now={now} t={t} mutate={mutate} onSnapshot={onSnapshot} /></StackItem>
       ) : due.length > 0 ? (
         <StackItem key="due">
           <div className="rest-due-stack">
@@ -64,7 +67,7 @@ export function RestControl({ snapshot, now, t, onSnapshot }: RestControlProps):
   )
 }
 
-function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; t: Translator; mutate: (promise: Promise<AppSnapshot>) => Promise<void> }): React.JSX.Element {
+function ActiveRest({ rest, now, t, mutate, onSnapshot }: { rest: RestSession; now: number; t: Translator; mutate: (promise: Promise<AppSnapshot>) => Promise<void>; onSnapshot: (snapshot: AppSnapshot) => void }): React.JSX.Element {
   const [editingTime, setEditingTime] = useState(false)
   const [timeError, setTimeError] = useState('')
   const Icon = rest.type === 'lunch' ? Coffee : Dumbbell
@@ -85,7 +88,8 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
     adjusted.setHours(hours, minutes, 0, 0)
     setTimeError('')
     try {
-      await mutate(window.workBuddy.updateRestStart(rest.id, adjusted.getTime()))
+      // Not through `mutate`: this form shows its own inline error instead of the app toast.
+      onSnapshot(await window.workBuddy.updateRestStart(rest.id, adjusted.getTime()))
       setEditingTime(false)
     } catch (error) {
       setTimeError(errorText(error, t, 'timeUpdateError'))
@@ -96,7 +100,7 @@ function ActiveRest({ rest, now, t, mutate }: { rest: RestSession; now: number; 
     <section className={`active-rest active-rest--${rest.type}`}>
       <div className="active-rest__top">
         <div className="active-rest__identity"><span><Icon size={18} /></span><AnimatePresence initial={false}>{paused && <motion.div key="paused" initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -4 }} transition={{ duration: 0.18, ease }}><small>{t('restPaused')}</small></motion.div>}</AnimatePresence></div>
-        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}>{remaining === 0 ? <span>{t('restTimeUp')}</span> : <AnimatedDuration className="active-rest__time" ms={remaining} />}{overtime > 0 && <small>+<AnimatedDuration ms={overtime} compact /></small>}<Pencil size={11} /></button>
+        <button className={`active-rest__clock ${remaining === 0 ? 'is-done' : ''}`} onClick={() => setEditingTime(true)} title={t('editRestStart')}>{remaining === 0 ? <span>{t('restTimeUp')}</span> : <AnimatedDuration className="active-rest__time" ms={remaining} />}{overtime > 0 && <small>+<AnimatedDuration ms={overtime} compact locale={t.locale} /></small>}<Pencil size={11} /></button>
       </div>
       <Collapse open={editingTime}>
         <div className="rest-time-editor">

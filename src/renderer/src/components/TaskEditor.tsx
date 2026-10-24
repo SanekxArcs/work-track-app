@@ -9,7 +9,7 @@ import { errorText } from '../lib/errors'
 import { AnimatedText, Collapse, ease } from './Animated'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
-import { ProjectPicker } from './ProjectPicker'
+import { FALLBACK_PROJECT_COLOR, ProjectPicker } from './ProjectPicker'
 import { TimeInput } from './TimeInput'
 import { formatDuration } from '../lib/time'
 import { VoiceButton } from './VoiceButton'
@@ -87,6 +87,26 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setEndTime(interval?.endedAt ? clockTime(interval.endedAt) : '')
     setSaveError('')
   }, [open, task, intervalId])
+
+  // Mirrors ConfirmDialog: focus returns to the control that opened the editor once it closes.
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return () => previous?.focus()
+  }, [open])
+
+  // Escape closes the sheet (or leaves the split view first). Open popovers (project picker, selects,
+  // time pickers) and the delete dialog handle Escape themselves and stop it from reaching here.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || busy || deleteOpen) return
+      if (splitOpen) setSplitOpen(false)
+      else onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, busy, deleteOpen, splitOpen, onClose])
 
   // End of the closest interval (of any other task) that finished on the same day at or before this one started.
   const previousEndTime = (() => {
@@ -189,7 +209,7 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         if (existing) resolvedProjectId = existing.id
         else {
           const colors = snapshot.settings.projectColors
-          const result = await window.workBuddy.createProject({ name: draft.newProjectName, color: colors[snapshot.projects.length % colors.length] })
+          const result = await window.workBuddy.createProject({ name: draft.newProjectName, color: colors[snapshot.projects.length % colors.length] ?? FALLBACK_PROJECT_COLOR })
           const created = result.projects.find((project) => project.name.localeCompare(draft.newProjectName!, undefined, { sensitivity: 'base' }) === 0)
           if (created) resolvedProjectId = created.id
           onSnapshot(result)
@@ -235,8 +255,9 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     <AnimatePresence>
       {open && (
         <motion.div className="modal-backdrop no-drag" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <motion.section className="modal-sheet" initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }} transition={{ type: 'spring', damping: 26, stiffness: 300 }}>
+          <motion.section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="task-editor-title" initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 30, opacity: 0 }} transition={{ type: 'spring', damping: 26, stiffness: 300 }}>
             <div className="modal-header">
+              <h2 id="task-editor-title" className="sr-only">{task ? t('editTask') : t('newTask')}</h2>
               <button className="icon-button" onClick={onClose} aria-label={t('cancel')}><X size={18} /></button>
             </div>
 

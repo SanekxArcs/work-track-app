@@ -571,7 +571,7 @@ function registerIpc(): void {
     activity.remember(rule)
   })
   ipcMain.handle(channels.activityForgetRules,()=>activity.forgetRules())
-  ipcMain.handle(channels.activityDelete,async(_,day:string)=>{activity.deleteDay(day);await activity.sync();await activity.sync()})
+  ipcMain.handle(channels.activityDelete,async(_,day:string)=>{activity.deleteDay(day);await activity.resync()})
   ipcMain.handle(channels.activityPreview,(_,day:string)=>{
     const data=activity.day(day),snapshot=database.getDaySnapshot(day)
     const review=activityReview(data,snapshot,data.assignments,data.rules)
@@ -1040,9 +1040,8 @@ function registerIpc(): void {
     programmaticHeight = next.height
     mainWindow.setBounds(next, false)
   })
-  ipcMain.handle(channels.windowView, () => {
-    if (!mainWindow || compactWindow) return
-  })
+  // Kept for preload compatibility: the renderer no longer drives window views through IPC.
+  ipcMain.handle(channels.windowView, () => undefined)
   ipcMain.handle(channels.chooseSound, () => chooseSoundFile())
   ipcMain.handle(channels.soundData, async () => {
     const path = database.getSettings().notifications.customSoundPath

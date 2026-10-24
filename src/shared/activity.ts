@@ -24,6 +24,10 @@ export interface ActivityEnvelope {
   capturedAt: number
   retentionDays: number
   records: ActivityRecord[]
+  /** Local UTC offset of the capturing device in minutes, as reported by the client. */
+  tzOffsetMinutes?: number
+  /** IANA zone name of the capturing device, when known. */
+  timezone?: string
 }
 export interface ActivityConfig {
   enabled: boolean
@@ -157,7 +161,10 @@ export function validateActivityEnvelope(raw: unknown, now = Date.now()): Activi
     data.capturedAt > now + 300000 ||
     ![7, 30, 90].includes(data.retentionDays) ||
     !Array.isArray(data.records) ||
-    data.records.length > 20000
+    data.records.length > 20000 ||
+    (data.tzOffsetMinutes !== undefined &&
+      (!Number.isSafeInteger(data.tzOffsetMinutes) || Math.abs(data.tzOffsetMinutes) > 840)) ||
+    (data.timezone !== undefined && (typeof data.timezone !== 'string' || data.timezone.length > 64))
   )
     throw new Error('Invalid activity envelope')
   const ids = new Set<string>()
@@ -215,7 +222,9 @@ export function validateActivityEnvelope(raw: unknown, now = Date.now()): Activi
     kind: data.kind,
     capturedAt: data.capturedAt,
     retentionDays: data.retentionDays,
-    records
+    records,
+    ...(data.tzOffsetMinutes !== undefined ? { tzOffsetMinutes: data.tzOffsetMinutes } : {}),
+    ...(data.timezone !== undefined ? { timezone: data.timezone } : {})
   }
 }
 export function splitActivityRecord(record: ActivityRecord): Array<{ day: string; record: ActivityRecord }> {

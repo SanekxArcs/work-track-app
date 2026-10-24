@@ -3,6 +3,7 @@ import type { AppSettings, Locale, NotificationSound, WellnessAction } from '../
 import { breakStreakStartedAt, dueRestTypes, restRemaining } from '../shared/rest'
 import { scheduledWorkdayClockEndAt, scheduledWorkdayEndAt } from '../shared/workday'
 import type { WorkBuddyDatabase } from './database'
+import { staleReminderKeys } from './reminder-schedule'
 
 const MINUTE = 60_000
 const CHECK_INTERVAL = 5_000
@@ -84,8 +85,20 @@ export class ReminderService {
 
   start(): void {
     if (this.timer) return
+    this.seedStale()
     this.check()
     this.timer = setInterval(() => this.check(), CHECK_INTERVAL)
+  }
+
+  /** Reminders scheduled long before launch are treated as already shown. */
+  private seedStale(): void {
+    try {
+      const snapshot = this.database.getSnapshot()
+      this.firedDate = todayKey(snapshot.now)
+      for (const key of staleReminderKeys(snapshot, snapshot.now)) this.fired.add(key)
+    } catch (error) {
+      console.error('Reminder seeding failed', error)
+    }
   }
 
   stop(): void {

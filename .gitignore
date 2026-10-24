@@ -12,6 +12,7 @@ release-*/
 *.log
 .DS_Store
 *.tsbuildinfo
+__pycache__/
 .plasmo/
 apps/extension/build/
 .artifacts/

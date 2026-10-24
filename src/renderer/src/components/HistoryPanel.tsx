@@ -71,13 +71,13 @@ export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSe
       {Array.from({ length: leadingBlanks }, (_, index) => <span key={`blank-${index}`} className="history-cell history-cell--blank" aria-hidden="true" />)}
       {visibleDays.map((day) => {
         const overtimeMs = unredeemedOvertime.get(day.date)
-        const overtimeLabel = overtimeMs ? ` · +${formatDuration(overtimeMs, true)} · ${t('unredeemedOvertime')}` : ''
-        return <button key={day.date} className={`history-cell history-cell--${level(day.workedMs)} ${overtimeMs ? 'history-cell--overtime' : ''} ${selectedDate === day.date ? 'selected' : ''}`} onClick={() => onSelect(day.date)} title={`${labelForDate(day.date, locale)} · ${formatDuration(day.workedMs, true)}${overtimeLabel}`} aria-label={`${labelForDate(day.date, locale)}: ${formatDuration(day.workedMs, true)}${overtimeLabel}`}>{overtimeMs && <i className="history-cell__overtime" aria-hidden="true" />}</button>
+        const overtimeLabel = overtimeMs ? ` · +${formatDuration(overtimeMs, true, locale)} · ${t('unredeemedOvertime')}` : ''
+        return <button key={day.date} className={`history-cell history-cell--${level(day.workedMs)} ${overtimeMs ? 'history-cell--overtime' : ''} ${selectedDate === day.date ? 'selected' : ''}`} onClick={() => onSelect(day.date)} title={`${labelForDate(day.date, locale)} · ${formatDuration(day.workedMs, true, locale)}${overtimeLabel}`} aria-label={`${labelForDate(day.date, locale)}: ${formatDuration(day.workedMs, true, locale)}${overtimeLabel}`}>{overtimeMs && <i className="history-cell__overtime" aria-hidden="true" />}</button>
       })}
     </motion.div>
     <div className="history-legend"><span>{t('less')}</span><i className="history-cell--0" /><i className="history-cell--1" /><i className="history-cell--2" /><i className="history-cell--3" /><i className="history-cell--4" /><span>{t('more')}</span><span className="history-overtime-legend"><i />{t('unredeemedOvertime')}</span></div>
     {recentDays.length > 0 && <div className="history-recent">
-      {recentDays.map((day) => <button key={day.date} className={selectedDate === day.date ? 'selected' : ''} onClick={() => onSelect(day.date)}><span>{labelForDate(day.date, locale)}</span><strong>{formatDuration(day.workedMs, true)}</strong></button>)}
+      {recentDays.map((day) => <button key={day.date} className={selectedDate === day.date ? 'selected' : ''} onClick={() => onSelect(day.date)}><span>{labelForDate(day.date, locale)}</span><strong>{formatDuration(day.workedMs, true, locale)}</strong></button>)}
     </div>}
   </section>
 }

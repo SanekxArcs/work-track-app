@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import App from "../renderer/App"
 import { browserLocale, translator, type Translator } from "../renderer/lib/i18n"
 import type { Locale, WorkBuddyApi } from "../shared/types"
-import { clearAccessKey, getAccessKey, getServerHealth, pairWithKey, remoteApi, remoteErrorCode } from "../lib/remote-api"
+import { accessKeyName, clearAccessKey, getAccessKey, getServerHealth, remoteApi } from "../lib/remote-api"
 
 declare global {
   interface Window {
@@ -16,6 +16,10 @@ export const config: PlasmoCSConfig = {
   matches: ["<all_urls>"],
   run_at: "document_idle"
 }
+
+// A closed shadow root keeps the panel out of reach of page scripts: they can
+// neither read what it shows nor synthesise clicks inside it.
+export const createShadowRoot = (host: HTMLElement): ShadowRoot => host.attachShadow({ mode: "closed" })
 
 export const getStyle = (): HTMLStyleElement => {
   const style = document.createElement("style")
@@ -53,46 +57,21 @@ function clampPosition(position: Position): Position {
 // (YouTube "k", GitHub "/"). React handles the events inside first.
 const stopPropagation = (event: React.SyntheticEvent): void => event.stopPropagation()
 
-function PairingCard({ t, expired, onPaired }: { t: Translator; expired: boolean; onPaired: () => void }): React.JSX.Element {
-  const [key, setKey] = useState("")
+function PairingCard({ t, expired }: { t: Translator; expired: boolean }): React.JSX.Element {
   const [status, setStatus] = useState<"checking" | "online" | "offline">("checking")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState("")
 
   useEffect(() => {
     void getServerHealth().then(() => setStatus("online")).catch(() => setStatus("offline"))
   }, [])
 
-  const pair = async (): Promise<void> => {
-    setError("")
-    setBusy(true)
-    try {
-      await pairWithKey(key)
-      onPaired()
-    } catch (reason) {
-      const code = remoteErrorCode(reason)
-      if (code === "unauthorized") setError(t("pairingInvalidKey"))
-      else if (code === "offline") {
-        setStatus("offline")
-        setError(t("extensionOffline"))
-      } else if (code === "invalidated") setError(t("extensionReloaded"))
-      else setError(reason instanceof Error && reason.message ? reason.message : t("pairingFailed"))
-    } finally {
-      setBusy(false)
-    }
-  }
-
+  // The key is never typed into a web page. Pairing happens in the toolbar
+  // popup, which no site can observe; this card only explains where to go.
   return <section className="extension-pairing-card">
     <div className="brand-mark"><span /></div>
     <p className="eyebrow">{t("pairingEyebrow")}</p>
     <h2>{status === "offline" ? t("pairingOfflineTitle") : t("pairingTitle")}</h2>
-    <p>{status === "offline" ? t("pairingOfflineBody") : t("pairingBody")}</p>
+    <p>{status === "offline" ? t("pairingOfflineBody") : t("pairingPopupBody")}</p>
     {expired && status !== "offline" && <small className="extension-pairing-notice">{t("pairingExpired")}</small>}
-    {status !== "offline" && <>
-      <input autoFocus value={key} onChange={(event) => setKey(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && key.trim() && !busy) void pair() }} placeholder={t("pairingKey")} aria-label={t("pairingKey")} />
-      <button className="primary-button" disabled={!key.trim() || busy} onClick={() => void pair()}>{t("pairingConnect")}</button>
-    </>}
-    {error && <small className="extension-pairing-error">{error}</small>}
     <small className={`extension-pairing-status extension-pairing-status--${status}`}><i />{status === "checking" ? t("pairingChecking") : status === "online" ? t("pairingOnline") : t("pairingOffline")}</small>
   </section>
 }
@@ -117,11 +96,20 @@ export default function WorkBuddyContent(): React.JSX.Element {
     }).catch(() => undefined)
     const hide = (): void => setOpen(false)
     const keepOnScreen = (): void => setPosition((current) => clampPosition(current))
+    // Pairing and unpairing happen in the popup; open pages follow the stored key.
+    const onStorage = (changes: Record<string, chrome.storage.StorageChange>, area: string): void => {
+      if (area !== "local" || !(accessKeyName in changes)) return
+      const next = Boolean(changes[accessKeyName].newValue)
+      setPaired(next)
+      if (next) setPairingExpired(false)
+    }
     window.addEventListener("work-buddy-extension-hide", hide)
     window.addEventListener("resize", keepOnScreen)
+    chrome.storage.onChanged.addListener(onStorage)
     return () => {
       window.removeEventListener("work-buddy-extension-hide", hide)
       window.removeEventListener("resize", keepOnScreen)
+      chrome.storage.onChanged.removeListener(onStorage)
     }
   }, [])
 
@@ -183,7 +171,7 @@ export default function WorkBuddyContent(): React.JSX.Element {
     {open && <aside className="work-buddy-drawer" aria-label="Work Buddy">
       {paired
         ? <App onUnpaired={unpair} onLocale={rememberLocale} />
-        : <PairingCard t={t} expired={pairingExpired} onPaired={() => { setPairingExpired(false); setPaired(true) }} />}
+        : <PairingCard t={t} expired={pairingExpired} />}
     </aside>}
   </div>
 }

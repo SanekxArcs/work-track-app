@@ -18,8 +18,8 @@ interface SettingsProps {
   onSnapshot: (snapshot: AppSnapshot) => void
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }): React.JSX.Element {
-  return <button type="button" className={`toggle ${checked ? 'toggle--on' : ''}`} onClick={() => onChange(!checked)}><motion.span layout transition={{ type: 'spring', stiffness: 500, damping: 32 }} /></button>
+function Toggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (checked: boolean) => void }): React.JSX.Element {
+  return <button type="button" role="switch" aria-checked={checked} aria-label={label} className={`toggle ${checked ? 'toggle--on' : ''}`} onClick={() => onChange(!checked)}><motion.span layout transition={{ type: 'spring', stiffness: 500, damping: 32 }} /></button>
 }
 
 /** Keeps a local draft so clearing the field to retype it does not save the minimum in between. */
@@ -370,23 +370,23 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
 
       <section className="settings-section">
         <div className="settings-title"><Laptop2 size={17} /><div><h3>{t('appBehavior')}</h3></div></div>
-        <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
-        <div className="setting-line"><span>{t('autoStart')}</span><Toggle checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
-        <div className="setting-line"><div><strong>{t('notchLook')}</strong><p>{t('notchLookBody')}</p></div><Toggle checked={settings.notchEnabled} onChange={(value) => patch('notchEnabled', value)} /></div>
-        <div className="setting-line"><div><strong>{t('autoFitHeight')}</strong><p>{t('autoFitHeightBody')}</p></div><Toggle checked={settings.autoFitHeight} onChange={(value) => patch('autoFitHeight', value)} /></div>
+        <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle label={t('alwaysOnTop')} checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
+        <div className="setting-line"><span>{t('autoStart')}</span><Toggle label={t('autoStart')} checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
+        <div className="setting-line"><div><strong>{t('notchLook')}</strong><p>{t('notchLookBody')}</p></div><Toggle label={t('notchLook')} checked={settings.notchEnabled} onChange={(value) => patch('notchEnabled', value)} /></div>
+        <div className="setting-line"><div><strong>{t('autoFitHeight')}</strong><p>{t('autoFitHeightBody')}</p></div><Toggle label={t('autoFitHeight')} checked={settings.autoFitHeight} onChange={(value) => patch('autoFitHeight', value)} /></div>
         <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
         {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
       </section>
 
       <section className="settings-section extension-server-settings">
-        <div className="settings-title"><PlugZap size={17} /><div><h3>{uk ? 'Chrome extension' : 'Chrome extension'}</h3><p>{uk ? 'Локальний міст до Work Buddy. Дані не виходять з цього комп’ютера.' : 'Local bridge to Work Buddy. Your data never leaves this computer.'}</p></div></div>
+        <div className="settings-title"><PlugZap size={17} /><div><h3>{t('extensionTitle')}</h3><p>{t('extensionBody')}</p></div></div>
         <div className={`extension-server-state ${extensionServer?.running ? 'extension-server-state--online' : ''}`}>
           <span />
-          <div><strong><AnimatedText text={extensionServer?.running ? (uk ? 'Сервер увімкнено' : 'Server is running') : (uk ? 'Сервер недоступний' : 'Server is unavailable')} /></strong><small>{extensionServer?.running ? `${uk ? 'Порт' : 'Port'} ${extensionServer.port} · ${extensionServer.connections} ${uk ? 'підключень' : 'connections'}` : extensionServer?.error}</small></div>
+          <div><strong><AnimatedText text={extensionServer?.running ? t('extensionServerRunning') : t('extensionServerUnavailable')} /></strong><small>{extensionServer?.running ? `${t('extensionPort')} ${extensionServer.port} · ${extensionServer.connections} ${t('extensionConnections')}` : extensionServer?.error}</small></div>
         </div>
         <div className="extension-key-actions">
-          <button className="secondary-button" onClick={() => void revealExtensionKey()}><AnimatedText text={showExtensionKey ? (uk ? 'Сховати ключ' : 'Hide key') : (uk ? 'Показати ключ підключення' : 'Show connection key')} /></button>
-          <Fade show={showExtensionKey && Boolean(extensionKey)}><button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={uk ? 'Копіювати ключ' : 'Copy key'}><Swap id={extensionKeyCopied ? 'copied' : 'copy'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</Swap></button></Fade>
+          <button className="secondary-button" onClick={() => void revealExtensionKey()}><AnimatedText text={showExtensionKey ? t('extensionHideKey') : t('extensionShowKey')} /></button>
+          <Fade show={showExtensionKey && Boolean(extensionKey)}><button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={t('extensionCopyKey')} aria-label={t('extensionCopyKey')}><Swap id={extensionKeyCopied ? 'copied' : 'copy'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</Swap></button></Fade>
         </div>
         <Collapse open={showExtensionKey && Boolean(extensionKey)}><code className="extension-access-key">{extensionKey}</code></Collapse>
         <Collapse open={Boolean(extensionKeyError)}><p className="form-error">{extensionKeyError}</p></Collapse>
@@ -405,12 +405,12 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
 
       <section className="settings-section">
         <div className="settings-title"><BriefcaseBusiness size={17} /><div><h3>{t('workSchedule')}</h3></div></div>
-        <div className="setting-line"><span>{t('startReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('startReminder')} value={settings.workday.startTime} onChange={(value) => nested('workday', { startTime: value })} /><Toggle checked={settings.workday.startReminder} onChange={(value) => nested('workday', { startReminder: value })} /></div></div>
-        <div className="setting-line"><span>{t('endReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('endReminder')} value={settings.workday.endTime} onChange={(value) => nested('workday', { endTime: value })} /><Toggle checked={settings.workday.endReminder} onChange={(value) => nested('workday', { endReminder: value })} /></div></div>
+        <div className="setting-line"><span>{t('startReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('startReminder')} value={settings.workday.startTime} onChange={(value) => nested('workday', { startTime: value })} /><Toggle label={t('startReminder')} checked={settings.workday.startReminder} onChange={(value) => nested('workday', { startReminder: value })} /></div></div>
+        <div className="setting-line"><span>{t('endReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('endReminder')} value={settings.workday.endTime} onChange={(value) => nested('workday', { endTime: value })} /><Toggle label={t('endReminder')} checked={settings.workday.endReminder} onChange={(value) => nested('workday', { endReminder: value })} /></div></div>
       </section>
 
       <section className="settings-section settings-section--accent">
-        <div className="settings-title"><BellRing size={17} /><div><h3>{t('breaks')}</h3><p>{t('breakBody')}</p></div><Toggle checked={settings.breaks.enabled} onChange={(value) => nested('breaks', { enabled: value })} /></div>
+        <div className="settings-title"><BellRing size={17} /><div><h3>{t('breaks')}</h3><p>{t('breakBody')}</p></div><Toggle label={t('breaks')} checked={settings.breaks.enabled} onChange={(value) => nested('breaks', { enabled: value })} /></div>
         <div className="two-fields">
           <div><span>{t('every')}</span><NumberField value={settings.breaks.everyMinutes} onChange={(value) => nested('breaks', { everyMinutes: value })} suffix={t('minutes')} /></div>
           <div><span>{t('forMinutes')}</span><NumberField value={settings.breaks.durationMinutes} onChange={(value) => nested('breaks', { durationMinutes: value })} suffix={t('minutes')} /></div>
@@ -419,7 +419,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       </section>
 
       <section className="settings-section settings-section--lunch">
-        <div className="settings-title"><Coffee size={17} /><div><h3>{t('lunch')}</h3><p>{t('lunchBody')}</p></div><Toggle checked={settings.lunch.enabled} onChange={(value) => nested('lunch', { enabled: value })} /></div>
+        <div className="settings-title"><Coffee size={17} /><div><h3>{t('lunch')}</h3><p>{t('lunchBody')}</p></div><Toggle label={t('lunch')} checked={settings.lunch.enabled} onChange={(value) => nested('lunch', { enabled: value })} /></div>
         <div className="segment-control segment-control--small">
           <button className={settings.lunch.mode === 'clock' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'clock' })}>{t('atTime')}</button>
           <button className={settings.lunch.mode === 'worked' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'worked' })}>{t('afterWork')}</button>
@@ -428,7 +428,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <div><span><AnimatedText text={settings.lunch.mode === 'clock' ? t('atTime') : t('after')} /></span><motion.div key={settings.lunch.mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18, ease }}>{settings.lunch.mode === 'clock' ? <TimeInput className="time-input block" ariaLabel={t('atTime')} value={settings.lunch.time} onChange={(value) => nested('lunch', { time: value })} /> : <NumberField value={settings.lunch.afterMinutes} onChange={(value) => nested('lunch', { afterMinutes: value })} suffix={t('minutes')} />}</motion.div></div>
           <div><span>{t('lunchDuration')}</span><NumberField value={settings.lunch.durationMinutes} onChange={(value) => nested('lunch', { durationMinutes: value })} suffix={t('minutes')} /></div>
         </div>
-        <div className="setting-line lunch-counting"><div><strong>{t('lunchIncluded')}</strong><p>{t('lunchIncludedBody')}</p></div><Toggle checked={settings.lunch.includedInWorkHours} onChange={setLunchCounting} /></div>
+        <div className="setting-line lunch-counting"><div><strong>{t('lunchIncluded')}</strong><p>{t('lunchIncludedBody')}</p></div><Toggle label={t('lunchIncluded')} checked={settings.lunch.includedInWorkHours} onChange={setLunchCounting} /></div>
       </section>
 
       <section className="settings-section">
@@ -439,7 +439,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
               <motion.button key={color} layout="position" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={{ duration: 0.18, ease }} className="palette-chip" style={{ '--chip-color': color } as React.CSSProperties} title={t('removeColor')} disabled={settings.projectColors.length <= 1} onClick={() => patch('projectColors', settings.projectColors.filter((item) => item !== color))}><span /><Trash2 size={12} /></motion.button>
             ))}
           </AnimatePresence>
-          <motion.div layout="position" transition={{ duration: 0.18, ease }} className="color-adder"><input type="color" value={newColor} onChange={(event) => setNewColor(event.target.value)} /><button className="icon-button icon-button--accent" onClick={addColor} title={t('addColor')}><Plus size={15} /></button></motion.div>
+          <motion.div layout="position" transition={{ duration: 0.18, ease }} className="color-adder"><input type="color" value={newColor} aria-label={t('pickColor')} onChange={(event) => setNewColor(event.target.value)} /><button className="icon-button icon-button--accent" onClick={addColor} title={t('addColor')}><Plus size={15} /></button></motion.div>
         </div>
       </section>
 
@@ -478,7 +478,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       </section>
 
       <section className="settings-section settings-section--ai">
-        <div className="settings-title"><Sparkles size={17} /><div><h3>{t('aiAssistant')}</h3><p>{t('aiAssistantBody')}</p></div><Toggle checked={settings.ai.enabled} onChange={(value) => nested('ai', { enabled: value })} /></div>
+        <div className="settings-title"><Sparkles size={17} /><div><h3>{t('aiAssistant')}</h3><p>{t('aiAssistantBody')}</p></div><Toggle label={t('aiAssistant')} checked={settings.ai.enabled} onChange={(value) => nested('ai', { enabled: value })} /></div>
         <label className="field"><span>{t('aiModel')}</span><CustomSelect value={settings.ai.model} ariaLabel={t('aiModel')} onChange={(value) => nested('ai', { model: value as GeminiModel })} options={modelOptions} /></label>
         <label className="field"><span><KeyRound size={13} /> {t('geminiApiKey')} {settings.ai.hasApiKey && <em>{t('configured')}</em>}</span><div className="api-key-row"><input type="password" value={aiKey} onChange={(event) => setAiKey(event.target.value)} placeholder={settings.ai.hasApiKey ? '••••••••••••••••' : 'AIza…'} /><button className="secondary-button" disabled={!aiKey.trim()} onClick={saveKey}>{t('saveKey')}</button>{settings.ai.hasApiKey && <button className="icon-button icon-button--quiet" title={t('removeKey')} onClick={removeKey}><Trash2 size={14} /></button>}</div></label>
         <Collapse open={Boolean(aiKeyStatus)}><p className="settings-status">{aiKeyStatus}</p></Collapse>
@@ -505,23 +505,23 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
       </section>
 
       <section className="settings-section">
-        <div className="settings-title"><Dumbbell size={17} /><div><h3>{t('wellness')}</h3><p>{t('wellnessBody')}</p></div><Toggle checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} /></div>
+        <div className="settings-title"><Dumbbell size={17} /><div><h3>{t('wellness')}</h3><p>{t('wellnessBody')}</p></div><Toggle label={t('wellness')} checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} /></div>
         <div className="wellness-list">
           <AnimatePresence initial={false}>
           {settings.wellnessActions.map((action) => (
             <StackItem key={action.id} gap={6}><div className="wellness-item">
-              <Toggle checked={action.enabled} onChange={(enabled) => patch('wellnessActions', settings.wellnessActions.map((item) => item.id === action.id ? { ...item, enabled } : item))} />
+              <Toggle label={settings.locale === 'uk' ? action.labelUk : action.labelEn} checked={action.enabled} onChange={(enabled) => patch('wellnessActions', settings.wellnessActions.map((item) => item.id === action.id ? { ...item, enabled } : item))} />
               <span>{settings.locale === 'uk' ? action.labelUk : action.labelEn}</span>
-              <button className="icon-button icon-button--quiet" onClick={() => patch('wellnessActions', settings.wellnessActions.filter((item) => item.id !== action.id))}><Trash2 size={14} /></button>
+              <button className="icon-button icon-button--quiet" onClick={() => patch('wellnessActions', settings.wellnessActions.filter((item) => item.id !== action.id))} title={t('deleteAction')} aria-label={t('deleteAction')}><Trash2 size={14} /></button>
             </div></StackItem>
           ))}
           </AnimatePresence>
         </div>
-        <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction}><Plus size={16} /></button></div>
+        <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction} title={t('addAction')} aria-label={t('addAction')}><Plus size={16} /></button></div>
       </section>
 
       <section className="settings-section compact-settings">
-        <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
+        <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle label={t('idle')} checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
       </section>
 
       <ConvexSyncSettings locale={settings.locale} />

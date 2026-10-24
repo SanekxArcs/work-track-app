@@ -22,9 +22,11 @@ export const publish = internalMutation({
       )
       .unique()
     if (old) {
-      if (args.capturedAt >= old.capturedAt) await ctx.db.replace(old._id, args)
+      if (args.capturedAt < old.capturedAt)
+        return { ok: true, accepted: false, reason: 'stale' }
+      await ctx.db.replace(old._id, args)
     } else await ctx.db.insert('workBuddyProjectCatalogs', args)
-    return { ok: true }
+    return { ok: true, accepted: true }
   }
 })
 export const registry = internalQuery({

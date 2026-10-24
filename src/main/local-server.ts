@@ -12,6 +12,16 @@ export interface ExtensionServerStatus {
 
 export type RemoteAction = (method: string, args: unknown[]) => Promise<unknown> | unknown
 
+/** Bridge methods that change tracked data; only these notify the other listeners. */
+export const MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'startWorkday', 'endWorkday', 'resumeWorkday', 'setOvertimeRedeemed',
+  'startTask', 'pauseTask', 'resumeTask', 'stopTask', 'pauseAllTasks', 'stopAllTasks',
+  'startRest', 'pauseRest', 'resumeRest', 'completeRest', 'skipRest', 'updateRestStart', 'setRestAlarmMuted',
+  'updateTask', 'splitTask', 'mergeTasks', 'deleteTask',
+  'createPlannedTask', 'updatePlannedTask', 'deletePlannedTask',
+  'createProject', 'updateProject', 'updateSettings', 'saveAiKey', 'applyBackupImport'
+])
+
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
   response.end(JSON.stringify(body))
@@ -87,7 +97,7 @@ export class WorkBuddyLocalServer {
     if (origin?.startsWith('chrome-extension://')) {
       response.setHeader('Access-Control-Allow-Origin', origin)
       response.setHeader('Vary', 'Origin')
-      response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Work-Buddy-Key')
+      response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Work-Buddy-Key, X-Work-Buddy-Client')
       response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     }
   }
@@ -119,16 +129,16 @@ export class WorkBuddyLocalServer {
     }
 
     const url = new URL(request.url ?? '/', `http://127.0.0.1:${WORK_BUDDY_LOCAL_PORT}`)
-    if (request.method === 'GET' && url.pathname === '/health') {
-      writeJson(response, 200, { ok: true, ...this.getStatus() })
-      return
-    }
-
     // Web pages can reach loopback too; only the extension (or a non-browser
-    // client without an Origin) may use the bridge.
+    // client without an Origin) may use the bridge. This also covers /health so
+    // a page cannot probe whether Work Buddy is running.
     const origin = request.headers.origin
     if (origin !== undefined && !origin.startsWith('chrome-extension://')) {
       writeJson(response, 403, { error: 'Forbidden origin' })
+      return
+    }
+    if (request.method === 'GET' && url.pathname === '/health') {
+      writeJson(response, 200, { ok: true, ...this.getStatus() })
       return
     }
     if (!this.isAuthorized(request)) {
@@ -169,9 +179,7 @@ export class WorkBuddyLocalServer {
           return
         }
         const result = await this.invoke(payload.method, payload.args)
-        if (!['getAppVersion', 'getSnapshot', 'getHistory', 'getDaySnapshot', 'getOvertimeOverview', 'getCustomSoundData', 'getProjectStats'].includes(payload.method)) {
-          this.onDataChanged()
-        }
+        if (MUTATING_METHODS.has(payload.method)) this.onDataChanged()
         writeJson(response, 200, { result })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unexpected server error'

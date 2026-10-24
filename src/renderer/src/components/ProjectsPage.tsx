@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, Reorder, useDragControls } from 'motion/react'
-import { Archive, ArchiveRestore, CalendarClock, Check, CheckCheck, GitMerge, GripVertical, Pencil, Plus, Search, Target, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, CalendarClock, Check, CheckCheck, ChevronDown, GitMerge, GripVertical, Pencil, Plus, Search, Target, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, Project, ProjectStats, ProjectStatus, ProjectTaskSummary, ProjectType } from '@shared/types'
 import { localDateKey, localDayBounds } from '@shared/local-date'
 import type { Translator } from '../lib/i18n'
@@ -201,7 +201,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       onSnapshot(await action())
       return true
     } catch (caught) {
-      setError(errorText(caught, t, 'timeUpdateError'))
+      setError(errorText(caught, t, 'saveFailed'))
       return false
     } finally {
       setBusy(false)
@@ -341,33 +341,34 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
             </div>
           </div>
           <div className="project-card__actions">
-            <button className="icon-button icon-button--quiet" disabled={busy} onClick={() => beginEdit(project)} title={t('editProject')}><Pencil size={14} /></button>
+            <button className="icon-button icon-button--quiet" disabled={busy} onClick={() => beginEdit(project)} title={t('editProject')} aria-label={t('editProject')}><Pencil size={14} /></button>
             {project.archived
-              ? <button className="icon-button icon-button--quiet" disabled={busy} onClick={() => void setArchived(project, false)} title={t('restoreProject')}><ArchiveRestore size={14} /></button>
-              : <button className="icon-button icon-button--quiet project-complete-button" disabled={busy} onClick={() => void setArchived(project, true)} title={t('completeProject')}><CheckCheck size={15} /></button>}
+              ? <button className="icon-button icon-button--quiet" disabled={busy} onClick={() => void setArchived(project, false)} title={t('restoreProject')} aria-label={t('restoreProject')}><ArchiveRestore size={14} /></button>
+              : <button className="icon-button icon-button--quiet project-complete-button" disabled={busy} onClick={() => void setArchived(project, true)} title={t('completeProject')} aria-label={t('completeProject')}><CheckCheck size={15} /></button>}
+            <button className="icon-button icon-button--quiet project-card__expand" aria-expanded={expanded} aria-controls={`project-details-${project.id}`} onClick={() => setExpandedId(expanded ? null : project.id)} title={expanded ? t('hideDetails') : t('showDetails')} aria-label={expanded ? t('hideDetails') : t('showDetails')}><ChevronDown size={15} /></button>
           </div>
         </header>
         <div className="project-card__time">
-          <strong><AnimatedDuration ms={projectStats.totalMs} compact /></strong>
+          <strong><AnimatedDuration ms={projectStats.totalMs} compact locale={locale} /></strong>
           {budgetMs > 0 ? (
             <div className="project-card__budget">
               <div className={`project-card__bar ${overBudget ? 'project-card__bar--over' : ''}`}><span style={{ width: `${Math.min(100, budgetPct)}%` }} /></div>
-              <small><AnimatedNumber value={Math.round(budgetPct)} suffix="%" /> · {t('budgetLabel')} {formatBudgetHours(project.budgetHours, locale)}{t('hoursShort')}</small>
+              <small><AnimatedNumber value={Math.round(budgetPct)} suffix="%" /> · {t('budgetLabel')} {formatBudgetHours(project.budgetHours, locale)}{'\u2009'}{t('hoursShort')}</small>
             </div>
           ) : (
             <div className="project-card__bar"><span style={{ width: `${Math.max(projectStats.totalMs > 0 ? 3 : 0, (projectStats.totalMs / maxTotal) * 100)}%` }} /></div>
           )}
         </div>
         <StackCollapse open={expanded} gap={10}>
-          <div className="project-details no-toggle">
+          <div className="project-details no-toggle" id={`project-details-${project.id}`}>
             <dl className="project-card__stats">
-              <div><dt>{t('trackedToday')}</dt><dd><AnimatedDuration ms={projectStats.todayMs} compact /></dd></div>
-              <div><dt>{t('trackedWeek')}</dt><dd><AnimatedDuration ms={projectStats.weekMs} compact /></dd></div>
+              <div><dt>{t('trackedToday')}</dt><dd><AnimatedDuration ms={projectStats.todayMs} compact locale={locale} /></dd></div>
+              <div><dt>{t('trackedWeek')}</dt><dd><AnimatedDuration ms={projectStats.weekMs} compact locale={locale} /></dd></div>
               <div><dt>{t('taskCountLabel')}</dt><dd><AnimatedNumber value={projectStats.taskCount} /></dd></div>
               <div><dt>{t('lastWorkedLabel')}</dt><dd>{lastWorkedLabel(projectStats.lastWorkedAt, now, locale, t('neverWorked'))}</dd></div>
             </dl>
             {project.deadline && <p className="project-details__meta"><CalendarClock size={12} />{t('deadlineLabel')}: {shortDate(new Date(`${project.deadline}T12:00:00`).getTime(), locale)} · {deadlineText}</p>}
-            {budgetMs > 0 && <p className="project-details__meta"><Target size={12} />{formatDuration(projectStats.totalMs, true)} / {formatBudgetHours(project.budgetHours, locale)}{t('hoursShort')}{overBudget ? ` · +${formatDuration(projectStats.totalMs - budgetMs, true)}` : ` · ${formatDuration(budgetMs - projectStats.totalMs, true)} ${t('budgetLeft')}`}</p>}
+            {budgetMs > 0 && <p className="project-details__meta"><Target size={12} />{formatDuration(projectStats.totalMs, true, locale)} / {formatBudgetHours(project.budgetHours, locale)}{'\u2009'}{t('hoursShort')}{overBudget ? ` · +${formatDuration(projectStats.totalMs - budgetMs, true, locale)}` : ` · ${formatDuration(budgetMs - projectStats.totalMs, true, locale)} ${t('budgetLeft')}`}</p>}
             <h4>{t('projectTasksTitle')}</h4>
             {projectTasks === null ? <p className="empty-copy">…</p> : projectTasks.length === 0 ? <p className="empty-copy">{t('noTasksYet')}</p> : (
               <ul className="project-task-list">
@@ -375,7 +376,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
                   <li key={task.id}>
                     <span className={`status-dot ${task.status === 'running' ? 'status-dot--live' : ''}`} />
                     <div><strong>{task.label || t('noDescription')}</strong><small>{taskWhen(task, locale)}{task.intervalCount > 1 ? ` · ×${task.intervalCount}` : ''}</small></div>
-                    <em>{formatDuration(task.totalMs, true)}</em>
+                    <em>{formatDuration(task.totalMs, true, locale)}</em>
                   </li>
                 ))}
               </ul>
@@ -427,10 +428,10 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
       </div>}
 
       <StackCollapse open={Boolean(error) && !confirm}><p className="form-error">{error}</p></StackCollapse>
-      <StackCollapse open={view === 'archive' && !searching}><p className="empty-copy projects-note">{t('completedProjectNote')}</p></StackCollapse>
+      <StackCollapse open={view === 'archive' && !searching}><p className="empty-copy projects-note page-note">{t('completedProjectNote')}</p></StackCollapse>
 
       {listed.length === 0 ? (
-        <p className="empty-copy projects-empty">{snapshot.projects.length === 0 ? t('noProjectsYetTab') : t('noProjectsMatch')}</p>
+        <p className="empty-copy projects-empty page-note">{snapshot.projects.length === 0 ? t('noProjectsYetTab') : t('noProjectsMatch')}</p>
       ) : canReorder ? (
         <Reorder.Group as="div" axis="y" className="project-cards" values={dragOrder} onReorder={(ids: string[]) => { dragOrderRef.current = ids; setDragOrder(ids) }}>
           <AnimatePresence initial={false}>

@@ -33,6 +33,31 @@ interface Vault {
   encrypt(value: string): string
   decrypt(value: string): string
 }
+/** HTTP failure from the activity backend; `code` is the server's machine-readable reason when it sent one. */
+export class ActivitySyncError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message)
+    this.name = 'ActivitySyncError'
+  }
+}
+const REJECTED_KEY = 'rejected'
+function localTimezone(): { tzOffsetMinutes: number; timezone?: string } {
+  const offset = new Date().getTimezoneOffset()
+  let timezone: string | undefined
+  try {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    timezone = undefined
+  }
+  return {
+    tzOffsetMinutes: Number.isInteger(offset) && Math.abs(offset) <= 840 ? offset : 0,
+    ...(typeof timezone === 'string' && timezone && timezone.length <= 64 ? { timezone } : {})
+  }
+}
 export class ActivityService {
   private collector: Pick<WindowsActivityCollector, 'start' | 'stop'>
   private previous?: { at: number; record: ActivityRecord }
@@ -60,7 +85,11 @@ export class ActivityService {
         (value) => this.observe(value),
         (message) => {
           this.error = message
-          if (message) this.previous = undefined
+          if (message) {
+            // Nothing is being captured while the helper is down or a sample failed to persist.
+            this.previous = undefined
+            if (this.state === 'Recording') this.state = 'Paused'
+          }
         }
       )
   }
@@ -312,8 +341,12 @@ export class ActivityService {
       this.state = 'Paused'
     }
     this.store.prune()
-    for (const day of this.store.days()) this.store.mark(day)
-    this.store.mark(localDateKey(Date.now()))
+    // Re-upload history only when what leaves the device changed (privacy filters, identity) or
+    // it goes to a different deployment. Pausing, idle thresholds or toggling cloud do not.
+    if (privacyChanged || siteUrl !== previous.siteUrl) {
+      for (const day of this.store.days()) this.store.mark(day)
+      this.store.mark(localDateKey(Date.now()))
+    }
     return this.status()
   }
   importConnection(text: string): ActivityStatus {
@@ -484,9 +517,9 @@ export class ActivityService {
   deleteDay(day: string): void {
     if (!validActivityDay(day)) throw new Error('Invalid activity date')
     this.previous = undefined
+    // The store removes the day's records, corrections, notes and review state and marks the
+    // day dirty so the deletion propagates as an empty envelope.
     this.store.deleteDay(day)
-    for (const prefix of ['matching:', 'decisions:', 'note:', 'review:'])
-      this.store.set(prefix + day, null)
     this.epoch++
   }
   private key(name: string): string {
@@ -515,12 +548,25 @@ export class ActivityService {
         },
         ...(body ? { body: JSON.stringify(body) } : {})
       })
-      if (!response.ok)
-        throw new Error(
-          response.status === 401
+      if (!response.ok) {
+        const failure = (await response.json().catch(() => null)) as {
+          error?: unknown
+          code?: unknown
+        } | null
+        const code =
+          typeof failure?.code === 'string' ? failure.code : undefined
+        const detail =
+          typeof failure?.error === 'string' && failure.error
+            ? failure.error.slice(0, 200)
+            : ''
+        throw new ActivitySyncError(
+          response.status === 401 || code === 'unauthorized'
             ? 'Activity connection key was rejected'
-            : `Activity sync returned HTTP ${response.status}`
+            : `Activity sync returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+          response.status,
+          code
         )
+      }
       return await response.json()
     } finally {
       clearTimeout(timeout)
@@ -536,12 +582,32 @@ export class ActivityService {
     })
     return this.pending
   }
+  /** Waits for any in-flight upload, then uploads once more so the latest local state is sent. */
+  async resync(): Promise<void> {
+    if (this.pending) await this.pending
+    await this.sync()
+  }
+  /** Days the server refused (4xx) at a given dirty revision; retried only once the day changes. */
+  rejected(): Record<string, number> {
+    return this.store.get<Record<string, number>>(REJECTED_KEY) ?? {}
+  }
   private async upload(): Promise<void> {
     try {
       this.store.prune()
       const config = this.store.config()
-      for (const item of this.store.dirty()) {
+      const dirty = this.store.dirty()
+      const rejected = this.rejected()
+      // Forget rejections for days that were since changed or are no longer pending.
+      for (const day of Object.keys(rejected))
+        if (!dirty.some((d) => d.day === day && d.revision === rejected[day]))
+          delete rejected[day]
+      let rejection: string | null = null
+      for (const item of dirty) {
         if (!this.running) break
+        if (rejected[item.day] === item.revision) {
+          rejection ??= `Activity for ${item.day} was rejected by the server and waits for new observations`
+          continue
+        }
         const envelope: ActivityEnvelope = {
           schemaVersion: 1,
           sourceId: this.store.sourceId,
@@ -550,6 +616,7 @@ export class ActivityService {
           day: item.day,
           capturedAt: Date.now(),
           retentionDays: config.retentionDays,
+          ...localTimezone(),
           records: this.store
             .local(item.day)
             .filter((r) => !this.excluded(r.app, r.title))
@@ -559,29 +626,53 @@ export class ActivityService {
               title: config.captureTitles ? r.title : ''
             }))
         }
-        const receipt = (await this.call(
-          '/work-buddy/activity',
-          'PUT',
-          envelope
-        )) as {
+        let receipt: {
           sourceId?: string
           day?: string
           syncedAt?: number
+          accepted?: boolean
+          reason?: string
         }
+        try {
+          receipt = (await this.call(
+            '/work-buddy/activity',
+            'PUT',
+            envelope
+          )) as typeof receipt
+        } catch (error) {
+          // One malformed day must not block the others; 401 and network failures still abort.
+          if (
+            error instanceof ActivitySyncError &&
+            error.status >= 400 &&
+            error.status < 500 &&
+            error.status !== 401
+          ) {
+            if (!this.running) return
+            rejected[item.day] = item.revision
+            this.store.set(REJECTED_KEY, rejected)
+            rejection = `${item.day}: ${error.message}`
+            continue
+          }
+          throw error
+        }
+        if (!this.running) return
+        // The server already holds a newer capture for this day: keep it dirty so the next tick
+        // (with a newer capturedAt) replaces it, and never confirm what was not stored.
+        if (receipt.accepted === false) continue
         if (
           receipt.sourceId !== envelope.sourceId ||
           receipt.day !== item.day ||
           !Number.isFinite(receipt.syncedAt)
         )
           throw new Error('Invalid activity sync confirmation')
-        if (!this.running) return
         this.store.ack(item.day, item.revision)
       }
       if (this.running) {
+        this.store.set(REJECTED_KEY, rejected)
         if (this.projectProvider) await this.refreshProjects()
         if (!this.running) return
         this.store.set('lastSyncedAt', Date.now())
-        this.syncError = null
+        this.syncError = rejection
         this.nextAttempt = Date.now() + 60000
       }
     } catch (error) {

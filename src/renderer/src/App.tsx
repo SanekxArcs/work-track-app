@@ -2,7 +2,7 @@ import { ActivityPage } from './components/ActivityPage'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Monitor, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
-import type { AppSnapshot, StartMode, Task } from '@shared/types'
+import type { AppSnapshot, Locale, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
 import { DaySummary } from './components/DaySummary'
@@ -28,8 +28,8 @@ const NOTCH_WIDTH = 264
 const NOTCH_HEIGHT = 30
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
 
-function SlideValue({ slide }: { slide: HeaderSlide }): React.JSX.Element | null {
-  if (slide.ms !== undefined) return <b><AnimatedDuration ms={slide.ms} compact={slide.compactMs} /></b>
+function SlideValue({ slide, locale }: { slide: HeaderSlide; locale: Locale }): React.JSX.Element | null {
+  if (slide.ms !== undefined) return <b><AnimatedDuration ms={slide.ms} compact={slide.compactMs} locale={locale} /></b>
   if (slide.count !== undefined) return <b><AnimatedNumber value={slide.count} /></b>
   return slide.value ? <b>{slide.value}</b> : null
 }
@@ -529,11 +529,10 @@ export default function App(): React.JSX.Element {
     setEditorOpen(false)
   }
 
-  const endDay = async (): Promise<void> => {
-    const result = await window.workBuddy.endWorkday()
-    setSnapshot(result)
+  const endDay = (): Promise<void> => attempt(async () => {
+    setSnapshot(await window.workBuddy.endWorkday())
     setTab('activity')
-  }
+  })
 
   const fitWindowToContent = (): void => {
     const content = contentRef.current
@@ -545,7 +544,7 @@ export default function App(): React.JSX.Element {
     { id: 'focus', label: t('focus'), icon: Clock3 },
     { id: 'day', label: t('day'), icon: BarChart3 },
     { id: 'projects', label: t('projectsTab'), icon: BriefcaseBusiness },
-    { id: 'activity', label: snapshot.settings.locale === 'uk' ? 'Активність ПК' : 'PC activity', icon: Monitor },
+    { id: 'activity', label: t('activity'), icon: Monitor },
     { id: 'settings', label: t('settings'), icon: Settings2 }
   ]
 
@@ -579,7 +578,7 @@ export default function App(): React.JSX.Element {
           <strong>{t('appName')}</strong>
           <AnimatePresence mode="wait" initial={false}>
             {headerSlide && <motion.small key={headerSlide.id} className="brand-slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
-              {headerSlide.label}<SlideValue slide={headerSlide} />
+              <span className="brand-slide__label">{headerSlide.label}</span><SlideValue slide={headerSlide} locale={t.locale} />
             </motion.small>}
           </AnimatePresence>
         </div>
@@ -615,7 +614,7 @@ export default function App(): React.JSX.Element {
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
                   <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
-                    <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />
+                    <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} attempt={attempt} />
                     {openWorkdayStartedAt && <section className="focus-hero">
                       <div className="focus-hero__top">
                         <div>
@@ -630,7 +629,7 @@ export default function App(): React.JSX.Element {
                         {focusTimelineSegments.map((segment) => {
                           const left = ((segment.startedAt - focusTimelineStart) / focusTimelineSpan) * 100
                           const width = ((segment.endedAt - segment.startedAt) / focusTimelineSpan) * 100
-                          return <span key={segment.id} title={`${segment.label} · ${formatDuration(segment.endedAt - segment.startedAt, true)}`} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: segment.color }} />
+                          return <span key={segment.id} title={`${segment.label} · ${formatDuration(segment.endedAt - segment.startedAt, true, t.locale)}`} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: segment.color }} />
                         })}
                       </div>}
                     </section>}
@@ -647,7 +646,7 @@ export default function App(): React.JSX.Element {
                       </div>
                     </div>
 
-                    <StackCollapse open={showFocusEndDay}><button className="end-day-button focus-end-day" onClick={endDay}><Square size={15} fill="currentColor" />{t('endDay')}</button></StackCollapse>
+                    <StackCollapse open={showFocusEndDay}><button className="end-day-button focus-end-day" onClick={() => void endDay()}><Square size={15} fill="currentColor" />{t('endDay')}</button></StackCollapse>
 
                     <StackCollapse open={showPlannedTasks}><PlannedTasksPanel snapshot={snapshot} t={t} onSnapshot={setSnapshot} /></StackCollapse>
 
@@ -750,7 +749,7 @@ export default function App(): React.JSX.Element {
                 <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
                 <AnimatePresence mode="wait" initial={false}>
                   {headerSlide && <motion.span key={headerSlide.id} className="notch-pill__slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
-                    <span className="notch-pill__label">{headerSlide.label}</span><SlideValue slide={headerSlide} />
+                    <span className="notch-pill__label">{headerSlide.label}</span><SlideValue slide={headerSlide} locale={t.locale} />
                   </motion.span>}
                 </AnimatePresence>
                 </button>
@@ -844,7 +843,7 @@ export default function App(): React.JSX.Element {
       </AnimatePresence>
 
       {!compact && <div className="window-bottom-edge" aria-hidden="true" />}
-      {!compact && <button className="resize-fit-handle no-drag" onDoubleClick={fitWindowToContent} title={t('fitWindowToContent')} aria-label={t('fitWindowToContent')}><span /></button>}
+      {!compact && <button className="resize-fit-handle no-drag" onDoubleClick={fitWindowToContent} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fitWindowToContent() } }} title={t('fitWindowToContent')} aria-label={t('fitWindowToContent')}><span /></button>}
       {!compact && tab !== 'focus' && <div className="resize-corner" aria-hidden="true" />}
 
       {taskEditor}

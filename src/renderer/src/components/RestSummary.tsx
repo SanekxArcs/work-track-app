@@ -31,7 +31,7 @@ export function RestSummary({ snapshot, now, t, onSnapshot, allowActions = true 
       return <div className={`rest-balance__row rest-balance__row--${type}`} key={type}>
         <Icon size={16} />
         <div><strong>{type === 'lunch' ? t('lunchTime') : t('breakTime')}</strong>
-          <small>{t('restUsed')} {formatDuration(usedMs, true)} · {t('restUnused')} {formatDuration(remainingMs, true)}</small>
+          <small>{t('restUsed')} {formatDuration(usedMs, true, t.locale)} · {t('restUnused')} {formatDuration(remainingMs, true, t.locale)}</small>
         </div>
         {allowActions && snapshot.workday?.endedAt === null && remainingMs > 0 && <button disabled={busy || running} onClick={() => void useRest(type)} title={t('useRestNow')} aria-label={`${t('useRestNow')}: ${type === 'lunch' ? t('lunchTime') : t('breakTime')}`}><Play size={14} fill="currentColor" /><span>{t('useRestNow')}</span></button>}
       </div>

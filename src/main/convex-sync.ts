@@ -48,9 +48,23 @@ export class ConvexSyncService {
   constructor(private store: Store, private vault: Vault, private request: typeof fetch = fetch, private now = Date.now) {
     this.hasKey = Boolean(store.getSecret(TOKEN_KEY))
     const stored = store.getSecret(STATE_KEY)
-    const parsed = stored ? JSON.parse(stored) : null
-    this.state = parsed ? { ...parsed, ...normalizeSyncConfig(parsed) } : {
-      enabled: false, siteUrl: '', intervalHours: 12, sourceId: randomUUID(), lastSyncedAt: null, lastAttemptAt: null
+    const defaults = { enabled: false, siteUrl: '', intervalHours: 12 as const, sourceId: randomUUID(), lastSyncedAt: null, lastAttemptAt: null }
+    if (!stored) {
+      this.state = defaults
+    } else {
+      // A corrupt or outdated saved state must never prevent the app from starting. Keep the
+      // device identity when it is readable so a later re-configuration continues the same source.
+      let parsed: unknown = null
+      try {
+        parsed = JSON.parse(stored)
+        this.state = { ...(parsed as object), ...normalizeSyncConfig(parsed as ConvexSyncConfig) } as typeof this.state
+      } catch (error) {
+        const sourceId = typeof (parsed as { sourceId?: unknown } | null)?.sourceId === 'string' && (parsed as { sourceId: string }).sourceId
+          ? (parsed as { sourceId: string }).sourceId
+          : defaults.sourceId
+        this.state = { ...defaults, sourceId }
+        this.error = `Saved sync settings could not be read (${error instanceof Error ? error.message : 'invalid data'}). Sync is paused until you save them again.`
+      }
     }
     this.persist()
   }

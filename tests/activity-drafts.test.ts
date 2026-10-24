@@ -268,3 +268,19 @@ test('recording historical work preserves a currently running task and workday',
     db.close()
   }
 })
+test('replaying a recorded range is idempotent only while its notes and project are unchanged', () => {
+  const db = new WorkBuddyDatabase(':memory:')
+  try {
+    const entry = { key: hash('same'), notes: 'Reviewed work', projectId: null, intervals: [{ start: base, end: base + 5 * minute }] }
+    const first = db.recordActivityTasks(day, [entry])
+    const replay = db.recordActivityTasks(day, [{ ...entry, notes: '  Reviewed work ' }])
+    assert.equal(replay.created, 0)
+    assert.deepEqual(replay.taskIds, first.taskIds)
+    assert.throws(() => db.recordActivityTasks(day, [{ ...entry, notes: 'Different notes' }]), /already recorded as a task/)
+    const project = db.createProject({ name: 'Client', color: '#123456' }).projects[0]
+    assert.throws(() => db.recordActivityTasks(day, [{ ...entry, projectId: project.id }]), /already recorded as a task/)
+    assert.equal(db.getDaySnapshot(day).tasks.length, 1)
+  } finally {
+    db.close()
+  }
+})

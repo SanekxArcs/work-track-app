@@ -288,7 +288,12 @@ const messages = {
     pairingOffline: 'Немає з’єднання з локальним сервером',
     pairingFailed: 'Не вдалося підключитися',
     pairingInvalidKey: 'Ключ не підійшов. Скопіюй актуальний ключ у Work Buddy.',
-    pairingExpired: 'Ключ підключення змінився. Встав новий ключ із Work Buddy.'
+    pairingExpired: 'Ключ підключення змінився. Підключи розширення знову через його спливне вікно.',
+    pairingPopupBody: 'Підключення виконується у спливному вікні розширення: натисни іконку Work Buddy на панелі Chrome і встав туди ключ один раз.',
+    pairingPairedTitle: 'Розширення підключено',
+    pairingPaired: 'Work Buddy на цьому комп’ютері приймає запити розширення. Відкрий будь-який сайт і натисни плаваючу кнопку.',
+    pairingUnpair: 'Відключити',
+    pairingUnpaired: 'Ключ видалено. Щоб підключитися знову, встав актуальний ключ із Work Buddy.'
   },
   en: {
     taskCompleted: 'Completed',
@@ -577,7 +582,12 @@ const messages = {
     pairingOffline: 'No connection to the local server',
     pairingFailed: 'Could not connect',
     pairingInvalidKey: "That key didn't work. Copy the current key from Work Buddy.",
-    pairingExpired: 'The connection key changed. Paste the new key from Work Buddy.'
+    pairingExpired: 'The connection key changed. Pair the extension again from its toolbar popup.',
+    pairingPopupBody: 'Pair from the extension popup: click the Work Buddy icon in the Chrome toolbar and paste the key there once.',
+    pairingPairedTitle: 'Extension connected',
+    pairingPaired: 'Work Buddy on this computer accepts requests from the extension. Open any site and click the floating button.',
+    pairingUnpair: 'Unpair',
+    pairingUnpaired: 'The key was removed. Paste the current key from Work Buddy to connect again.'
   }
 } as const
 

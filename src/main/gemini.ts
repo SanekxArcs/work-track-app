@@ -110,11 +110,23 @@ export class GeminiService {
         })
       }
     )
-    const payload = (await response.json()) as GeminiResponse
-    if (!response.ok)
+    // Read the body as text first: error pages are not always JSON, and a parse
+    // failure must not hide the HTTP status from the user.
+    const raw = await response.text()
+    let payload: GeminiResponse = {}
+    try {
+      payload = JSON.parse(raw) as GeminiResponse
+    } catch {
+      payload = {}
+    }
+    if (!response.ok) {
+      const detail = payload.error?.message?.trim()
       throw new Error(
-        payload.error?.message || `Gemini request failed (${response.status})`
+        `Gemini request failed (${response.status})${detail ? `: ${detail}` : ''}`
       )
+    }
+    if (!payload || typeof payload !== 'object')
+      throw new Error('Gemini returned an unreadable response')
     const text = responseText(payload)
     if (!text) throw new Error('Gemini returned an empty response')
     return text
@@ -128,12 +140,12 @@ export class GeminiService {
     const projects = snapshot.projects
       .filter((project) => !project.archived)
       .map((project) => project.name)
-    const history = taskMinutes(snapshot).slice(0, 20)
+    // Only the task being edited and the project names leave the device; other
+    // tasks' notes are not needed for this suggestion.
     const prompt = `You are a concise assistant inside a personal time tracker. Reply only as JSON.
 Language for the description: ${locale === 'uk' ? 'Ukrainian' : 'English'}.
 Current task: ${JSON.stringify({ project: snapshot.projects.find((project) => project.id === task.projectId)?.name ?? '', description: task.notes })}
 Known project names: ${JSON.stringify(projects)}
-Recent work context: ${JSON.stringify(history)}
 Improve the task description without inventing facts. Suggest one existing project name or null. Keep the description short and useful.
 JSON schema: {"projectName":"string|null","description":"string"}`
     const raw = await this.generate(snapshot.settings.ai.model, prompt, true)

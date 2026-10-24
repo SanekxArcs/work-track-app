@@ -1,7 +1,7 @@
 {
   "name": "work-buddy-extension",
   "displayName": "Work Buddy",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "private": true,
   "description": "Local browser companion for Work Buddy",
   "scripts": {

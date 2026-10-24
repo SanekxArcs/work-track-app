@@ -36,16 +36,18 @@ jobs:
       - name: Build desktop app
         run: npm run build
 
+      # Advisory only: a new upstream advisory must not block unrelated changes.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
 
-  web:
-    name: Web checks
+  extension:
+    name: Extension checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: apps/web
+        working-directory: apps/extension
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -55,16 +57,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: apps/extension/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Type-check web app
-        run: npm run typecheck
+      - name: Type-check extension
+        run: npx tsc --noEmit -p tsconfig.json
 
-      - name: Build web app
+      - name: Build extension
         run: npm run build
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true

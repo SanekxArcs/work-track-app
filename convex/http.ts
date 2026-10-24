@@ -15,7 +15,7 @@ const http = httpRouter()
 const publish = makeFunctionReference<
   'mutation',
   { sourceId: string; storageId: GenericId<'_storage'>; exportedAt: number },
-  { sourceId: string; syncedAt: number }
+  { sourceId: string; syncedAt: number; accepted: boolean; reason?: string }
 >('snapshots:publish')
 const latest = makeFunctionReference<
   'query',
@@ -26,43 +26,87 @@ const headers = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json'
 }
+/**
+ * Machine-readable error codes. The `error`/`detail` strings stay stable for
+ * older clients that match on them; new clients should switch on `code`.
+ */
+type ErrorCode =
+  | 'UNAUTHORIZED'
+  | 'KEYS_NOT_CONFIGURED'
+  | 'UNSUPPORTED_MEDIA_TYPE'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'INVALID_SNAPSHOT'
+  | 'INVALID_SOURCE'
+  | 'INVALID_ACTIVITY_DAY'
+  | 'OUTSIDE_RETENTION'
+  | 'INVALID_DEVICE'
+  | 'INVALID_CATALOG'
+  | 'LINK_CONFLICT'
+  | 'NOT_FOUND'
+  | 'RETRY'
+  | 'INVALID_LINK'
+  | 'INTERNAL'
 function reply(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers })
 }
-function authorize(request: Request, mode: 'read' | 'write'): Response | null {
+function fail(
+  status: number,
+  error: string,
+  code: ErrorCode,
+  detail?: string
+): Response {
+  return reply({ error, code, ...(detail ? { detail } : {}) }, status)
+}
+const bytes = (text: string): number => new TextEncoder().encode(text).length
+const isJson = (request: Request): boolean =>
+  Boolean(request.headers.get('Content-Type')?.includes('application/json'))
+const utcDay = (at: number): string => new Date(at).toISOString().slice(0, 10)
+async function digest(value: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  )
+}
+/** Compares secrets without leaking their length or a matching prefix through timing. */
+async function sameSecret(presented: string, expected: string): Promise<boolean> {
+  const [a, b] = await Promise.all([digest(presented), digest(expected)])
+  let diff = a.length ^ b.length
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ (b[i] ?? 0)
+  return diff === 0
+}
+async function authorize(
+  request: Request,
+  mode: 'read' | 'write'
+): Promise<Response | null> {
   const write = process.env.WORK_BUDDY_WRITE_KEY
   const read = process.env.WORK_BUDDY_READ_KEY
   if (!validKeys(write, read))
-    return reply(
-      {
-        error:
-          'Configure distinct read and write keys of at least 32 characters'
-      },
-      503
+    return fail(
+      503,
+      'Configure distinct read and write keys of at least 32 characters',
+      'KEYS_NOT_CONFIGURED'
     )
-  if (
-    request.headers.get('Authorization') !==
-    `Bearer ${mode === 'write' ? write : read}`
-  )
-    return reply({ error: 'Unauthorized' }, 401)
+  const expected = `Bearer ${mode === 'write' ? write : read}`
+  const presented = request.headers.get('Authorization') ?? ''
+  if (!(await sameSecret(presented, expected)))
+    return fail(401, 'Unauthorized', 'UNAUTHORIZED')
   return null
 }
 http.route({
   path: '/work-buddy/snapshot',
   method: 'PUT',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'write')
+    const denied = await authorize(request, 'write')
     if (denied) return denied
-    if (!request.headers.get('Content-Type')?.includes('application/json'))
-      return reply({ error: 'Expected application/json' }, 415)
+    if (!isJson(request))
+      return fail(415, 'Expected application/json', 'UNSUPPORTED_MEDIA_TYPE')
     const raw = await request.text()
-    if (new TextEncoder().encode(raw).length > MAX_SYNC_BYTES)
-      return reply({ error: 'Snapshot exceeds 10 MB' }, 413)
+    if (bytes(raw) > MAX_SYNC_BYTES)
+      return fail(413, 'Snapshot exceeds 10 MB', 'PAYLOAD_TOO_LARGE')
     let snapshot: Record<string, unknown>
     try {
       snapshot = validateSnapshot(JSON.parse(raw))
     } catch {
-      return reply({ error: 'Invalid Work Buddy snapshot' }, 400)
+      return fail(400, 'Invalid Work Buddy snapshot', 'INVALID_SNAPSHOT')
     }
     const storageId = await ctx.storage.store(
       new Blob([JSON.stringify(snapshot)], { type: 'application/json' })
@@ -84,16 +128,17 @@ http.route({
   path: '/work-buddy/snapshot',
   method: 'GET',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'read')
+    const denied = await authorize(request, 'read')
     if (denied) return denied
     const sourceId = new URL(request.url).searchParams.get('sourceId')
     if (!sourceId || !/^[a-zA-Z0-9-]{1,80}$/.test(sourceId))
-      return reply({ error: 'A valid sourceId is required' }, 400)
+      return fail(400, 'A valid sourceId is required', 'INVALID_SOURCE')
     const record = await ctx.runQuery(latest, { sourceId })
-    if (!record) return reply({ error: 'No upload for this source yet' }, 404)
+    if (!record)
+      return fail(404, 'No upload for this source yet', 'NOT_FOUND')
     const blob = await ctx.storage.get(record.storageId)
     if (!blob)
-      return reply({ error: 'Snapshot changed; retry the request' }, 409)
+      return fail(409, 'Snapshot changed; retry the request', 'RETRY')
     return reply({
       syncedAt: record.syncedAt,
       data: JSON.parse(await blob.text())
@@ -112,52 +157,65 @@ const activityPublish = makeFunctionReference<
     expiresAt: number
     cutoffDay: string
   },
-  { sourceId: string; day: string; syncedAt: number }
+  {
+    sourceId: string
+    day: string
+    syncedAt: number
+    accepted: boolean
+    reason?: string
+  }
 >('activity:publish')
 const activityDay = makeFunctionReference<
   'query',
   { deviceId: string; day: string },
   Array<{ storageId: GenericId<'_storage'>; syncedAt: number }>
 >('activity:day')
+/** Validator messages that are safe to echo to the client as `detail`. */
+const activityDetails = [
+  'Invalid activity envelope',
+  'Invalid activity record',
+  'Activity outside labelled day',
+  'Invalid activity context',
+  'Invalid URL',
+  'Only web addresses are supported',
+  'Activity day is in the future'
+]
 http.route({
   path: '/work-buddy/activity',
   method: 'PUT',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'write')
+    const denied = await authorize(request, 'write')
     if (denied) return denied
-    if (!request.headers.get('Content-Type')?.includes('application/json'))
-      return reply({ error: 'Expected application/json' }, 415)
+    if (!isJson(request))
+      return fail(415, 'Expected application/json', 'UNSUPPORTED_MEDIA_TYPE')
     const raw = await request.text()
-    if (new TextEncoder().encode(raw).length > 5 * 1024 * 1024)
-      return reply({ error: 'Activity day exceeds 5 MB' }, 413)
+    if (bytes(raw) > 5 * 1024 * 1024)
+      return fail(413, 'Activity day exceeds 5 MB', 'PAYLOAD_TOO_LARGE')
     let data
     try {
       data = validateActivityEnvelope(JSON.parse(raw))
     } catch (error) {
-      return reply(
-        {
-          error: 'Invalid activity day',
-          detail:
-            error instanceof Error &&
-            [
-              'Invalid activity envelope',
-              'Invalid activity record',
-              'Activity outside labelled day',
-              'Invalid activity context',
-              'Invalid URL',
-              'Only web addresses are supported'
-            ].includes(error.message)
-              ? error.message
-              : 'Invalid activity data'
-        },
-        400
+      return fail(
+        400,
+        'Invalid activity day',
+        'INVALID_ACTIVITY_DAY',
+        error instanceof Error && activityDetails.includes(error.message)
+          ? error.message
+          : 'Invalid activity data'
       )
     }
-    const cutoffDay = new Date(Date.now() - data.retentionDays * 86400000)
-      .toISOString()
-      .slice(0, 10)
+    const now = Date.now()
+    // Local calendars can run up to a day ahead of UTC; anything later is bogus.
+    if (data.day > utcDay(now + 86400000))
+      return fail(
+        400,
+        'Invalid activity day',
+        'INVALID_ACTIVITY_DAY',
+        'Activity day is in the future'
+      )
+    const cutoffDay = utcDay(now - data.retentionDays * 86400000)
     if (data.day < cutoffDay)
-      return reply({ error: 'Activity is outside retention' }, 400)
+      return fail(400, 'Activity is outside retention', 'OUTSIDE_RETENTION')
     const storageId = await ctx.storage.store(
       new Blob([JSON.stringify(data)], { type: 'application/json' })
     )
@@ -186,43 +244,72 @@ http.route({
   path: '/work-buddy/activity',
   method: 'GET',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'read')
+    const denied = await authorize(request, 'read')
     if (denied) return denied
     const params = new URL(request.url).searchParams,
       deviceId = params.get('deviceId'),
       day = params.get('day')
     if (!validActivityId(deviceId) || !validActivityDay(day))
-      return reply({ error: 'A valid deviceId and day are required' }, 400)
+      return fail(
+        400,
+        'A valid deviceId and day are required',
+        'INVALID_DEVICE'
+      )
     const records = await ctx.runQuery(activityDay, { deviceId, day })
     const sources = []
     for (const record of records) {
       const blob = await ctx.storage.get(record.storageId)
-      if (!blob) return reply({ error: 'Activity changed; retry' }, 409)
+      if (!blob) return fail(409, 'Activity changed; retry', 'RETRY')
       const data = JSON.parse(await blob.text())
-      if (
-        data.day >=
-        new Date(Date.now() - data.retentionDays * 86400000)
-          .toISOString()
-          .slice(0, 10)
-      )
+      if (data.day >= utcDay(Date.now() - data.retentionDays * 86400000))
         sources.push({ syncedAt: record.syncedAt, data })
     }
     return reply({ sources, fetchedAt: Date.now() })
   })
 })
-const projectsPublish = makeFunctionReference<'mutation'>('projects:publish')
+const projectsPublish = makeFunctionReference<
+  'mutation',
+  {
+    deviceId: string
+    sourceId: string
+    kind: string
+    capturedAt: number
+    projects: Array<{
+      id: string
+      name: string
+      archived: boolean
+      color?: string
+    }>
+  },
+  { ok: boolean; accepted: boolean; reason?: string }
+>('projects:publish')
 const projectsRegistry = makeFunctionReference<'query'>('projects:registry')
-const projectsLink = makeFunctionReference<'mutation'>('projects:link')
+const projectsLink = makeFunctionReference<
+  'mutation',
+  {
+    deviceId: string
+    browserSourceId: string
+    browserProjectId: string
+    projectId: string | null
+    expectedRevision: number
+  },
+  { conflict: boolean }
+>('projects:link')
+const linkConflict = 'Project changed. Refresh projects and try again.'
+/** The link mutation throws when either side of the link vanished since the client last refreshed. */
+const isLinkConflict = (error: unknown): boolean =>
+  error instanceof Error &&
+  /(Browser|Work) project no longer exists/.test(error.message)
 http.route({
   path: '/work-buddy/projects',
   method: 'GET',
   handler: httpActionGeneric(async (ctx, request) => {
     // Catalogs contain labels only. The browser write credential cannot read activity or snapshots.
-    const denied = authorize(request, 'read')
-    if (denied && authorize(request, 'write')) return denied
+    const denied = await authorize(request, 'read')
+    if (denied && (await authorize(request, 'write'))) return denied
     const deviceId = new URL(request.url).searchParams.get('deviceId')
     if (!validActivityId(deviceId))
-      return reply({ error: 'Invalid device' }, 400)
+      return fail(400, 'Invalid device', 'INVALID_DEVICE')
     return reply(await ctx.runQuery(projectsRegistry, { deviceId }))
   })
 })
@@ -230,10 +317,25 @@ http.route({
   path: '/work-buddy/projects',
   method: 'PUT',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'write')
+    const denied = await authorize(request, 'write')
     if (denied) return denied
+    if (!isJson(request))
+      return fail(415, 'Expected application/json', 'UNSUPPORTED_MEDIA_TYPE')
     const text = await request.text()
-    if (text.length > 2000000) return reply({ error: 'Catalog too large' }, 413)
+    if (bytes(text) > 2000000)
+      return fail(413, 'Catalog too large', 'PAYLOAD_TOO_LARGE')
+    let catalog: {
+      deviceId: string
+      sourceId: string
+      kind: string
+      capturedAt: number
+      projects: Array<{
+        id: string
+        name: string
+        archived: boolean
+        color?: string
+      }>
+    }
     try {
       const raw = JSON.parse(text)
       if (
@@ -254,6 +356,7 @@ http.route({
           color?: string
         }) => {
           if (
+            !p ||
             typeof p.id !== 'string' ||
             !p.id ||
             p.id.length > 160 ||
@@ -278,28 +381,36 @@ http.route({
         projects.length
       )
         throw new Error('Duplicate project')
-      return reply(
-        await ctx.runMutation(projectsPublish, {
-          deviceId: raw.deviceId,
-          sourceId: raw.sourceId,
-          kind: raw.kind,
-          capturedAt: raw.capturedAt,
-          projects
-        })
-      )
+      catalog = {
+        deviceId: raw.deviceId,
+        sourceId: raw.sourceId,
+        kind: raw.kind,
+        capturedAt: raw.capturedAt,
+        projects
+      }
     } catch {
-      return reply({ error: 'Invalid project catalog' }, 400)
+      return fail(400, 'Invalid project catalog', 'INVALID_CATALOG')
     }
+    // Mutation failures are server faults and must surface as 500, not 400.
+    return reply(await ctx.runMutation(projectsPublish, catalog))
   })
 })
 http.route({
   path: '/work-buddy/project-link',
   method: 'PUT',
   handler: httpActionGeneric(async (ctx, request) => {
-    const denied = authorize(request, 'write')
+    const denied = await authorize(request, 'write')
     if (denied) return denied
     const text = await request.text()
-    if (text.length > 4096) return reply({ error: 'Link too large' }, 413)
+    if (bytes(text) > 4096)
+      return fail(413, 'Link too large', 'PAYLOAD_TOO_LARGE')
+    let link: {
+      deviceId: string
+      browserSourceId: string
+      browserProjectId: string
+      projectId: string | null
+      expectedRevision: number
+    }
     try {
       const r = JSON.parse(text)
       if (
@@ -316,20 +427,30 @@ http.route({
         r.expectedRevision < 0
       )
         throw new Error('Invalid link')
-      const result = await ctx.runMutation(projectsLink, {
+      link = {
         deviceId: r.deviceId,
         browserSourceId: r.browserSourceId,
         browserProjectId: r.browserProjectId,
         projectId: r.projectId,
         expectedRevision: r.expectedRevision
-      })
-      return reply(result, result.conflict ? 409 : 200)
+      }
     } catch {
-      return reply(
-        { error: 'Project changed. Refresh projects and try again.' },
-        400
-      )
+      return fail(400, linkConflict, 'INVALID_LINK')
     }
+    let result
+    try {
+      result = await ctx.runMutation(projectsLink, link)
+    } catch (error) {
+      if (isLinkConflict(error))
+        return fail(409, linkConflict, 'LINK_CONFLICT')
+      throw error
+    }
+    if (result.conflict)
+      return reply(
+        { ...result, error: linkConflict, code: 'LINK_CONFLICT' },
+        409
+      )
+    return reply({ ...result, accepted: true })
   })
 })
 export default http

@@ -11,14 +11,23 @@ const extensionLockfilePath = resolve(root, 'apps', 'extension', 'package-lock.j
 const releaseDirectoryPattern = /^release-v\d+\.\d+\.\d+$/
 
 function usage() {
-  console.log('Usage: npm run release:win [patch|minor|major|x.y.z]')
+  console.log('Usage: npm run release:win [patch|minor|major|x.y.z] [--force]')
   console.log('Defaults to a patch release. Previous release-vX.Y.Z folders are removed after a successful build.')
+  console.log('An explicit x.y.z must be newer than the current version unless --force is passed.')
 }
 
 function parseVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value)
   if (!match) throw new Error(`Invalid version: ${value}. Use x.y.z.`)
   return match.slice(1).map(Number)
+}
+
+/** Semver precedence on x.y.z: negative when a < b, zero when equal, positive when a > b. */
+function compareVersions(a, b) {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i]
+  return 0
 }
 
 function nextVersion(current, requested) {
@@ -82,15 +91,21 @@ function removePreviousReleases(currentOutput) {
 }
 
 function run() {
-  const argument = process.argv[2]
-  if (argument === '--help' || argument === '-h') {
+  const flags = process.argv.slice(2)
+  if (flags.includes('--help') || flags.includes('-h')) {
     usage()
     return
   }
+  const force = flags.includes('--force')
+  const argument = flags.find((flag) => !flag.startsWith('--'))
 
   const releaseType = argument ?? 'patch'
   const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'))
   const version = nextVersion(packageJson.version, releaseType)
+  // Re-releasing an old or current number would overwrite a published build;
+  // require an explicit --force so a typo cannot do it by accident.
+  if (/^\d+\.\d+\.\d+$/.test(releaseType) && compareVersions(version, packageJson.version) <= 0 && !force)
+    throw new Error(`Version ${version} is not newer than the current ${packageJson.version}. Pass --force to release it anyway.`)
   const output = `release-v${version}`
   const restoreVersions = snapshotFiles([packagePath, lockfilePath, extensionPackagePath, extensionLockfilePath])
 

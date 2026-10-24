@@ -8,14 +8,14 @@ export const publish = internalMutationGeneric({
     // A delayed retry must not replace a newer upload.
     if (previous && previous.exportedAt > args.exportedAt) {
       await ctx.storage.delete(args.storageId)
-      return { sourceId: args.sourceId, syncedAt: previous.syncedAt }
+      return { sourceId: args.sourceId, syncedAt: previous.syncedAt, accepted: false, reason: 'stale' }
     }
     const syncedAt = Date.now()
     if (previous) {
       await ctx.db.patch(previous._id, { ...args, syncedAt })
       await ctx.storage.delete(previous.storageId)
     } else await ctx.db.insert('workBuddySnapshots', { ...args, syncedAt })
-    return { sourceId: args.sourceId, syncedAt }
+    return { sourceId: args.sourceId, syncedAt, accepted: true }
   }
 })
 

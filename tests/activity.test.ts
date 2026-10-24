@@ -100,6 +100,7 @@ function harness() {
     fail = false,
     resolveRequest: (() => void) | undefined
   const uploads: unknown[] = []
+  let responder: ((env: { sourceId: string; day: string }) => Response) | undefined
   const request: typeof fetch = async (_url, options) => {
     if (fail) throw new Error('offline')
     if (resolveRequest)
@@ -108,7 +109,8 @@ function harness() {
       })
     const env = JSON.parse(options!.body as string)
     uploads.push(env)
-    return new Response(JSON.stringify({ sourceId: env.sourceId, day: env.day, syncedAt: Date.now() }))
+    if (responder) return responder(env)
+    return new Response(JSON.stringify({ sourceId: env.sourceId, day: env.day, syncedAt: Date.now(), accepted: true }))
   }
   const service = new ActivityService(
     store,
@@ -128,6 +130,9 @@ function harness() {
     },
     setFail: (value: boolean) => {
       fail = value
+    },
+    setResponder: (value: typeof responder) => {
+      responder = value
     },
     cleanup: () => {
       service.stop()
@@ -315,4 +320,100 @@ test('browser tracker colon-day IDs upload unchanged and can receive project cor
     assert.equal(h.service.assignments()[0].recordId,id)
     assert.throws(()=>validateActivityEnvelope({...data,sourceId:'unsafe:source'}))
   }finally{h.cleanup()}
+})
+
+const cloud = (h: ReturnType<typeof harness>) =>
+  h.service.configure(
+    { ...h.store.config(), cloudEnabled: true, siteUrl: 'https://test.convex.site' },
+    'w'.repeat(32),
+    'r'.repeat(32)
+  )
+test('a rejected day is skipped until it changes while other days keep uploading; envelopes carry the local time zone', async () => {
+  const h = harness(),
+    bad = localDateKey(base - 86400000),
+    good = localDateKey(base)
+  try {
+    cloud(h)
+    h.store.put(bad, { ...row('bad', -86400000, -86398000), sourceId: h.store.sourceId })
+    h.store.put(good, { ...row('good', 0, 2000), sourceId: h.store.sourceId })
+    h.setResponder((env) =>
+      env.day === bad
+        ? Response.json({ error: 'Invalid activity envelope', code: 'invalid_envelope' }, { status: 400 })
+        : Response.json({ sourceId: env.sourceId, day: env.day, syncedAt: Date.now(), accepted: true })
+    )
+    await h.service.sync()
+    const sent = h.uploads as Array<{ day: string; tzOffsetMinutes: number; timezone?: string }>
+    assert.ok(sent.some((e) => e.day === bad) && sent.some((e) => e.day === good))
+    assert.equal(sent[0].tzOffsetMinutes, new Date().getTimezoneOffset())
+    assert.equal(sent[0].timezone, Intl.DateTimeFormat().resolvedOptions().timeZone)
+    assert.deepEqual(h.store.dirty().map((d) => d.day), [bad])
+    assert.equal(h.service.rejected()[bad], h.store.dirty()[0].revision)
+    assert.match(h.service.status().syncError!, /HTTP 400: Invalid activity envelope/)
+    assert.ok(h.service.status().lastSyncedAt)
+    await h.service.sync()
+    assert.equal(h.uploads.length, 2)
+    assert.match(h.service.status().syncError!, /rejected/)
+    h.store.put(bad, { ...row('bad-2', -86390000, -86388000), sourceId: h.store.sourceId })
+    h.setResponder(undefined)
+    await h.service.sync()
+    assert.equal(h.uploads.length, 3)
+    assert.equal(h.store.dirty().length, 0)
+    assert.deepEqual(h.service.rejected(), {})
+    assert.equal(h.service.status().syncError, null)
+    h.setResponder(() => Response.json({ error: 'Pair again', code: 'unauthorized' }, { status: 401 }))
+    h.store.put(good, { ...row('good-2', 3000, 4000), sourceId: h.store.sourceId })
+    await h.service.sync()
+    assert.equal(h.service.status().syncError, 'Activity connection key was rejected')
+    assert.equal(h.store.dirty().length, 1)
+    assert.deepEqual(h.service.rejected(), {})
+  } finally {
+    h.cleanup()
+  }
+})
+test('a stale answer is not acknowledged and the day is retried on the next sync', async () => {
+  const h = harness(),
+    day = localDateKey(base)
+  try {
+    cloud(h)
+    h.store.put(day, { ...row('a', 0, 2000), sourceId: h.store.sourceId })
+    const revision = h.store.dirty().find((d) => d.day === day)!.revision
+    h.setResponder((env) => Response.json({ sourceId: env.sourceId, day: env.day, syncedAt: Date.now(), accepted: false, reason: 'stale' }))
+    await h.service.sync()
+    assert.equal(h.store.dirty().find((d) => d.day === day)?.revision, revision)
+    assert.equal(h.service.status().syncError, null)
+    assert.deepEqual(h.service.rejected(), {})
+    h.setResponder(undefined)
+    await h.service.sync()
+    assert.equal(h.store.dirty().length, 0)
+    assert.equal((h.uploads as Array<{ day: string }>).filter((e) => e.day === day).length, 2)
+  } finally {
+    h.cleanup()
+  }
+})
+test('non-privacy settings changes do not re-upload history; privacy and deployment changes do', async () => {
+  const h = harness(),
+    day = localDateKey(base)
+  try {
+    cloud(h)
+    h.store.put(day, { ...row('a', 0, 2000), sourceId: h.store.sourceId })
+    await h.service.sync()
+    assert.equal(h.store.dirty().length, 0)
+    h.service.configure({ ...h.store.config(), idleSeconds: 120 })
+    h.service.configure({ ...h.store.config(), enabled: false })
+    h.service.configure({ ...h.store.config(), cloudEnabled: false })
+    h.service.configure({ ...h.store.config(), cloudEnabled: true })
+    assert.equal(h.store.dirty().length, 0)
+    h.service.configure({ ...h.store.config(), excludedApps: ['secret.exe'] })
+    assert.ok(h.store.dirty().some((d) => d.day === day))
+    await h.service.sync()
+    assert.equal(h.store.dirty().length, 0)
+    h.service.configure({ ...h.store.config(), siteUrl: 'https://other.convex.site' }, 'w'.repeat(32), 'r'.repeat(32))
+    assert.ok(h.store.dirty().some((d) => d.day === day))
+    h.service.deleteDay(day)
+    await h.service.resync()
+    assert.equal(h.store.dirty().length, 0)
+    assert.equal((h.uploads.at(-1) as { day: string; records: unknown[] }).records.length, 0)
+  } finally {
+    h.cleanup()
+  }
 })

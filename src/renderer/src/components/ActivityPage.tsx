@@ -22,13 +22,16 @@ import type { ActivityConfig, ActivityDay, ActivitySegment } from '@shared/activ
 import { activityReview } from '@shared/activity-review'
 import { localDateKey, localDateTimestamp, localDaysBefore } from '@shared/local-date'
 import { formatDuration } from '../lib/time'
+import { translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 import { CustomSelect } from './CustomSelect'
 import { ConfirmDialog } from './ConfirmDialog'
 
 type Preview = Awaited<ReturnType<Window['workBuddy']['previewActivityRecap']>>
 export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; onSnapshot:(snapshot:AppSnapshot)=>void }): React.JSX.Element {
   const uk = snapshot.settings.locale === 'uk',
-    l = (en: string, ua: string) => (uk ? ua : en)
+    l = (en: string, ua: string) => (uk ? ua : en),
+    t = translator(snapshot.settings.locale)
   const [groupBy, setGroupBy] = useState<'app' | 'project'>('app')
   const [day, setDay] = useState(localDateKey(Date.now())),
     [data, setData] = useState<ActivityDay>(),
@@ -48,10 +51,14 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
   const [deleteOpen, setDeleteOpen] = useState(false),
     [preview, setPreview] = useState<Preview>(),
     [summary, setSummary] = useState('')
-  const generation = useRef(0),
+  // Local and remote loads are tracked separately: the latest response of each source wins, so a slow
+  // cloud refresh cannot discard the fast local result that arrived in the meantime.
+  const localGeneration = useRef(0),
+    remoteGeneration = useRef(0),
     currentDay = useRef(day)
   currentDay.current = day
   const load = async (remote = false): Promise<void> => {
+    const generation = remote ? remoteGeneration : localGeneration
     const token = ++generation.current,
       requestedDay = day
     const [next, tasks] = await Promise.all([
@@ -71,7 +78,7 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
       await fn()
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorText(e, t, 'actionFailed'))
     } finally {
       setBusy(false)
     }
@@ -82,12 +89,13 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
     setSummary('')
     setPreview(undefined)
     setEditing(undefined)
-    void load().catch((e) => setError(String(e)))
-    const local = setInterval(() => void load().catch((e) => setError(String(e))), 5000)
-    const remote = setInterval(() => void load(true).catch((e) => setError(String(e))), 60000)
-    void load(true).catch((e) => setError(String(e)))
+    void load().catch((e) => setError(errorText(e, t, 'actionFailed')))
+    const local = setInterval(() => void load().catch((e) => setError(errorText(e, t, 'actionFailed'))), 5000)
+    const remote = setInterval(() => void load(true).catch((e) => setError(errorText(e, t, 'actionFailed'))), 60000)
+    void load(true).catch((e) => setError(errorText(e, t, 'actionFailed')))
     return () => {
-      generation.current++
+      localGeneration.current++
+      remoteGeneration.current++
       clearInterval(local)
       clearInterval(remote)
     }
@@ -352,12 +360,12 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
         </section>
       )}
       {(error || data?.status.syncError) && (
-        <p className="form-error" role="status">
+        <p className="form-error page-note" role="status">
           {error || data?.status.syncError}
         </p>
       )}
       {notice && (
-        <p className="settings-note" role="status">
+        <p className="page-note" role="status">
           {notice}
         </p>
       )}
@@ -376,7 +384,7 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
               </div>
             ))}
           </section>
-          <p className="activity-caption">
+          <p className="activity-caption page-note">
             {l(
               'Browser detail enriches PC activity. Overlapping sources count once. Manual time is shown separately. Gaps mean no observation.',
               'Дані браузера доповнюють активність ПК. Накладення джерел рахуються один раз. Ручний час показано окремо. Прогалини означають відсутність спостережень.'
@@ -587,7 +595,7 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
           <div className="activity-footer">
             <small>
               {data?.status.config.cloudEnabled
-                ? `${l('Cloud fetched', 'Отримано з хмари')}: ${data.cloudFetchedAt ? new Date(data.cloudFetchedAt).toLocaleString() : '—'} · ${data.status.pendingDays} ${l('days queued', 'днів у черзі')}`
+                ? `${l('Cloud fetched', 'Отримано з хмари')}: ${data.cloudFetchedAt ? new Date(data.cloudFetchedAt).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'} · ${data.status.pendingDays} ${l('days queued', 'днів у черзі')}`
                 : l('Stored locally · cloud sync off', 'Локальне зберігання · хмарну синхронізацію вимкнено')}
             </small>
             <button

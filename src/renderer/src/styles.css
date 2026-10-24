@@ -165,11 +165,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .planned-tasks-panel > .section-heading > svg { color: var(--blue); }
 .planned-tasks-panel > p { margin: 7px 0 11px; color: var(--muted); font-size: 9px; line-height: 1.45; }
-.planned-task-add { display: grid; grid-template-columns: minmax(0, 1fr) 62px 34px auto; gap: 7px; }
+.planned-task-add { display: grid; grid-template-columns: minmax(0, 1fr) 62px auto; gap: 7px; }
 .planned-task-add input { min-width: 0; height: 35px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; outline: none; color: var(--text); background: rgba(15,17,14,.72); font: inherit; font-size: 10px; }
 .planned-task-add .planned-task-time { padding: 0 6px; color-scheme: dark; font-variant-numeric: tabular-nums; }
 .planned-task-add input:focus { border-color: rgba(123,223,242,.52); }
 .planned-task-list { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+.planned-task-add__actions { display: flex; align-items: center; gap: 4px; }
 .planned-task-add-project { margin-top: 7px; }
 .planned-task-add-project .custom-select__trigger { min-height: 35px; }
 .planned-task-start { color: var(--accent-ink); background: var(--accent); transition: background .16s ease, transform .16s ease, opacity .16s ease; }
@@ -288,6 +289,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .task-time-fields--complete { grid-template-columns: 1fr 1fr; }
 .task-time-fields > small { grid-column: 1 / -1; margin: 5px 2px 0; color: var(--muted); font-size: 8.5px; line-height: 1.35; }
 .form-error { margin: 10px 0 0; padding: 8px 9px; border-radius: 9px; color: #efad89; background: rgba(247,160,114,.06); font-size: 8.5px; }
+.activity-error, .activity-card p.activity-error { margin: 8px 0 0; padding: 8px 9px; border-radius: 9px; color: #efad89; background: rgba(247,160,114,.06); font-size: 10.5px; line-height: 1.5; }
 .field input:hover, .field textarea:hover { border-color: rgba(255, 255, 255, .14); }
 .field input::placeholder, .field textarea::placeholder, .action-inputs input::placeholder { color: #596056; }
 .custom-select { position: relative; width: 100%; }
@@ -366,7 +368,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .time-picker { width: 92px; height: 29px; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 2px; padding: 0 4px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: #10120f; font-size: 9px; font-variant-numeric: tabular-nums; }.time-picker select { min-width: 0; width: 100%; height: 100%; padding: 0 1px; border: 0; outline: 0; color: inherit; color-scheme: dark; background: transparent; font: inherit; cursor: pointer; }.time-picker > span { color: var(--muted); font-weight: 700; }.time-picker:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(184,233,134,.13); }
 .time-picker.time-input { width: 118px; height: 31px; font-size: 9.5px; }.time-picker.time-input.block { width: 100%; height: 34px; }
 .rest-time-editor .time-picker, .workday-start-editor .time-picker { width: 92px; height: 29px; }.time-edit-field .time-picker { width: 100%; height: 40px; border-radius: 11px; font-size: 11px; }.time-edit-field .time-picker select { padding: 0 5px; }
-.planned-task-add { grid-template-columns: minmax(0, 1fr) 98px 34px auto; }.planned-task-add .planned-task-time { width: 98px; height: 35px; padding: 0 4px; font-size: 10px; }.planned-task-reminder { grid-template-columns: auto 108px auto; }.planned-task-reminder .time-picker { width: 108px; height: 28px; }
+.planned-task-add { grid-template-columns: minmax(0, 1fr) 98px auto; }.planned-task-add .planned-task-time { width: 98px; height: 35px; padding: 0 4px; font-size: 10px; }.planned-task-reminder { grid-template-columns: auto 108px auto; }.planned-task-reminder .time-picker { width: 108px; height: 28px; }
 .time-picker { position: relative; z-index: 4; display: block; padding: 0; border: 0; border-radius: 8px; background: transparent; }.time-picker__trigger { width: 100%; height: 100%; padding: 0 7px; border: 1px solid var(--line); border-radius: inherit; color: var(--text); background: #10120f; display: flex; align-items: center; justify-content: space-between; gap: 5px; cursor: pointer; font: inherit; font-variant-numeric: tabular-nums; }.time-picker__trigger:hover, .time-picker__trigger[aria-expanded="true"] { border-color: rgba(184,233,134,.58); background: #171a15; }.time-picker__trigger i { color: var(--muted); font-style: normal; font-size: 13px; line-height: 1; transform: translateY(-1px); }.time-picker__menu { position: absolute; top: calc(100% + 6px); right: 0; width: 226px; padding: 7px; border: 1px solid rgba(184,233,134,.26); border-radius: 11px; color: var(--text); background: #171a16; box-shadow: 0 14px 30px rgba(0,0,0,.42); z-index: 60; }.time-picker__tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }.time-picker__tabs button, .time-picker__options button, .time-picker__clear { border: 0; border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.055); cursor: pointer; font: inherit; font-variant-numeric: tabular-nums; }.time-picker__tabs button { min-height: 27px; padding: 0 6px; font-size: 9px; }.time-picker__tabs button small { color: inherit; font-size: 7px; }.time-picker__tabs button.active { color: var(--accent-ink); background: var(--accent); }.time-picker__options { display: grid; gap: 3px; }.time-picker__options--hour { grid-template-columns: repeat(6, minmax(0, 1fr)); }.time-picker__options--minute { grid-template-columns: repeat(10, minmax(0, 1fr)); }.time-picker__options button { height: 24px; padding: 0; font-size: 8px; }.time-picker__options button:hover, .time-picker__options button.selected { color: var(--accent-ink); background: var(--accent); }.time-picker__clear { width: 100%; height: 25px; margin-top: 6px; font-size: 8px; }.time-picker__clear:hover { color: #f7c2a8; background: rgba(247,160,114,.14); }
 .lunch-counting { margin-top: 12px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.055); }
 .palette-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
@@ -475,8 +477,10 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 
 /* Header stats carousel */
 .brand-copy { min-width: 172px; max-width: 214px; }
-.brand-slide { display: block; height: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.brand-slide b { margin-left: 6px; color: var(--accent); font-weight: 700; }
+/* Flex like .notch-pill__slide: the label truncates, the value never does. */
+.brand-slide { display: flex; align-items: baseline; gap: 6px; height: 13px; min-width: 0; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.brand-slide__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.brand-slide b { flex: 0 0 auto; color: var(--accent); font-weight: 700; }
 .tab-bar { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 32px 32px; }
 .tab-bar button.tab-icon-only { flex: none; }
 
@@ -648,7 +652,7 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 .time-picker.time-input.block { width: 100%; height: 38px; }
 .rest-time-editor .time-picker, .workday-start-editor .time-picker { width: 116px; height: 36px; }
 .time-edit-field .time-picker { height: 42px; font-size: 13px; }
-.planned-task-add { grid-template-columns: minmax(0, 1fr) 112px 34px auto; }
+.planned-task-add { grid-template-columns: minmax(0, 1fr) 112px auto; }
 .planned-task-add .planned-task-time { width: 112px; height: 36px; padding: 0; font-size: 12px; }
 .planned-task-reminder { grid-template-columns: auto 112px auto; }
 .planned-task-reminder .time-picker { width: 112px; height: 34px; }
@@ -808,9 +812,7 @@ number-flow-react { --number-flow-char-height: 1em; --number-flow-mask-height: .
 .convex-field input { width: 100%; min-width: 0; }
 .convex-frequency, .convex-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .convex-frequency button { flex: none; min-height: 30px; padding: 0 9px; }
-.convex-sync-settings .settings-note { overflow-wrap: anywhere; }
-
-.convex-sync-settings .settings-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.settings-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
 .convex-field input { min-height: 36px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); padding: 8px 10px; font-size: 11px; }
 
 /* Daily activity: compact at the desktop tracker's minimum width. */
@@ -911,3 +913,15 @@ html[data-theme=light] .activity-toolbar input {color-scheme:light}
 .dock-timer:hover {background:rgba(255,255,255,.07)}
 .dock-timer strong {font-size:14px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .dock-pill--right .dock-grip {order:2}
+
+/* Muted page-level notes get a readable surface on the transparent window. */
+.page-note { margin: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-readable); color: var(--muted); font-size: 11px; line-height: 1.55; }
+.page-note.form-error { color: #efad89; }
+.activity-page .page-note { margin: 0; }
+
+/* Day report: while a historical day loads, the previous report stays visible but dimmed; the history picker stays usable. */
+.day-summary--pending > :not(.history-panel) { opacity: .45 !important; pointer-events: none; }
+
+/* Keyboard toggle for a project card's details. */
+.project-card__expand svg { transition: transform .2s ease; }
+.project-card--expanded .project-card__expand svg { transform: rotate(180deg); }

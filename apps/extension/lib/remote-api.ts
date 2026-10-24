@@ -25,7 +25,7 @@ import type {
 } from "../shared/types"
 
 const baseUrl = "http://127.0.0.1:49837"
-const accessKeyName = "workBuddyExtensionAccessKey"
+export const accessKeyName = "workBuddyExtensionAccessKey"
 
 function chromeGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve) => chrome.storage.local.get(key, (value) => resolve(value[key] as T | undefined)))

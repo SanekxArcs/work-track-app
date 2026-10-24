@@ -19,9 +19,11 @@ export const publish = internalMutationGeneric({
       .query('workBuddyActivityDays')
       .withIndex('by_source_day', (q) => q.eq('sourceId', args.sourceId).eq('day', args.day))
       .unique()
+    // A stale upload still answers 200 so older clients keep working; `accepted`
+    // tells newer clients that nothing was stored.
     if (previous && previous.capturedAt > args.capturedAt) {
       await ctx.storage.delete(args.storageId)
-      return { sourceId: args.sourceId, day: args.day, syncedAt: previous.syncedAt }
+      return { sourceId: args.sourceId, day: args.day, syncedAt: previous.syncedAt, accepted: false, reason: 'stale' }
     }
     const syncedAt = Date.now()
     if (previous) {
@@ -36,7 +38,7 @@ export const publish = internalMutationGeneric({
       await ctx.storage.delete(row.storageId)
       await ctx.db.delete(row._id)
     }
-    return { sourceId: args.sourceId, day: args.day, syncedAt }
+    return { sourceId: args.sourceId, day: args.day, syncedAt, accepted: true }
   }
 })
 export const day = internalQueryGeneric({

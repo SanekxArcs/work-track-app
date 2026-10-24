@@ -36,13 +36,16 @@ function normalize(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().trim()
 }
 
+/** Used when the palette is empty, so a new project never ends up without a color. */
+export const FALLBACK_PROJECT_COLOR = '#b8e986'
+
 /** Prefer a palette color no project uses yet, then fall back to any palette color. */
 export function randomProjectColor(snapshot: AppSnapshot): string {
   const palette = snapshot.settings.projectColors
   const used = new Set(snapshot.projects.map((project) => project.color.toLowerCase()))
   const unused = palette.filter((color) => !used.has(color.toLowerCase()))
   const pool = unused.length ? unused : palette
-  return pool[Math.floor(Math.random() * pool.length)]
+  return pool[Math.floor(Math.random() * pool.length)] ?? FALLBACK_PROJECT_COLOR
 }
 
 export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChange, onSnapshot, onError, allowCreate = true, excludeIds = [], activeOnly = false, noneLabel }: ProjectPickerProps): React.JSX.Element {
@@ -101,7 +104,7 @@ export function ProjectPicker({ value, snapshot, ariaLabel, autoFocus, t, onChan
       setOpen(false)
       setQuery('')
     } catch (error) {
-      onError(errorText(error, t, 'timeUpdateError'))
+      onError(errorText(error, t, 'saveFailed'))
     } finally {
       setBusy(false)
     }

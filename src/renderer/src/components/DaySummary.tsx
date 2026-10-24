@@ -126,13 +126,22 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
     return () => { cancelled = true }
   }, [isHistorical, selectedDate, snapshot])
 
-  const reportSnapshot = isHistorical && historicalSnapshot ? historicalSnapshot : snapshot
+  // A historical day is reported only once its own snapshot has arrived; until then the previous report
+  // stays on screen, dimmed, so another day's numbers never show under the newly selected date.
+  const readySnapshot = isHistorical
+    ? (historicalSnapshot && localDateKey(historicalSnapshot.now) === selectedDate ? historicalSnapshot : null)
+    : snapshot
+  const dayReady = readySnapshot !== null
+  const lastReady = useRef(snapshot)
+  if (readySnapshot) lastReady.current = readySnapshot
+  const reportSnapshot = readySnapshot ?? lastReady.current
   const reportNow = isHistorical ? reportSnapshot.now : now
   const intervals = dayIntervals(reportSnapshot.tasks, reportNow)
   const coverage = unionDuration(intervals, reportNow)
   const summed = intervals.reduce((total, interval) => total + intervalDuration(interval, reportNow), 0)
   const overlap = overlapDuration(intervals, reportNow)
-  const startedAt = reportSnapshot.workday?.startedAt ?? intervals[0]?.startedAt
+  const earliestStart = intervals.length ? Math.min(...intervals.map((interval) => interval.startedAt)) : undefined
+  const startedAt = reportSnapshot.workday?.startedAt ?? earliestStart
   const endedAt = reportSnapshot.workday?.endedAt ?? (startedAt ? reportNow : undefined)
   const span = startedAt && endedAt ? endedAt - startedAt : 0
   const switches = Math.max(0, intervals.length - reportSnapshot.tasks.filter((task) => task.intervals.length > 0).length)
@@ -161,7 +170,6 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
     : overtimeDay?.overtimeMs ?? 0
-  const dayReady = !isHistorical || Boolean(historicalSnapshot && localDateKey(historicalSnapshot.now) === selectedDate)
   const canMergeTasks = dayReady && tasks.length > 1
   const mergeSuggestions = dayReady ? suggestTaskMerges(tasks).filter((group) => reportSnapshot.projects.some((project) => project.id === group.projectId)) : []
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
@@ -275,20 +283,21 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
     }
   }
 
+  const numberLocale = t.locale === 'uk' ? 'uk-UA' : 'en-GB'
   const metrics = [
-    { label: t('workedToday'), value: <AnimatedDuration ms={coverage} compact />, icon: Clock3, tone: 'green' },
-    { label: t('summedTime'), value: <AnimatedDuration ms={summed} compact />, icon: Layers3, tone: 'blue' },
-    { label: t('overlap'), value: <AnimatedDuration ms={overlap} compact />, icon: GitBranch, tone: 'purple' },
+    { label: t('workedToday'), value: <AnimatedDuration ms={coverage} compact locale={t.locale} />, icon: Clock3, tone: 'green' },
+    { label: t('summedTime'), value: <AnimatedDuration ms={summed} compact locale={t.locale} />, icon: Layers3, tone: 'blue' },
+    { label: t('overlap'), value: <AnimatedDuration ms={overlap} compact locale={t.locale} />, icon: GitBranch, tone: 'purple' },
     { label: t('contextSwitches'), value: <AnimatedNumber value={switches} />, icon: ArrowRightLeft, tone: 'orange' }
   ]
 
   return (
-    <motion.div className="page-stack" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
+    <motion.div className={`page-stack day-summary ${dayReady ? '' : 'day-summary--pending'}`} aria-busy={!dayReady} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
       {hasDayDetails && <section className="day-hero">
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
           <h2>{isHistorical ? t('historyDay') : hasOpenDay ? t('dayRunning') : reportSnapshot.workday ? t('dayDone') : t('noTimers')}</h2>
-          {startedAt && endedAt && <p>{hasOpenDay ? <button className="day-hero__start-time" onClick={startEditingWorkdayStart} title={t('editWorkdayStart')} aria-label={t('editWorkdayStart')}>{formatClock(startedAt, reportSnapshot.settings.locale)} <Pencil size={11} /></button> : formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : t('nowLabel')} · {formatDuration(span, true)}</p>}
+          {startedAt && endedAt && <p>{hasOpenDay ? <button className="day-hero__start-time" onClick={startEditingWorkdayStart} title={t('editWorkdayStart')} aria-label={t('editWorkdayStart')}>{formatClock(startedAt, reportSnapshot.settings.locale)} <Pencil size={11} /></button> : formatClock(startedAt, reportSnapshot.settings.locale)} — {reportSnapshot.workday?.endedAt || isHistorical ? formatClock(endedAt, reportSnapshot.settings.locale) : t('nowLabel')} · {formatDuration(span, true, t.locale)}</p>}
           <Collapse open={editingWorkdayStart}><div className="workday-start-editor"><label><span>{t('workdayStartedAt')}</span><TimeInput autoFocus value={workdayStartTime} onChange={setWorkdayStartTime} ariaLabel={t('workdayStartedAt')} /></label><button className="confirm" onClick={() => void saveWorkdayStart()} aria-label={t('save')}><Check size={13} /></button><button onClick={() => { setEditingWorkdayStart(false); setWorkdayStartError('') }} aria-label={t('cancel')}><X size={13} /></button><Collapse open={Boolean(workdayStartError)} className="workday-start-editor__error"><small>{workdayStartError}</small></Collapse></div></Collapse>
         </div>
         <div className="day-hero__tools"><div className={`day-orb ${hasOpenDay ? 'day-orb--live' : ''}`}><Sparkles size={20} /></div></div>
@@ -323,7 +332,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         </div>
         <div className="schedule-times"><span>{formatClock(schedule.start, reportSnapshot.settings.locale)}</span><span>{formatClock(schedule.end, reportSnapshot.settings.locale)}</span></div>
         <div className="schedule-legend"><span><i className="work" />{t('workSegment')}</span><span><i className="break" />{t('breakTaken')}</span><span><i className="lunch" />{t('lunchTaken')}</span></div>
-        <p>{t('scheduledSpan')} {Math.round(scheduledMinutes / 60 * 10) / 10} {t('hoursShort')} · {t('countedWork')} {Math.round(countedMinutes / 60 * 10) / 10} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
+        <p>{t('scheduledSpan')} {(Math.round(scheduledMinutes / 60 * 10) / 10).toLocaleString(numberLocale)} {t('hoursShort')} · {t('countedWork')} {(Math.round(countedMinutes / 60 * 10) / 10).toLocaleString(numberLocale)} {t('hoursShort')} · {reportSnapshot.settings.lunch.includedInWorkHours ? t('lunchPaidShort') : t('lunchUnpaidShort')}</p>
       </section>}
 
       {hasDayDetails && <RestSummary snapshot={reportSnapshot} now={reportNow} t={t} onSnapshot={onSnapshot} allowActions={!isHistorical} />}
@@ -354,7 +363,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
             const taskIntervals = visibleTimelineIntervals(task, todayStart, todayEnd, reportNow)
             const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
               <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
-              <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></>
+              <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true, t.locale)}</span></>
             return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} disabled={mergeBusy} aria-pressed={selected} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task, taskIntervals[taskIntervals.length - 1]?.id)} title={t('editTaskHint')}>
               {taskRow}
             </button>
@@ -375,7 +384,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
               const label = timelineLabel(task, project, t)
               return (
                 <div className="timeline-row" key={task.id}>
-                  <div className="timeline-label"><strong title={label}>{label}</strong><span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true)}</span></div>
+                  <div className="timeline-label"><strong title={label}>{label}</strong><span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true, t.locale)}</span></div>
                   <div className="timeline-track">
                     {visibleTimelineIntervals(task, todayStart, todayEnd, reportNow).map((interval) => {
                       const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
@@ -395,7 +404,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
                 return visibleTimelineIntervals(task, todayStart, todayEnd, reportNow).map((interval) => {
                   const left = ((interval.startedAt - timelineStart) / timelineSpan) * 100
                   const width = ((interval.endedAt - interval.startedAt) / timelineSpan) * 100
-                  return <motion.span key={interval.id} title={`${label} · ${formatDuration(interval.endedAt - interval.startedAt, true)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
+                  return <motion.span key={interval.id} title={`${label} · ${formatDuration(interval.endedAt - interval.startedAt, true, t.locale)}`} initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} style={{ left: `${left}%`, width: `${Math.max(width, 1)}%`, background: color }} />
                 })
               })}
             </div>
@@ -411,12 +420,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
 
       <StackCollapse open={overtime > 0}>
         <section className="overtime-card">
-          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+<AnimatedDuration ms={overtime} compact /></strong><p className={overtimeError ? 'form-error' : undefined}>{overtimeError || t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} /><AnimatedText text={overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')} /></button>}
+          <span><AlarmClock size={17} /></span><div><small>{t('overtime')}</small><strong>+<AnimatedDuration ms={overtime} compact locale={t.locale} /></strong><p className={overtimeError ? 'form-error' : undefined}>{overtimeError || t('overtimeBody')}</p></div>{overtimeDay && <button className={`overtime-redeem-button ${overtimeDay.redeemed ? 'is-redeemed' : ''}`} onClick={() => void toggleOvertimeRedemption()}><Check size={13} /><AnimatedText text={overtimeDay.redeemed ? t('overtimeRedeemed') : t('overtimeRedeem')} /></button>}
         </section>
       </StackCollapse>
 
       <section className="overtime-balance-card">
-        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+<AnimatedDuration ms={overtimeOverview.balanceMs} compact /></strong><p>{t('overtimeBalanceBody')}</p></div>
+        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+<AnimatedDuration ms={overtimeOverview.balanceMs} compact locale={t.locale} /></strong><p>{t('overtimeBalanceBody')}</p></div>
       </section>
 
       <StackCollapse open={canShowAiSummary}>
@@ -447,7 +456,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         <div className="calendar-range-presets">
           {([['presetDay', 0, 0], ['presetLast7', -6, 0], ['presetLast30', -29, 0]] as const).map(([label, fromOffset]) => {
             const from = localDateKey(localDaysBefore(now, -fromOffset))
-            return <button key={label} type="button" className={exportFrom === from && exportTo === todayKey && label !== 'presetDay' ? 'active' : ''} onClick={() => setExportRange(label === 'presetDay' ? null : { from, to: todayKey })}>{t(label)}</button>
+            return <button key={label} type="button" className={(label === 'presetDay' ? exportRange === null : exportFrom === from && exportTo === todayKey) ? 'active' : ''} onClick={() => setExportRange(label === 'presetDay' ? null : { from, to: todayKey })}>{t(label)}</button>
           })}
           <button type="button" onClick={() => { const monday = localDaysBefore(now, (new Date(now).getDay() + 6) % 7); setExportRange({ from: localDateKey(monday), to: localDateKey(localDaysBefore(monday, -6)) }) }}>{t('presetWeek')}</button>
           <button type="button" onClick={() => { const date = new Date(now); setExportRange({ from: localDateKey(new Date(date.getFullYear(), date.getMonth(), 1).getTime()), to: localDateKey(new Date(date.getFullYear(), date.getMonth() + 1, 0).getTime()) }) }}>{t('presetMonth')}</button>

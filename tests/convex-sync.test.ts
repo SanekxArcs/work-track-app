@@ -127,3 +127,25 @@ test('an unreadable saved key requests replacement without uploading or repeated
   assert.equal(service.status().hasKey, true)
   assert.equal(calls, 1)
 })
+
+test('corrupt or unsupported saved sync state falls back to disabled defaults and reports the problem', () => {
+  const backupStore = (saved: string) => {
+    const values = new Map<string, string>([['convex_sync_state', saved]])
+    return { values, store: { getSecret: (key: string) => values.get(key), setSecret: (key: string, value: string) => { values.set(key, value) }, exportBackup: () => backup } }
+  }
+  const vault = { encrypt: (key: string) => key, decrypt: (key: string) => key }
+  const corrupt = backupStore('{not json')
+  const fromCorrupt = new ConvexSyncService(corrupt.store, vault, fetch)
+  assert.equal(fromCorrupt.status().enabled, false)
+  assert.equal(fromCorrupt.status().intervalHours, 12)
+  assert.match(fromCorrupt.status().error!, /could not be read/)
+  assert.doesNotThrow(() => JSON.parse(corrupt.values.get('convex_sync_state')!))
+  const unsupported = backupStore(JSON.stringify({ enabled: true, siteUrl: 'https://test.convex.site', intervalHours: 3, sourceId: 'keep-me', lastSyncedAt: 5, lastAttemptAt: null }))
+  const fromUnsupported = new ConvexSyncService(unsupported.store, vault, fetch)
+  assert.equal(fromUnsupported.status().enabled, false)
+  assert.equal(fromUnsupported.status().intervalHours, 12)
+  assert.equal(fromUnsupported.status().sourceId, 'keep-me')
+  assert.match(fromUnsupported.status().error!, /Invalid sync settings/)
+  fromUnsupported.configure({ enabled: false, siteUrl: '', intervalHours: 6 })
+  assert.equal(fromUnsupported.status().error, null)
+})

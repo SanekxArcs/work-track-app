@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Cloud, RefreshCw } from 'lucide-react'
 import type { ConvexSyncStatus } from '@shared/convex-sync'
+import { translator } from '../lib/i18n'
+import { errorText } from '../lib/errors'
 
 export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.JSX.Element {
   const uk = locale === 'uk'
+  const t = translator(locale)
   const [status, setStatus] = useState<ConvexSyncStatus | null>(null)
   const [siteUrl, setSiteUrl] = useState('')
   const [key, setKey] = useState('')
@@ -16,7 +19,7 @@ export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.J
     void window.workBuddy.getConvexSyncStatus().then((value) => {
       if (!mounted) return
       setStatus(value); setSiteUrl(value.siteUrl); setEnabled(value.enabled); setHours(value.intervalHours)
-    }).catch((error) => { if (mounted) setMessage(String(error)) })
+    }).catch((error) => { if (mounted) setMessage(errorText(error, t, 'actionFailed')) })
     const timer = setInterval(() => {
       void window.workBuddy.getConvexSyncStatus().then((value) => { if (mounted) setStatus(value) }).catch(() => undefined)
     }, 5000)
@@ -30,7 +33,7 @@ export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.J
       const result = sync ? await window.workBuddy.syncConvexNow() : saved
       setStatus(result)
       setMessage(result.error || (uk ? 'Збережено' : 'Saved'))
-    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
+    } catch (error) { setMessage(errorText(error, t, 'saveFailed')) }
     finally { setBusy(false) }
   }
   const date = (time: number | null): string => time ? new Date(time).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'

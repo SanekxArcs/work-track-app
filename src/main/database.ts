@@ -214,6 +214,13 @@ function validIntervals(value: unknown, ownerId: string): boolean {
   return !hasOverlappingIntervals(value as Array<{ startedAt: number; endedAt: number | null }>)
 }
 
+function validateTags(tags: unknown): void {
+  if (tags === undefined) return
+  if (!Array.isArray(tags) || tags.length > 50 || !tags.every((tag) => typeof tag === 'string' && tag.length <= 100)) {
+    throw new Error('Invalid task tags')
+  }
+}
+
 function validateBackup(backup: BackupData): void {
   if (!backup || typeof backup !== 'object' || backup.schemaVersion !== 1 || !isTimestamp(backup.exportedAt)) {
     throw new Error('The selected backup is not a compatible Work Buddy backup')
@@ -858,8 +865,10 @@ export class WorkBuddyDatabase {
        FROM rest_sessions r JOIN rest_intervals i ON i.rest_id = r.id
        WHERE r.type = 'lunch' AND i.started_at < ? AND i.ended_at > ?`
     )
+    // Intervals that began more than a day before the first session cannot belong to it; the
+    // lower bound keeps the scan from walking every open-ended interval in history.
     const taskIntervals = this.db.prepare(
-      'SELECT id, task_id, started_at, ended_at FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?)'
+      'SELECT id, task_id, started_at, ended_at FROM time_intervals WHERE started_at < ? AND started_at >= ? AND (ended_at IS NULL OR ended_at > ?)'
     )
     const dailyOvertime = new Map<string, number>()
     for (const [date, sessions] of sessionsByDate) {
@@ -870,7 +879,7 @@ export class WorkBuddyDatabase {
           id: row.id, type: 'lunch', status: row.status, plannedMinutes: row.planned_minutes, alarmMuted: Boolean(row.alarm_muted), createdAt: row.created_at, endedAt: row.ended_at,
           intervals: [{ id: row.interval_id, restId: row.id, startedAt: row.interval_started_at, endedAt: row.interval_ended_at }]
         }))
-      const workedIntervals = (taskIntervals.all(last.ended_at, first.started_at) as IntervalRow[]).map((interval): TimeInterval => ({
+      const workedIntervals = (taskIntervals.all(last.ended_at, first.started_at - 26 * 60 * 60 * 1000, first.started_at) as IntervalRow[]).map((interval): TimeInterval => ({
         id: interval.id, taskId: interval.task_id, startedAt: interval.started_at, endedAt: interval.ended_at
       }))
       const workday: Workday = {
@@ -1062,7 +1071,18 @@ export class WorkBuddyDatabase {
       }
       for (const date of backup.overtimeRedeemedDates ?? []) overtimeRedemption.run(date, Date.now())
       if (mode === 'replace') {
-        const restoredSettings = deepSettings(JSON.stringify({ ...backup.settings, ai: existingSettings.ai }))
+        // Custom sound paths point into this machine's file system; a backup from elsewhere
+        // must not redirect playback to an arbitrary local path.
+        const backupNotifications = isRecord(backup.settings.notifications) ? backup.settings.notifications : {}
+        const restoredSettings = deepSettings(JSON.stringify({
+          ...backup.settings,
+          ai: existingSettings.ai,
+          notifications: {
+            ...backupNotifications,
+            customSoundPath: existingSettings.notifications.customSoundPath,
+            customSoundName: existingSettings.notifications.customSoundName
+          }
+        }))
         this.db.prepare('UPDATE app_settings SET json = ? WHERE id = 1').run(JSON.stringify(restoredSettings))
       }
       // Older backups have no per-day plan; they take the schedule in effect after the import.
@@ -1238,6 +1258,7 @@ export class WorkBuddyDatabase {
     const now = Date.now()
     this.normalizeStaleWorkday(now)
     if (this.getActiveRest()?.status === 'running') throw new Error('Pause the active break before starting a task')
+    validateTags(input.tags)
     if (input.taskId) {
       const existing = this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(input.taskId) as { status: Task['status'] } | undefined
       if (!existing) throw new Error('Task not found')
@@ -1468,8 +1489,12 @@ export class WorkBuddyDatabase {
       const overlap=this.db.prepare('SELECT id FROM time_intervals WHERE started_at < ? AND COALESCE(ended_at,?) > ? LIMIT 1')
       const restOverlap=this.db.prepare('SELECT id FROM rest_intervals WHERE started_at < ? AND COALESCE(ended_at,?) > ? LIMIT 1')
       for(const entry of clean){
-        const previous=this.db.prepare('SELECT task_id FROM activity_task_imports WHERE source_key=?').get(entry.key) as {task_id:string}|undefined
-        if(previous){taskIds.push(previous.task_id);continue}
+        const previous=this.db.prepare('SELECT t.id AS task_id,t.notes,t.project_id FROM activity_task_imports a JOIN tasks t ON t.id=a.task_id WHERE a.source_key=?').get(entry.key) as {task_id:string;notes:string;project_id:string|null}|undefined
+        if(previous){
+          // Replaying the same reviewed range is idempotent; changing it must go through the task editor.
+          if(previous.notes!==entry.notes||previous.project_id!==entry.projectId)throw new Error('This activity was already recorded as a task. Edit that task instead.')
+          taskIds.push(previous.task_id);continue
+        }
         for(const range of entry.intervals)if(overlap.get(range.end,now,range.start)||restOverlap.get(range.end,now,range.start))throw new Error('Tracked work or a break now overlaps this activity. Refresh and review again.')
         const id=randomUUID()
         this.db.prepare("INSERT INTO tasks (id,title,project_id,planned_task_id,notes,tags_json,status,created_at,updated_at) VALUES (?,'',?,NULL,?,'[]','stopped',?,?)").run(id,entry.projectId,entry.notes,entry.intervals[0].start,now)
@@ -1485,6 +1510,7 @@ export class WorkBuddyDatabase {
     this.normalizeStaleWorkday(Date.now())
     const current = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.id) as TaskRow | undefined
     if (!current) throw new Error('Task not found')
+    validateTags(input.tags)
     const intervalUpdates = input.intervalUpdates ?? []
     if ((intervalUpdates.length || input.intervalOperations !== undefined) && (input.startedAt !== undefined || input.endedAt !== undefined)) throw new Error('Choose one time editing mode')
     let proposedIntervals: TimeInterval[] | undefined
