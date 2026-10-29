@@ -8,6 +8,7 @@ import type {
   ActivityStatus
 } from '../shared/activity'
 import {
+  ACTIVITY_UPLOAD_MINUTES,
   activitySite,
   splitActivityRecord,
   validActivityDay,
@@ -22,7 +23,7 @@ import {
   type ProjectCatalogEntry,
   type ProjectLinkChange
 } from '../shared/activity-learning'
-import { localDateKey } from '../shared/local-date'
+import { localDateKey, localDaysBefore } from '../shared/local-date'
 import { ActivityStore } from './activity-store'
 import {
   WindowsActivityCollector,
@@ -255,6 +256,8 @@ export class ActivityService {
       typeof input.enabled !== 'boolean' ||
       typeof input.captureTitles !== 'boolean' ||
       typeof input.cloudEnabled !== 'boolean' ||
+      typeof input.cloudReads !== 'boolean' ||
+      !ACTIVITY_UPLOAD_MINUTES.includes(input.uploadMinutes) ||
       ![7, 30, 90].includes(input.retentionDays) ||
       !Number.isInteger(input.idleSeconds) ||
       input.idleSeconds < 15 ||
@@ -317,6 +320,8 @@ export class ActivityService {
       idleSeconds: input.idleSeconds,
       retentionDays: input.retentionDays,
       cloudEnabled: input.cloudEnabled,
+      cloudReads: input.cloudReads,
+      uploadMinutes: input.uploadMinutes,
       deviceId: input.deviceId,
       siteUrl,
       excludedApps: input.excludedApps
@@ -469,7 +474,8 @@ export class ActivityService {
       dailyNote: this.store.get<string>('note:' + day) ?? '',
       records: records.filter((r) => r.deviceId === config.deviceId),
       status: this.status(),
-      cloudFetchedAt: this.store.get<number>('fetched:' + day) ?? null
+      cloudFetchedAt: this.store.get<number>('fetched:' + day) ?? null,
+      localReceivedAt: this.store.get<number>('local:' + day) ?? null
     }
   }
   assignments(): ActivityAssignment[] {
@@ -673,17 +679,53 @@ export class ActivityService {
         if (!this.running) return
         this.store.set('lastSyncedAt', Date.now())
         this.syncError = rejection
-        this.nextAttempt = Date.now() + 60000
+        // Convex only keeps a backup copy now; the next upload waits for the configured cadence.
+        this.nextAttempt = Date.now() + config.uploadMinutes * 60000
       }
     } catch (error) {
       this.syncError =
         error instanceof Error ? error.message : 'Activity sync failed'
-      this.nextAttempt = Date.now() + 60000
+      this.nextAttempt = Date.now() + 300000
     }
+  }
+  /** Identity another local producer needs to deliver activity for this paired PC. */
+  pairing(): { deviceId: string; sourceId: string } {
+    return { deviceId: this.store.config().deviceId, sourceId: this.store.sourceId }
+  }
+  /**
+   * Accepts one day of browser activity pushed by tabs-manager over the loopback bridge.
+   * The envelope is validated exactly like a cloud read, so Convex is no longer on the live path.
+   */
+  deliver(raw: unknown, now = Date.now()): { day: string; records: number; receivedAt: number } {
+    const env = validateActivityEnvelope(raw, now)
+    const config = this.store.config()
+    if (env.kind !== 'browser') throw new Error('Only browser activity can be delivered locally')
+    if (env.deviceId !== config.deviceId) throw new Error('Paired PC ID differs')
+    if (env.sourceId === this.store.sourceId) throw new Error('Source ID collides with this PC')
+    const cutoff = localDateKey(localDaysBefore(now, config.retentionDays - 1))
+    if (env.day < cutoff) throw new Error('Activity is outside retention')
+    if (env.day > localDateKey(now + 86400000)) throw new Error('Activity day is in the future')
+    const next = new Map(env.records.map((r) => [r.id, r]))
+    const changed = this.store
+      .remote(env.day, config.deviceId)
+      .filter((old) => old.sourceId === env.sourceId)
+      .some((old) => {
+        const current = next.get(old.id)
+        return !current || current.title !== old.title || current.url !== old.url
+      })
+    if (changed) {
+      this.store.clearRecaps(env.day)
+      this.store.clearMatching(env.day)
+      this.epoch++
+    }
+    this.store.cacheOne(env.day, env, now)
+    return { day: env.day, records: env.records.length, receivedAt: now }
   }
   async refresh(day: string): Promise<ActivityDay> {
     if (!validActivityDay(day)) throw new Error('Invalid activity date')
-    if (this.store.config().cloudEnabled) {
+    // Without cloud reads, a refresh only re-reads what was captured or delivered locally;
+    // backup uploads keep their own cadence instead of running on every page refresh.
+    if (this.store.config().cloudEnabled && this.store.config().cloudReads) {
       await this.sync()
       const payload = (await this.call(
         `/work-buddy/activity?deviceId=${encodeURIComponent(this.store.config().deviceId)}&day=${day}`,

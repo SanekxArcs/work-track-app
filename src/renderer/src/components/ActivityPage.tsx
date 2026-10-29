@@ -1,3 +1,4 @@
+import { ActivityAutoTracking } from './ActivityAutoTracking'
 import { ActivityLearning } from './ActivityLearning'
 import { ActivityWorkSuggestions } from './ActivityWorkSuggestions'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react'
 import { motion } from 'motion/react'
 import type { AppSnapshot } from '@shared/types'
-import type { ActivityConfig, ActivityDay, ActivitySegment } from '@shared/activity'
+import { ACTIVITY_UPLOAD_MINUTES, type ActivityConfig, type ActivityDay, type ActivitySegment } from '@shared/activity'
 import { activityReview } from '@shared/activity-review'
 import { localDateKey, localDateTimestamp, localDaysBefore } from '@shared/local-date'
 import { formatDuration } from '../lib/time'
@@ -213,6 +214,20 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
           </button>
         </div>
       )}
+      {data && (
+        <ActivityAutoTracking
+          key={`auto-${day}`}
+          data={data}
+          snapshot={manual}
+          reload={() => load()}
+          onRecorded={async (result) => {
+            onSnapshot(result)
+            setSummary('')
+            setPreview(undefined)
+            await load()
+          }}
+        />
+      )}
       {data && <ActivityLearning key={day} data={data} snapshot={manual} reload={()=>load()}/>}
       {settingsOpen && config && (
         <section className="activity-card activity-preferences">
@@ -297,14 +312,68 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
           >
             {l('Import .env.workbuddy-sync', 'Імпортувати .env.workbuddy-sync')}
           </button>
+          <p>
+            {l(
+              'On this PC, pair tabs-manager with the extension access key from Settings → Browser extension. Browser activity then arrives locally for free, and Convex only keeps a backup copy.',
+              'На цьому ПК з’єднайте tabs-manager за ключем доступу розширення з Налаштування → Розширення браузера. Тоді активність браузера надходить локально й безкоштовно, а Convex лише зберігає резервну копію.'
+            )}
+          </p>
           <label className="activity-check">
             <input
               type="checkbox"
               checked={config.cloudEnabled}
               onChange={(e) => setConfig({ ...config, cloudEnabled: e.target.checked })}
             />
-            {l('Sync activity with Convex', 'Синхронізувати активність із Convex')}
+            {l('Back up activity to Convex', 'Резервувати активність у Convex')}
           </label>
+          <div className="activity-setting-grid">
+            <label>
+              {l('Upload backup every', 'Завантажувати копію кожні')}
+              <CustomSelect
+                value={String(config.uploadMinutes)}
+                ariaLabel={l('Backup upload interval', 'Інтервал резервного завантаження')}
+                options={ACTIVITY_UPLOAD_MINUTES.map((v) => ({
+                  value: String(v),
+                  label: v < 60 ? `${v} ${l('min', 'хв')}` : `${v / 60} ${v === 60 ? l('hour', 'година') : l('hours', 'години')}`
+                }))}
+                onChange={(v) => setConfig({ ...config, uploadMinutes: Number(v) as ActivityConfig['uploadMinutes'] })}
+              />
+            </label>
+            <label>
+              {l('Backup now', 'Копія зараз')}
+              <button
+                className="secondary-button"
+                disabled={busy || !data?.status.config.cloudEnabled}
+                onClick={() =>
+                  void act(async () => {
+                    const status = await window.workBuddy.syncActivityNow()
+                    if (status.syncError) throw new Error(status.syncError)
+                    setNotice(l('Backup uploaded to Convex', 'Копію завантажено в Convex'))
+                  })
+                }
+              >
+                <Cloud size={13} />
+                {l('Upload now', 'Завантажити зараз')}
+              </button>
+            </label>
+          </div>
+          <label className="activity-check">
+            <input
+              type="checkbox"
+              checked={config.cloudReads}
+              onChange={(e) => setConfig({ ...config, cloudReads: e.target.checked })}
+            />
+            {l(
+              'Also read browser activity from Convex (only if tabs-manager runs on another PC)',
+              'Також читати активність браузера з Convex (лише якщо tabs-manager працює на іншому ПК)'
+            )}
+          </label>
+          <p>
+            {l(
+              'Cloud reads download the whole day every refresh and were using up the free data egress. Keep this off when tabs-manager delivers locally.',
+              'Читання з хмари завантажує весь день під час кожного оновлення й вичерпувало безкоштовний ліміт трафіку. Залиште вимкненим, коли tabs-manager передає дані локально.'
+            )}
+          </p>
           <label>
             {l('Server URL', 'Адреса сервера')}
             <input
@@ -594,9 +663,10 @@ export function ActivityPage({ snapshot, onSnapshot }: { snapshot: AppSnapshot; 
           )}
           <div className="activity-footer">
             <small>
+              {`${l('Browser activity received', 'Активність браузера отримано')}: ${data?.localReceivedAt ? new Date(data.localReceivedAt).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'}`}
               {data?.status.config.cloudEnabled
-                ? `${l('Cloud fetched', 'Отримано з хмари')}: ${data.cloudFetchedAt ? new Date(data.cloudFetchedAt).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'} · ${data.status.pendingDays} ${l('days queued', 'днів у черзі')}`
-                : l('Stored locally · cloud sync off', 'Локальне зберігання · хмарну синхронізацію вимкнено')}
+                ? ` · ${data.status.config.cloudReads ? `${l('Cloud fetched', 'Отримано з хмари')}: ${data.cloudFetchedAt ? new Date(data.cloudFetchedAt).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'} · ` : ''}${l('Backup', 'Копія')}: ${data.status.lastSyncedAt ? new Date(data.status.lastSyncedAt).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'} · ${data.status.pendingDays} ${l('days queued', 'днів у черзі')}`
+                : ` · ${l('Stored locally · cloud backup off', 'Локальне зберігання · резервування в хмарі вимкнено')}`}
             </small>
             <button
               className="icon-button"

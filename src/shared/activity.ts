@@ -37,9 +37,14 @@ export interface ActivityConfig {
   excludedTitlePatterns: string[]
   retentionDays: 7 | 30 | 90
   cloudEnabled: boolean
+  /** Fetch browser activity from Convex. Off when tabs-manager delivers it locally on this PC. */
+  cloudReads: boolean
+  /** Backup upload cadence; the live data path is local. */
+  uploadMinutes: 5 | 15 | 60 | 180
   siteUrl: string
   deviceId: string
 }
+export const ACTIVITY_UPLOAD_MINUTES = [5, 15, 60, 180] as const
 export interface ActivityStatus {
   config: ActivityConfig
   sourceId: string
@@ -64,7 +69,11 @@ export interface ActivityDay {
   dailyNote?: string
   reviewStatus?: {reviewedAt:number|null;current:boolean}
   recap?: ActivityRecap
+  /** Automatic tracking journal for this day; absent until the main process attaches it. */
+  auto?: import('./activity-auto').AutoTrackingState
   cloudFetchedAt: number | null
+  /** When tabs-manager last delivered this day's browser activity over the local bridge. */
+  localReceivedAt?: number | null
 }
 export interface ActivityRecap {
   summary: string

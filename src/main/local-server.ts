@@ -27,13 +27,19 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.end(JSON.stringify(body))
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+/** Receives activity pushed by a local producer such as tabs-manager. */
+export interface LocalActivitySink {
+  pairing(): { deviceId: string; sourceId: string }
+  deliver(raw: unknown): { day: string; records: number; receivedAt: number }
+}
+
+async function readJson(request: IncomingMessage, limit = 1_048_576): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += value.length
-    if (size > 1_048_576) throw new Error('Request body is too large')
+    if (size > limit) throw new Error('Request body is too large')
     chunks.push(value)
   }
   if (chunks.length === 0) return null
@@ -66,15 +72,23 @@ export class WorkBuddyLocalServer {
   constructor(
     private readonly accessKey: string,
     private readonly invoke: RemoteAction,
-    private readonly onDataChanged: () => void
+    private readonly onDataChanged: () => void,
+    private readonly activity?: LocalActivitySink,
+    private readonly port: number = WORK_BUDDY_LOCAL_PORT
   ) {}
+
+  /** The bound port; differs from the default only when a test asked for an ephemeral one. */
+  address(): number {
+    const value = this.server?.address()
+    return value && typeof value === 'object' ? value.port : this.port
+  }
 
   getStatus(): ExtensionServerStatus {
     const oldestActiveAt = Date.now() - 45_000
     for (const [id, lastSeenAt] of this.clients) if (lastSeenAt < oldestActiveAt) this.clients.delete(id)
     return {
       running: this.server?.listening === true,
-      port: WORK_BUDDY_LOCAL_PORT,
+      port: this.address(),
       connections: this.clients.size,
       error: this.lastError
     }
@@ -128,7 +142,7 @@ export class WorkBuddyLocalServer {
       return
     }
 
-    const url = new URL(request.url ?? '/', `http://127.0.0.1:${WORK_BUDDY_LOCAL_PORT}`)
+    const url = new URL(request.url ?? '/', `http://127.0.0.1:${this.port}`)
     // Web pages can reach loopback too; only the extension (or a non-browser
     // client without an Origin) may use the bridge. This also covers /health so
     // a page cannot probe whether Work Buddy is running.
@@ -188,6 +202,26 @@ export class WorkBuddyLocalServer {
       return
     }
 
+    if (this.activity && request.method === 'GET' && url.pathname === '/activity/pair') {
+      writeJson(response, 200, this.activity.pairing())
+      return
+    }
+    if (this.activity && request.method === 'POST' && url.pathname === '/activity') {
+      if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+        writeJson(response, 415, { error: 'Expected application/json.' })
+        return
+      }
+      try {
+        // A day of browser activity can reach a few megabytes; the cloud endpoint allows 5 MB.
+        const receipt = this.activity.deliver(await readJson(request, 6 * 1_048_576))
+        writeJson(response, 200, receipt)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unexpected server error'
+        writeJson(response, message === 'Paired PC ID differs' ? 409 : 400, { error: message })
+      }
+      return
+    }
+
     writeJson(response, 404, { error: 'Not found' })
   }
 
@@ -213,7 +247,7 @@ export class WorkBuddyLocalServer {
       }
       server.once('error', onError)
       server.once('listening', onListening)
-      server.listen(WORK_BUDDY_LOCAL_PORT, '127.0.0.1')
+      server.listen(this.port, '127.0.0.1')
     })
   }
 

@@ -925,3 +925,11 @@ html[data-theme=light] .activity-toolbar input {color-scheme:light}
 /* Keyboard toggle for a project card's details. */
 .project-card__expand svg { transition: transform .2s ease; }
 .project-card--expanded .project-card__expand svg { transform: rotate(180deg); }
+.activity-auto {display:flex;flex-direction:column;gap:9px}
+.activity-auto .activity-state {margin-left:0}
+.activity-auto .activity-setting-grid label {display:flex;flex-direction:column;gap:5px;font-size:11px;min-width:0}
+.activity-auto-status {font-size:10px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
+.activity-auto-metrics strong {font-size:16px}
+.activity-auto-entry.is-live {border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.activity-auto-entry input[type=text] {width:100%;min-width:0;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft);padding:7px 8px;color:var(--text);font-size:11px}
+.activity-auto .activity-manual .secondary-button {align-self:flex-start;margin-top:4px}

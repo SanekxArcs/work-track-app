@@ -4,10 +4,12 @@ import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, Extensi
 
 const api: WorkBuddyApi = {
   activityLearning:(action,input)=>ipcRenderer.invoke(channels.activityLearning,action,input),
+  activityAuto:(action,input)=>ipcRenderer.invoke(channels.activityAuto,action,input),
   acceptActivityDrafts: (input) => ipcRenderer.invoke(channels.activityAcceptDrafts,input),
   getActivityDay: (day) => ipcRenderer.invoke(channels.activityDay,day),
   configureActivity: (config,writeKey,readKey) => ipcRenderer.invoke(channels.activityConfigure,config,writeKey,readKey),
   importActivityConnection: () => ipcRenderer.invoke(channels.activityImport),
+  syncActivityNow: () => ipcRenderer.invoke(channels.activitySyncNow),
   refreshActivity: (day) => ipcRenderer.invoke(channels.activityRefresh,day),
   assignActivity: (value) => ipcRenderer.invoke(channels.activityAssign,value),
   rememberActivityProject: (rule) => ipcRenderer.invoke(channels.activityRemember,rule),

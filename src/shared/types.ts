@@ -353,10 +353,12 @@ export interface ExtensionServerStatus {
 
 export interface WorkBuddyApi {
   activityLearning:(action:'projects'|'link'|'saveRule'|'deleteRule'|'note'|'complete'|'preview'|'generate'|'confirm',input?:unknown)=>Promise<import('./activity-learning').ActivityLearningResponse>
+  activityAuto:(action:import('./activity-auto').AutoTrackingAction,input?:unknown)=>Promise<import('./activity-auto').AutoTrackingResponse>
   acceptActivityDrafts: (input:{day:string;drafts:import('./activity-drafts').ActivityDraft[]}) => Promise<{snapshot:AppSnapshot;taskIds:string[];created:number}>
   getActivityDay: (day:string) => Promise<import('./activity').ActivityDay>
   configureActivity: (config:import('./activity').ActivityConfig,writeKey?:string,readKey?:string) => Promise<import('./activity').ActivityStatus>
   importActivityConnection: () => Promise<import('./activity').ActivityStatus|null>
+  syncActivityNow: () => Promise<import('./activity').ActivityStatus>
   refreshActivity: (day:string) => Promise<import('./activity').ActivityDay>
   assignActivity: (value:import('./activity').ActivityAssignment) => Promise<void>
   rememberActivityProject: (rule:import('./activity-review').ActivityRule) => Promise<void>

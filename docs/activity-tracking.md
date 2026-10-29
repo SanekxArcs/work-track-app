@@ -50,7 +50,7 @@ Connection keys cover this existing personal deployment, including its sources; 
 - Built extension verified in isolated Chromium: connection-file import, optional host permission, sanitized upload, deletion and compact connection layout. Existing foreground/browser activity regression also passed.
 - Live Convex verification used synthetic observations only: matching environment files, desktop/browser sources on a shared PC ID, read/write key separation, cleaned readback, and browser-origin uploads/deletions. Test observations were emptied afterward.
 
-Still needs ordinary use: full-day coverage, actual lock/sleep/resume across this machine's Windows configuration, and real AI summary quality. Shared project mapping and AI matching are now available. Fully automatic work recording remains outside this release. Reviewed work recovery is now available as described below.
+Still needs ordinary use: full-day coverage, actual lock/sleep/resume across this machine's Windows configuration, and real AI summary quality. Shared project mapping and AI matching are now available. Reviewed work recovery and an automatic tracking journal (monitoring phase) are described below; recording journal entries as tasks still requires your confirmation.
 
 ## Recovering work from activity · next phase
 
@@ -68,6 +68,28 @@ The browser tracker emits IDs such as `visit-uuid:2026-10-23`. The initial share
 
 Validated with real-format IDs against the live Convex backend, producer-based browser regression coverage, and an isolated built Electron flow that splits a suggestion and confirms two stopped entries with the exact original total duration. No real AI call is needed to generate or review work suggestions.
 
+
+## Local delivery · Convex as backup only
+
+Reading browser activity back from Convex downloaded roughly 450 KB per refresh (the browser day plus this PC's own echoed desktop day), and the activity page refreshed every minute, which used up the free data egress in a few working days. Both apps now talk directly on the PC:
+
+- **tabs-manager → Work Buddy.** Work Buddy's loopback bridge (`http://127.0.0.1:49837`, the one its companion extension uses) accepts `POST /activity` with the same validated envelope the cloud endpoint takes, plus `GET /activity/pair` for the paired PC ID. Both require the extension access key from **Settings → Browser extension** and an extension origin. In tabs-manager, open **Tracker → Options → Work Buddy connection → Work Buddy on this PC**, paste that key, click **Connect to Work Buddy on this PC** and allow the loopback origin. Changed days are then delivered on the browser's one-minute alarm; the activity page shows *Browser activity received* with the last delivery time. Delivery waits while Work Buddy is closed and catches up when it starts.
+- **Cloud reads are off by default.** *Also read browser activity from Convex* in the activity settings exists only for a tabs-manager running on another PC. With it off, a refresh re-reads local and delivered data only and never downloads.
+- **Backups keep a cadence.** *Back up activity to Convex* uploads changed Windows days every 5 or 15 minutes, 1 hour (default) or 3 hours, and **Upload now** forces one. A failed upload retries after five minutes. tabs-manager uploads its backup on its own cadence (default hourly). Shared project links still live in Convex and refresh with each backup or with **Refresh projects**.
+
+Existing installations keep their saved connection and switch to backups only; nothing has to be re-imported. Delivered browser days live in `activity.sqlite` beside cloud-fetched ones and follow the same retention.
+
+## Automatic tracking · monitoring phase
+
+**PC activity → Automatic tracking** runs unattended while Work Buddy is open (including in the tray). Every 5, 10, 15 or 30 minutes it refreshes the browser observations from Convex, combines them with the Windows observations, and journals every active period outside your task timers and breaks that reaches the minimum period (1, 5 or 15 minutes). Yesterday is reconciled again for two hours after midnight so late browser checkpoints still land on the right day. Wake-up, a settings change and the **Run now** button trigger an immediate pass.
+
+This is a monitoring journal, not a second timer. Manual tracking keeps working exactly as before: nothing starts, pauses or edits a timer, and journal entries are not tasks until you record them. Each entry shows its observed range, exact duration, apps/sites, and the project resolved through the normal chain (explicit correction → shared browser link → remembered rule → unique project name). A still-growing entry is marked *still going*; the journal extends it on the next pass instead of creating a new row. Once a manual timer covers a period, its automatic entry disappears. Gaps between observations are never counted.
+
+Per entry you can override the project (or choose *No project*), add a description, mark it **Not work** (dismissed periods are never journaled again, but activity continuing after them is), or **Record as task**. Recording goes through the same reviewed-work path as *Recover untracked work*: the save re-checks the current observations, rejects overlaps with tracked time atomically, and the import journal prevents duplicates. The result is an ordinary stopped task with the entry's project and description (default `Auto · <context>`), visible in the day history, project totals, backups and snapshot sync. Deleting that task reopens the period in the journal. Select several settled entries to record them in one confirmed batch.
+
+Journal entries live in `activity.sqlite` and follow the Windows retention window; deleting a Windows day also deletes its journal. Pausing automatic tracking keeps existing entries. The automatic pass uses the same cloud read key and privacy filters as the activity page and never calls AI.
+
+Suggested test: keep automatic tracking on for a few working days, compare the **Auto work** total and the project breakdown with your manual timers, and record or dismiss entries as you go. If the journal matches real work well enough, the next step is to record settled entries as tasks automatically.
 
 ## Shared projects, learning, and end-of-day review
 

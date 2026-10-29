@@ -16,6 +16,7 @@ The interface is available in Ukrainian and English.
 - Tray controls, autostart, reminders, custom sounds, and desktop-transparent UI
 - Local SQLite storage; the tracker works offline
 - Optional scheduled Convex uploads and read-only access for other apps ([setup guide](docs/convex-sync.md))
+- PC and browser activity review with an automatic tracking journal that can be recorded as tasks ([guide](docs/activity-tracking.md))
 
 ## Tech stack
 

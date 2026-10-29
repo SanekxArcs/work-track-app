@@ -1,8 +1,10 @@
 export const channels = {
   activityLearning:'activity:learning',
+  activityAuto:'activity:auto',
   activityAcceptDrafts: 'activity:accept-drafts',
   activityDay: 'activity:day',
   activityConfigure: 'activity:configure',
+  activitySyncNow: 'activity:sync-now',
   activityImport: 'activity:import',
   activityRefresh: 'activity:refresh',
   activityAssign: 'activity:assign',

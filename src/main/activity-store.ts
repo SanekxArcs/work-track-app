@@ -8,6 +8,7 @@ import type {
   ActivityRecord
 } from '../shared/activity'
 import { localDateKey, localDaysBefore } from '../shared/local-date'
+import { validAutoEntry, type AutoEntry } from '../shared/activity-auto'
 
 export class ActivityStore {
   private db: DatabaseSync
@@ -21,7 +22,9 @@ export class ActivityStore {
       CREATE TABLE IF NOT EXISTS dirty(day TEXT PRIMARY KEY,revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS remote(source TEXT NOT NULL,day TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(source,day));
       CREATE TABLE IF NOT EXISTS assignments(recordId TEXT PRIMARY KEY,body TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS recaps(day TEXT PRIMARY KEY,body TEXT NOT NULL);`)
+      CREATE TABLE IF NOT EXISTS recaps(day TEXT PRIMARY KEY,body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS auto_entries(id TEXT PRIMARY KEY,day TEXT NOT NULL,body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS auto_entries_day ON auto_entries(day);`)
     this.sourceId = this.get<string>('sourceId') ?? randomUUID()
     this.set('sourceId', this.sourceId)
     if (!this.get('config'))
@@ -33,6 +36,8 @@ export class ActivityStore {
         excludedTitlePatterns: [],
         retentionDays: 30,
         cloudEnabled: false,
+        cloudReads: false,
+        uploadMinutes: 60,
         siteUrl: '',
         deviceId
       } satisfies ActivityConfig)
@@ -49,7 +54,27 @@ export class ActivityStore {
       .run(key, JSON.stringify(value))
   }
   config(): ActivityConfig {
-    return this.get<ActivityConfig>('config')!
+    const stored = this.get<Partial<ActivityConfig>>('config') ?? {}
+    // Installations from before local delivery default to backups only: no cloud reads, hourly uploads.
+    return {
+      cloudReads: false,
+      uploadMinutes: 60,
+      ...stored
+    } as ActivityConfig
+  }
+  /** Replaces one source's cached envelope for a day, leaving other sources untouched. */
+  cacheOne(day: string, env: ActivityEnvelope, receivedAt = Date.now()): void {
+    this.db.exec('BEGIN')
+    try {
+      this.db
+        .prepare('INSERT OR REPLACE INTO remote VALUES (?,?,?)')
+        .run(env.sourceId, day, JSON.stringify(env))
+      this.set('local:' + day, receivedAt)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
   mark(day: string): void {
     this.db
@@ -155,9 +180,36 @@ export class ActivityStore {
       }>
     ).map((r) => JSON.parse(r.body))
   }
+  autoEntries(day: string): AutoEntry[] {
+    return (
+      this.db
+        .prepare('SELECT body FROM auto_entries WHERE day=? ORDER BY id')
+        .all(day) as Array<{ body: string }>
+    )
+      .map((r) => JSON.parse(r.body) as unknown)
+      .filter(validAutoEntry)
+      .sort(
+        (a, b) =>
+          a.intervals[0].start - b.intervals[0].start || a.id.localeCompare(b.id)
+      )
+  }
+  saveAutoEntries(day: string, entries: AutoEntry[]): void {
+    this.db.exec('BEGIN')
+    try {
+      this.db.prepare('DELETE FROM auto_entries WHERE day=?').run(day)
+      const insert = this.db.prepare('INSERT INTO auto_entries VALUES (?,?,?)')
+      for (const entry of entries)
+        if (entry.day === day) insert.run(entry.id, day, JSON.stringify(entry))
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
   deleteDay(day: string): void {
     for (const prefix of ['matching:', 'decisions:', 'note:', 'review:'])
       this.db.prepare('DELETE FROM meta WHERE key=?').run(prefix + day)
+    this.db.prepare('DELETE FROM auto_entries WHERE day=?').run(day)
     for (const record of this.local(day))
       this.db.prepare('DELETE FROM assignments WHERE recordId=?').run(record.id)
     this.db.prepare('DELETE FROM recaps WHERE day=?').run(day)
@@ -169,12 +221,13 @@ export class ActivityStore {
       localDaysBefore(now, this.config().retentionDays - 1)
     )
     for (const day of this.days()) if (day < cutoff) this.deleteDay(day)
-    for (const prefix of ['matching:', 'decisions:', 'note:', 'review:'])
+    for (const prefix of ['matching:', 'decisions:', 'note:', 'review:', 'local:', 'fetched:'])
       this.db
         .prepare('DELETE FROM meta WHERE key LIKE ? AND substr(key,?)<?')
         .run(prefix + '%', prefix.length + 1, cutoff)
     this.db.prepare('DELETE FROM remote WHERE day<?').run(cutoff)
     this.db.prepare('DELETE FROM recaps WHERE day<?').run(cutoff)
+    this.db.prepare('DELETE FROM auto_entries WHERE day<?').run(cutoff)
     // No need to upload expired tombstones: the server applies the same retention window.
     this.db.prepare('DELETE FROM dirty WHERE day<?').run(cutoff)
   }

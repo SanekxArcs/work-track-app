@@ -1,5 +1,6 @@
 import { surfaceRegion,notchBounds } from './window-shape'
 import { ActivityLearningService } from './activity-learning'
+import { AutoTrackingService } from './activity-auto'
 import { acceptActivityDrafts } from './activity-import'
 import { ActivityStore } from './activity-store'
 import { ActivityService } from './activity'
@@ -26,7 +27,10 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let learning:ActivityLearningService
+let autoTracking:AutoTrackingService
 let activity: ActivityService
+/** Daily activity view for the renderer: review state plus the automatic tracking journal. */
+function activityDayView(day:string){return {...learning.day(day),auto:autoTracking.state(day)}}
 const activityPreviews = new Map<string,{expires:number;epoch:number;review:ReturnType<typeof activityReview>}>()
 let convexSync: ConvexSyncService
 let database: WorkBuddyDatabase
@@ -555,8 +559,24 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
 function registerIpc(): void {
   ipcMain.handle(channels.activityLearning,(_,action,input)=>learning.run(action,input))
   ipcMain.handle(channels.activityAcceptDrafts,(_,input)=>{const result=acceptActivityDrafts(activity,database,input);emitChanged();return result})
-  ipcMain.handle(channels.activityDay,(_,day:string)=>learning.day(day))
+  ipcMain.handle(channels.activityAuto,async(_,action:string,input:unknown)=>{
+    const value=(input&&typeof input==='object'?input:{}) as Record<string,unknown>
+    const day=typeof value.day==='string'?value.day:localDateKey(Date.now())
+    if(action==='configure')autoTracking.configure(value.config)
+    else if(action==='run')await autoTracking.run([day])
+    else if(action==='dismiss')autoTracking.dismiss(day,value.id)
+    else if(action==='restore')autoTracking.restore(day,value.id)
+    else if(action==='update')autoTracking.update(day,value.id,value.patch as {project?:'auto'|string|null;notes?:string})
+    else if(action==='promote'){
+      const result=autoTracking.promote(day,value.ids)
+      return {data:activityDayView(day),snapshot:result.snapshot,created:result.created}
+    }
+    else throw new Error('Unknown automatic tracking action')
+    return {data:activityDayView(day)}
+  })
+  ipcMain.handle(channels.activityDay,(_,day:string)=>activityDayView(day))
   ipcMain.handle(channels.activityConfigure,(_,config,writeKey,readKey)=>activity.configure(config,writeKey,readKey))
+  ipcMain.handle(channels.activitySyncNow,async()=>{await activity.resync();return activity.status()})
   ipcMain.handle(channels.activityImport,async()=>{
     const result=await dialog.showOpenDialog({title:'Import Work Buddy connection',properties:['openFile']})
     if(result.canceled||!result.filePaths[0])return null
@@ -564,7 +584,7 @@ function registerIpc(): void {
     if(contents.length>16384)throw new Error('Connection file is too large')
     return activity.importConnection(contents)
   })
-  ipcMain.handle(channels.activityRefresh,async(_,day:string)=>{await activity.refresh(day);return learning.day(day)})
+  ipcMain.handle(channels.activityRefresh,async(_,day:string)=>{await activity.refresh(day);if(autoTracking.config().enabled)autoTracking.reconcile(day);return activityDayView(day)})
   ipcMain.handle(channels.activityAssign,(_,value)=>activity.assign(value))
   ipcMain.handle(channels.activityRemember,(_,rule)=>{
     if(!database.getSnapshot().projects.some(p=>p.id===rule?.projectId))throw new Error('Choose an existing Work Buddy project')
@@ -1086,15 +1106,25 @@ else {
     },()=>powerMonitor.getSystemIdleTime())
     activity.setProjectProvider(()=>database.getSnapshot().projects.map(({id,name,color,archived})=>({id,name,color,archived:!!archived})))
     learning=new ActivityLearningService(activity,database,gemini)
+    autoTracking=new AutoTrackingService(activity,database,emitChanged)
     activity.start()
+    autoTracking.start()
     powerMonitor.on('suspend',()=>activity.system('suspend'))
-    powerMonitor.on('resume',()=>activity.system('resume'))
+    powerMonitor.on('resume',()=>{activity.system('resume');autoTracking.soon()})
     powerMonitor.on('lock-screen',()=>activity.system('lock'))
     powerMonitor.on('unlock-screen',()=>activity.system('unlock'))
     convexSync.start()
     registerIpc()
     try {
-      localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
+      localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged, {
+        pairing: () => activity.pairing(),
+        deliver: (raw) => {
+          const receipt = activity.deliver(raw)
+          // Fresh browser evidence may extend or settle automatic entries; do not wait for the interval.
+          autoTracking.soon()
+          return receipt
+        }
+      })
       localServer.onStatusChange(emitExtensionServerStatus)
       await localServer.start().catch(() => {
         // A port conflict must not block the time tracker. The settings page
@@ -1144,6 +1174,7 @@ app.on('before-quit', () => {
   reminders?.stop()
   void localServer?.stop()
   convexSync?.stop()
+  autoTracking?.stop()
   activity?.stop()
   activity?.store.close()
   database?.close()
