@@ -56,3 +56,22 @@ test('notch bounds retain the requested edge when opening and on negative-coordi
     -200
   )
 })
+test('notch flare extends the attached edge into concave ears that shrink away from it', () => {
+  const flare = 12
+  const top = surfaceRegion({ x: 12, y: 0, width: 264, height: 30 }, 11, false, true, true, true, flare)
+  assert.equal(inside(top, 3, 0), true)
+  assert.equal(inside(top, 284, 0), true)
+  assert.equal(inside(top, 0, 0), false)
+  assert.equal(inside(top, 11, 1), true)
+  assert.equal(inside(top, 0, 6), false)
+  assert.equal(inside(top, 12, 12), true)
+  assert.equal(inside(top, 11, 12), false)
+  assert.equal(inside(top, 0, 20), false)
+  assert.equal(inside(top, 12, 29), false)
+  const bottom = surfaceRegion({ x: 12, y: 470, width: 264, height: 30 }, 11, true, false, true, true, flare)
+  assert.equal(inside(bottom, 3, 499), true)
+  assert.equal(inside(bottom, 284, 499), true)
+  assert.equal(inside(bottom, 0, 490), false)
+  assert.equal(inside(bottom, 11, 487), false)
+  assert.equal(inside(bottom, 12, 470), false)
+})

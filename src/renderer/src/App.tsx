@@ -1,8 +1,7 @@
-import { ActivityPage } from './components/ActivityPage'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Monitor, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Play, Plus, Settings2, Sparkles, Square, Undo2 } from 'lucide-react'
-import type { AppSnapshot, Locale, StartMode, Task } from '@shared/types'
+import { ArrowRightLeft, ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Play, Plus, Settings2, EyeOff, Sparkles, Square, Sunrise, Sunset, Undo2 } from 'lucide-react'
+import type { AppSnapshot, Locale, NotchSettings, StartMode, Task } from '@shared/types'
 import { restRemaining } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
 import { DaySummary } from './components/DaySummary'
@@ -19,13 +18,38 @@ import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib
 import { playNotificationSound } from './lib/sounds'
 import { localDayBounds } from '@shared/local-date'
 
-type Tab = 'focus' | 'day' | 'projects' | 'activity' | 'settings'
+type Tab = 'focus' | 'day' | 'projects' | 'settings'
 type NotchState = 'collapsed' | 'open' | 'closing'
 type HeaderSlide = { id: string; label: string; value?: string; ms?: number; compactMs?: boolean; count?: number }
 
-/** Matches NOTCH_SIZE in the main process: the window is exactly the pill while collapsed. */
-const NOTCH_WIDTH = 264
+/** Matches NOTCH_HEIGHT in the main process: the window is exactly the pill while collapsed. */
 const NOTCH_HEIGHT = 30
+/** The pill with only the stats carousel inside; each quick action adds a button's width. */
+const NOTCH_BASE_WIDTH = 264
+const NOTCH_ACTION_WIDTH = 26
+/** The quick actions the collapsed pill offers right now, in display order. */
+type NotchQuickActionId = 'start-day' | 'end-day' | 'finish-rest' | 'lunch' | 'break' | 'parallel' | 'switch' | 'hide'
+function notchQuickActionIds(settings: NotchSettings | undefined, workdayOpen: boolean, workdayDue: boolean, resting: boolean): NotchQuickActionId[] {
+  if (!settings) return []
+  const ids: NotchQuickActionId[] = []
+  const { actions } = settings
+  // End day appears only once the planned workday is over; a closed day only offers starting a new one.
+  if (actions.day) {
+    if (!workdayOpen) ids.push('start-day')
+    else if (workdayDue) ids.push('end-day')
+  }
+  if (resting && (actions.lunch || actions.break)) ids.push('finish-rest')
+  else if (workdayOpen) {
+    if (actions.lunch) ids.push('lunch')
+    if (actions.break) ids.push('break')
+  }
+  if (workdayOpen) {
+    if (actions.parallel) ids.push('parallel')
+    if (actions.switch) ids.push('switch')
+  }
+  if (actions.hide) ids.push('hide')
+  return ids
+}
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function SlideValue({ slide, locale }: { slide: HeaderSlide; locale: Locale }): React.JSX.Element | null {
@@ -69,6 +93,8 @@ export default function App(): React.JSX.Element {
   const notchElement=useRef<HTMLDivElement>(null)
   useEffect(()=>window.workBuddy.onNotchEdge(setNotchEdge),[])
   const [notch, setNotchState] = useState<NotchState | null>(null)
+  /** True once the open notch finished growing; fitting the window before that would fight the motion. */
+  const [notchSettled, setNotchSettled] = useState(false)
   const [notchTravelHidden, setNotchTravelHidden] = useState(false)
   const notchTravelling = useRef(false)
   useEffect(() => window.workBuddy.onNotchTravel((hidden) => {
@@ -77,6 +103,25 @@ export default function App(): React.JSX.Element {
     if (hidden) window.clearTimeout(notchOpenTimer.current)
   }), [])
   const [windowLeaving, setWindowLeaving] = useState(false)
+  /** The pill tucked itself away on request; it slides back when the timer runs out. */
+  const [notchSnoozed, setNotchSnoozed] = useState(false)
+  const notchSnoozedRef = useRef(false)
+  const notchSnoozeTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(notchSnoozeTimer.current), [])
+  // The main process watches the cursor so a notch opened by click still closes when the pointer leaves.
+  useEffect(() => window.workBuddy.onNotchPointer((inside) => { if (notchRef.current === 'open') hoverNotchRef.current(inside) }), [])
+  const snoozeNotch = (seconds: number): void => {
+    window.clearTimeout(notchOpenTimer.current)
+    window.clearTimeout(notchSnoozeTimer.current)
+    notchSnoozedRef.current = true
+    setNotchSnoozed(true)
+    notchSnoozeTimer.current = window.setTimeout(() => {
+      notchSnoozedRef.current = false
+      setNotchSnoozed(false)
+      // Coming back under a resting pointer must not spring it open.
+      notchHoverBlocked.current = true
+    }, Math.max(1, seconds) * 1000)
+  }
   useEffect(()=>{
     if(!notch)return
     let frame=0,last='',stable=0
@@ -84,7 +129,8 @@ export default function App(): React.JSX.Element {
       frame=0
       const element=notchElement.current
       if(element){
-        const r=element.getBoundingClientRect(),style=getComputedStyle(element)
+        const face=(element.firstElementChild as HTMLElement|null)??element
+        const r=element.getBoundingClientRect(),style=getComputedStyle(face)
         const rect={x:r.x,y:r.y,width:r.width,height:r.height,radius:Math.max(parseFloat(style.borderTopLeftRadius)||0,parseFloat(style.borderBottomLeftRadius)||0)}
         const key=JSON.stringify(rect)
         if(key!==last){last=key;stable=0;void window.workBuddy.setNotchSurface(rect)}else stable++
@@ -97,8 +143,9 @@ export default function App(): React.JSX.Element {
     window.addEventListener('resize',sample)
     sample()
     return ()=>{cancelAnimationFrame(frame);observer.disconnect();window.removeEventListener('resize',sample)}
-  },[notch,notchEdge,notchTravelHidden,windowLeaving])
+  },[notch,notchEdge,notchTravelHidden,notchSnoozed,windowLeaving])
   const notchRef = useRef<NotchState | null>(null)
+  const hoverNotchRef = useRef<(inside: boolean) => void>(() => {})
   const notchOpenTimer = useRef<number | undefined>(undefined)
   const notchCloseTimer = useRef<number | undefined>(undefined)
   const notchDrag = useRef<{ startX: number; startY:number; moved: boolean; pending: boolean } | null>(null)
@@ -111,6 +158,22 @@ export default function App(): React.JSX.Element {
   const compactTasksOpen = useRef(false)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null)
+  // The active-tab pill slides between buttons on its own measured track: a shared-layout
+  // animation would scale it through the move and smear its corners.
+  const tabBarRef = useRef<HTMLElement | null>(null)
+  const [tabPill, setTabPill] = useState<{ left: number; width: number } | null>(null)
+  useLayoutEffect(() => {
+    const nav = tabBarRef.current
+    if (!nav) return
+    const measure = (): void => {
+      const active = nav.querySelector<HTMLElement>('button.active')
+      if (active) setTabPill({ left: active.offsetLeft, width: active.offsetWidth })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [tab, compact, dockSide, notch, snapshot?.settings.locale])
   const attachContent = useCallback((element: HTMLDivElement | null) => {
     contentRef.current = element
     setContentElement(element)
@@ -119,6 +182,7 @@ export default function App(): React.JSX.Element {
   const setNotch = (next: NotchState | null): void => {
     notchRef.current = next
     setNotchState(next)
+    setNotchSettled(false)
   }
 
   const [loadFailed, setLoadFailed] = useState(false)
@@ -271,6 +335,19 @@ export default function App(): React.JSX.Element {
     void window.workBuddy.setWindowMode('expanded').then(() => setNotch(null))
   }, [notch, notchEnabled])
 
+  const notchSettings = snapshot?.settings.notch
+  const notchOpenOn = notchSettings?.openOn ?? 'hover'
+  const notchHoverDelay = notchSettings?.hoverDelayMs ?? 400
+  const notchActionIds = notchQuickActionIds(notchSettings, snapshot?.workday?.endedAt === null, showFocusEndDay, Boolean(activeRest))
+  const notchPillWidth = NOTCH_BASE_WIDTH + NOTCH_ACTION_WIDTH * notchActionIds.length
+  // The collapsed window is exactly the pill, so it follows the pill as actions come and go.
+  const sentPillWidth = useRef(0)
+  useEffect(() => {
+    if (notch !== 'collapsed' || sentPillWidth.current === notchPillWidth || notchDrag.current) return
+    sentPillWidth.current = notchPillWidth
+    void window.workBuddy.setWindowMode('notch', 1, notchPillWidth)
+  }, [notch, notchPillWidth])
+
   // With auto height on, every change in the page's size (a tab switch, a new or edited task,
   // a panel opening) refits the window, after the motion settles. The task editor sizes the
   // window itself, so fitting waits until it closes.
@@ -278,11 +355,11 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     const content = contentElement
     // The open notch always fits its content, including expanding planned-task panels.
-    if ((!autoFitHeight && notch !== 'open') || !content || compact || docked || (notch && notch !== 'open') || editorOpen) return
+    if ((!autoFitHeight && notch !== 'open') || !content || compact || docked || (notch && (notch !== 'open' || !notchSettled)) || editorOpen) return
     let timer: number | undefined
     const schedule = (): void => {
       window.clearTimeout(timer)
-      timer = window.setTimeout(() => void window.workBuddy.fitWindowToContent(contentFitHeight(content)), 140)
+      timer = window.setTimeout(() => void window.workBuddy.fitWindowToContent(contentFitHeight(content)), 60)
     }
     const resize = new ResizeObserver(schedule)
     const observePages = (): void => {
@@ -298,7 +375,7 @@ export default function App(): React.JSX.Element {
       resize.disconnect()
       pages.disconnect()
     }
-  }, [autoFitHeight, contentElement, compact, docked, notch, editorOpen])
+  }, [autoFitHeight, contentElement, compact, docked, notch, notchSettled, editorOpen])
 
   if (!snapshot) {
     const loadingT = translator(navigator.language.toLowerCase().startsWith('uk') ? 'uk' : 'en')
@@ -353,7 +430,8 @@ export default function App(): React.JSX.Element {
     if (editorOpen) return Promise.resolve()
     return switchWindow(async () => {
       resetCompactHover()
-      const edge=await window.workBuddy.setWindowMode('notch')
+      sentPillWidth.current = notchPillWidth
+      const edge=await window.workBuddy.setWindowMode('notch', 1, notchPillWidth)
       setNotchEdge(edge==='bottom'?'bottom':'top')
       setCompact(false)
       setDockSide(null)
@@ -386,7 +464,8 @@ export default function App(): React.JSX.Element {
     if (notchRef.current !== 'closing' || notchCloseFinishing.current) return
     notchCloseFinishing.current = true
     try {
-      await window.workBuddy.setWindowMode('notch')
+      sentPillWidth.current = notchPillWidth
+      await window.workBuddy.setWindowMode('notch', 1, notchPillWidth)
       if (notchRef.current === 'closing') {
         // Re-entry during the exit cannot queue an opening. Leave the pill first.
         notchHoverBlocked.current = notchHovered.current
@@ -404,16 +483,17 @@ export default function App(): React.JSX.Element {
     // Once the exit starts it must finish, even if the pointer comes back.
     if (notchRef.current === 'closing') return
     // A pill being dragged, or just dropped under the cursor, must not spring open.
-    if (notchTravelling.current || notchDrag.current || (inside && notchHoverBlocked.current)) return
+    if (notchTravelling.current || notchSnoozedRef.current || notchDrag.current || (inside && notchHoverBlocked.current)) return
     if (!inside) notchHoverBlocked.current = false
     if (inside) {
-      if (notchRef.current === 'collapsed') notchOpenTimer.current = window.setTimeout(() => void openNotch(), 260)
+      if (notchRef.current === 'collapsed' && notchOpenOn === 'hover') notchOpenTimer.current = window.setTimeout(() => void openNotch(), notchHoverDelay)
     } else if (notchRef.current === 'open') {
       notchCloseTimer.current = window.setTimeout(() => {
         if (notchRef.current === 'open' && !editorOpen) setNotch('closing')
       }, 450)
     }
   }
+  hoverNotchRef.current = hoverNotch
 
   /** Drag the pill to either edge; clicking only expands it within notch mode. */
   const notchPointer = {
@@ -468,6 +548,31 @@ export default function App(): React.JSX.Element {
     await window.workBuddy.startWorkday()
     setSnapshot(await window.workBuddy.startTask({ mode: 'parallel' }))
   })
+
+  /** Icon-only shortcuts inside the collapsed pill; hovering them never springs the notch open. */
+  const notchQuickActions = notchActionIds.map((id) => {
+    switch (id) {
+      case 'start-day': return { id, icon: <Sunrise size={14} />, title: t('startDay'), disabled: false, live: false, run: () => mutate(window.workBuddy.startWorkday()) }
+      case 'end-day': return { id, icon: <Sunset size={14} />, title: t('endDay'), disabled: false, live: false, run: () => void endDay() }
+      case 'finish-rest': return { id, icon: <Square size={11} fill="currentColor" />, title: t('finishRest'), disabled: !activeRest, live: true, run: () => { if (activeRest) void mutate(window.workBuddy.completeRest(activeRest.id)) } }
+      case 'lunch': return { id, icon: <Coffee size={14} />, title: t('startLunch'), disabled: false, live: false, run: () => mutate(window.workBuddy.startRest('lunch')) }
+      case 'break': return { id, icon: <Dumbbell size={14} />, title: t('takeBreak'), disabled: false, live: false, run: () => mutate(window.workBuddy.startRest('break')) }
+      case 'parallel': return { id, icon: <Plus size={15} />, title: snapshot.workday?.endedAt === null ? t('addParallel') : t('startDay'), disabled: restRunning, live: false, run: () => snapshot.workday?.endedAt === null ? startInstant('parallel') : startDayWithTask() }
+      case 'switch': return { id, icon: <ArrowRightLeft size={14} />, title: t('switchTask'), disabled: restRunning || liveTasks.length === 0, live: false, run: () => startInstant('switch') }
+      case 'hide': return { id, icon: <EyeOff size={14} />, title: `${t('notchActionHide')} · ${snapshot.settings.notch.hideSeconds} ${t('secondsShort')}`, disabled: false, live: false, run: () => snoozeNotch(snapshot.settings.notch.hideSeconds) }
+    }
+  })
+  const notchActionBar = notchQuickActions.length > 0 && (
+    <div
+      className="notch-actions no-drag"
+      onMouseEnter={() => { window.clearTimeout(notchOpenTimer.current); notchHoverBlocked.current = true }}
+      onMouseLeave={() => { if (!notchDrag.current) { notchHoverBlocked.current = false; hoverNotch(true) } }}
+    >
+      {notchQuickActions.map((action) => (
+        <button key={action.id} className={`notch-action ${action.live ? 'notch-action--live' : ''}`} disabled={action.disabled} title={action.title} aria-label={action.title} onClick={(event) => { event.stopPropagation(); void action.run() }}>{action.icon}</button>
+      ))}
+    </div>
+  )
 
   const openEdit = async (task: Task, intervalId?: string): Promise<void> => {
     if (compact) {
@@ -531,7 +636,7 @@ export default function App(): React.JSX.Element {
 
   const endDay = (): Promise<void> => attempt(async () => {
     setSnapshot(await window.workBuddy.endWorkday())
-    setTab('activity')
+    setTab('day')
   })
 
   const fitWindowToContent = (): void => {
@@ -544,7 +649,6 @@ export default function App(): React.JSX.Element {
     { id: 'focus', label: t('focus'), icon: Clock3 },
     { id: 'day', label: t('day'), icon: BarChart3 },
     { id: 'projects', label: t('projectsTab'), icon: BriefcaseBusiness },
-    { id: 'activity', label: t('activity'), icon: Monitor },
     { id: 'settings', label: t('settings'), icon: Settings2 }
   ]
 
@@ -601,11 +705,11 @@ export default function App(): React.JSX.Element {
 
   const expandedView = (
           <motion.div key="expanded" className="expanded-view" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2, ease }}>
-            <nav className="tab-bar no-drag">
+            <nav ref={tabBarRef} className="tab-bar no-drag">
+              {tabPill && <motion.span className="tab-pill" initial={false} animate={{ left: tabPill.left, width: tabPill.width }} transition={{ type: 'tween', duration: 0.22, ease }} />}
               {navItems.map(({ id, label, icon: Icon }) => (
-                <button key={id} className={`${tab === id ? 'active' : ''} ${(id === 'settings' || id === 'activity') ? 'tab-icon-only' : ''}`} onClick={() => setTab(id)} title={id === 'settings' || id === 'activity' ? label : undefined} aria-label={label}>
-                  {tab === id && <motion.span layoutId="tab-pill" className="tab-pill" />}
-                  <Icon size={15} />{id !== 'settings' && id !== 'activity' && <span>{label}</span>}
+                <button key={id} className={`${tab === id ? 'active' : ''} ${id === 'settings' ? 'tab-icon-only' : ''}`} onClick={() => setTab(id)} title={id === 'settings' ? label : undefined} aria-label={label}>
+                  <Icon size={15} />{id !== 'settings' && <span>{label}</span>}
                 </button>
               ))}
             </nav>
@@ -613,7 +717,7 @@ export default function App(): React.JSX.Element {
             <div ref={attachContent} className="content-scroll no-drag">
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
-                  <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
+                  <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} transition={{ duration: 0.16, ease }}>
                     <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} attempt={attempt} />
                     {openWorkdayStartedAt && <section className="focus-hero">
                       <div className="focus-hero__top">
@@ -694,7 +798,6 @@ export default function App(): React.JSX.Element {
 
                 {tab === 'projects' && <ProjectsPage key="projects" snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} />}
 
-                {tab === 'activity' && <ActivityPage key="activity" snapshot={snapshot} onSnapshot={setSnapshot} />}
                 {tab === 'settings' && <SettingsPage key="settings" snapshot={snapshot} t={t} onSnapshot={setSnapshot} />}
               </AnimatePresence>
             </div>
@@ -722,40 +825,52 @@ export default function App(): React.JSX.Element {
   )
 
   if (notch) {
-    // A dark pill hanging from the top edge; hovering grows it into the full view in place.
+    // A dark pill joined to the screen edge by concave corners, like a hardware notch; hovering
+    // or clicking grows it into the full view in place. The frame carries the size, the corner
+    // radius and the colour so the pill, its flared ears and the page all move as one.
     return (
       <motion.main className={`app-shell app-shell--notch app-shell--notch-${notchEdge}`} {...stage}>
         <motion.div
           data-notch-state={notch}
           ref={notchElement}
-          className={`notch ${notchOpen ? 'notch--open' : ''} ${notchTravelHidden ? 'notch--travelling' : ''}`}
+          className={`notch-frame ${notchTravelHidden || notchSnoozed ? 'notch-frame--travelling' : ''}`}
+          aria-hidden={notchSnoozed}
+          title={notchSnoozed ? t('notchHidden') : undefined}
           onMouseEnter={() => hoverNotch(true)}
           onMouseLeave={() => hoverNotch(false)}
           initial={false}
-          animate={notchOpen ? { width: '100%', height: '100%' } : { width: NOTCH_WIDTH, height: NOTCH_HEIGHT }}
-          transition={{ type: 'spring', stiffness: 380, damping: 38, mass: 0.9 }}
-          onAnimationComplete={() => void finishNotchClose()}
+          animate={notchOpen
+            ? { width: '100%', height: '100%', '--notch-r': '22px', '--notch-bg': 'rgba(12, 15, 12, 0.86)' }
+            : { width: notchPillWidth, height: NOTCH_HEIGHT, '--notch-r': '13px', '--notch-bg': 'rgba(11, 12, 11, 1)' }}
+          transition={notchOpen
+            // Growing may overshoot a touch; folding back must land crisply with no creeping tail.
+            ? { type: 'spring', stiffness: 520, damping: 44, mass: 0.8, '--notch-bg': { duration: 0.2, ease }, '--notch-r': { duration: 0.24, ease } }
+            : { type: 'tween', duration: 0.3, ease: [0.32, 0.72, 0, 1], '--notch-bg': { duration: 0.24, ease }, '--notch-r': { duration: 0.3, ease } }}
+          onAnimationComplete={() => { if (notchRef.current === 'open') setNotchSettled(true); void finishNotchClose() }}
         >
-          <AnimatePresence initial={false}>
-            {notchOpen
-              ? <motion.div key="full" className="notch__full" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.08, duration: 0.2 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
-                {appHeader}
-                {expandedView}
-                {taskEditor}
-              </motion.div>
-              : <motion.div key="pill" className="notch-pill-row" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.12, duration: 0.18 } }} exit={{ opacity: 0, transition: { duration: 0.08 } }}>
-                {notchDragButton}
-                <button className="notch-pill" {...notchPointer} onPointerCancel={endNotchDrag} title={t('notchPillHint')}>
-                <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
-                <AnimatePresence mode="wait" initial={false}>
-                  {headerSlide && <motion.span key={headerSlide.id} className="notch-pill__slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
-                    <span className="notch-pill__label">{headerSlide.label}</span><SlideValue slide={headerSlide} locale={t.locale} />
-                  </motion.span>}
-                </AnimatePresence>
-                </button>
-                {notchDragButton}
-              </motion.div>}
-          </AnimatePresence>
+          <div className={`notch ${notchOpen ? 'notch--open' : ''}`}>
+            <AnimatePresence initial={false}>
+              {notchOpen
+                ? <motion.div key="full" className="notch__full" style={{ transformOrigin: notchEdge === 'bottom' ? '50% 100%' : '50% 0%' }} initial={{ opacity: 0, x: '-50%', scale: 0.98 }} animate={{ opacity: 1, x: '-50%', scale: 1, transition: { duration: 0.2, ease } }} exit={{ opacity: 0, x: '-50%', scale: 0.97, transition: { duration: 0.22, ease: [0.4, 0, 1, 1] } }}>
+                  {appHeader}
+                  {expandedView}
+                  {taskEditor}
+                </motion.div>
+                : <motion.div key="pill" className="notch-pill-row" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.14, delay: notch === 'closing' ? 0.16 : 0, ease } }} exit={{ opacity: 0, transition: { duration: 0.06 } }}>
+                  {notchDragButton}
+                  <button className="notch-pill" {...notchPointer} onPointerCancel={endNotchDrag} title={t('notchPillHint')}>
+                  <span className={`status-dot ${liveTasks.length ? 'status-dot--live' : ''}`} />
+                  <AnimatePresence mode="wait" initial={false}>
+                    {headerSlide && <motion.span key={headerSlide.id} className="notch-pill__slide" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
+                      <span className="notch-pill__label">{headerSlide.label}</span><SlideValue slide={headerSlide} locale={t.locale} />
+                    </motion.span>}
+                  </AnimatePresence>
+                  </button>
+                  {notchActionBar}
+                  {notchDragButton}
+                </motion.div>}
+            </AnimatePresence>
+          </div>
         </motion.div>
         {actionErrorToast}
       </motion.main>

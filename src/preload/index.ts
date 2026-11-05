@@ -3,24 +3,11 @@ import { channels } from '../shared/channels'
 import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
-  activityLearning:(action,input)=>ipcRenderer.invoke(channels.activityLearning,action,input),
-  activityAuto:(action,input)=>ipcRenderer.invoke(channels.activityAuto,action,input),
-  acceptActivityDrafts: (input) => ipcRenderer.invoke(channels.activityAcceptDrafts,input),
-  getActivityDay: (day) => ipcRenderer.invoke(channels.activityDay,day),
-  configureActivity: (config,writeKey,readKey) => ipcRenderer.invoke(channels.activityConfigure,config,writeKey,readKey),
-  importActivityConnection: () => ipcRenderer.invoke(channels.activityImport),
-  syncActivityNow: () => ipcRenderer.invoke(channels.activitySyncNow),
-  refreshActivity: (day) => ipcRenderer.invoke(channels.activityRefresh,day),
-  assignActivity: (value) => ipcRenderer.invoke(channels.activityAssign,value),
-  rememberActivityProject: (rule) => ipcRenderer.invoke(channels.activityRemember,rule),
-  forgetActivityRules: () => ipcRenderer.invoke(channels.activityForgetRules),
-  deleteActivityDay: (day) => ipcRenderer.invoke(channels.activityDelete,day),
-  previewActivityRecap: (day) => ipcRenderer.invoke(channels.activityPreview,day),
-  generateActivityRecap: (id) => ipcRenderer.invoke(channels.activityRecap,id),
   getConvexSyncStatus: () => ipcRenderer.invoke(channels.convexSyncStatus),
   configureConvexSync: (config, key) => ipcRenderer.invoke(channels.convexSyncConfigure, config, key),
   syncConvexNow: () => ipcRenderer.invoke(channels.convexSyncNow),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(channels.appVersion),
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke(channels.openExternal, url),
   getSnapshot: () => ipcRenderer.invoke(channels.snapshot),
   getHistory: (days?: number): Promise<HistoryDay[]> => ipcRenderer.invoke(channels.history, days),
   getDaySnapshot: (date: string) => ipcRenderer.invoke(channels.daySnapshot, date),
@@ -77,7 +64,7 @@ const api: WorkBuddyApi = {
   transcribeVoice: (input: VoiceInput): Promise<string> => ipcRenderer.invoke(channels.transcribeVoice, input),
   summarizeDay: () => ipcRenderer.invoke(channels.summarizeDay),
   notify: (input: NotificationInput) => ipcRenderer.invoke(channels.notify, input),
-  setWindowMode: (mode, rows) => ipcRenderer.invoke(channels.windowMode, mode, rows),
+  setWindowMode: (mode, rows, pillWidth) => ipcRenderer.invoke(channels.windowMode, mode, rows, pillWidth),
   dragNotch: (phase) => ipcRenderer.invoke(channels.notchDrag, phase),
   setNotchSurface:(rect)=>ipcRenderer.invoke(channels.notchSurface,rect),
   onNotchEdge:(callback)=>{const listener=(_event:Electron.IpcRendererEvent,edge:'top'|'bottom'):void=>callback(edge);ipcRenderer.on(channels.notchEdge,listener);return ()=>ipcRenderer.removeListener(channels.notchEdge,listener)},
@@ -85,6 +72,11 @@ const api: WorkBuddyApi = {
     const listener = (_event: Electron.IpcRendererEvent, hidden: boolean): void => callback(hidden)
     ipcRenderer.on(channels.notchTravel, listener)
     return () => ipcRenderer.removeListener(channels.notchTravel, listener)
+  },
+  onNotchPointer: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, inside: boolean): void => callback(inside)
+    ipcRenderer.on(channels.notchPointer, listener)
+    return () => ipcRenderer.removeListener(channels.notchPointer, listener)
   },
   setWindowHeight: (height: number) => ipcRenderer.invoke(channels.windowHeight, height),
   setWindowEditor: (open: boolean) => ipcRenderer.invoke(channels.windowEditor, open),

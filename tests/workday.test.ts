@@ -107,3 +107,13 @@ test('uses local calendar boundaries instead of a fixed 24-hour range', () => {
   assert.equal(localDateKey(localDateTimestamp('2026-08-26')), '2026-08-26')
   assert.throws(() => localDateTimestamp('2026-02-30'), /Invalid history date/)
 })
+
+test('the start reminder only applies on configured working weekdays', async () => {
+  const { isScheduledWorkday } = await import('../src/shared/workday.ts')
+  const { defaultSettings } = await import('../src/main/database.ts')
+  const monday = new Date(2026, 10, 2, 9).getTime()
+  const saturday = new Date(2026, 10, 7, 9).getTime()
+  assert.equal(isScheduledWorkday(defaultSettings, monday), true)
+  assert.equal(isScheduledWorkday(defaultSettings, saturday), false)
+  assert.equal(isScheduledWorkday({ ...defaultSettings, workday: { ...defaultSettings.workday, days: [6] } }, saturday), true)
+})

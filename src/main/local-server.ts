@@ -19,18 +19,12 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'startRest', 'pauseRest', 'resumeRest', 'completeRest', 'skipRest', 'updateRestStart', 'setRestAlarmMuted',
   'updateTask', 'splitTask', 'mergeTasks', 'deleteTask',
   'createPlannedTask', 'updatePlannedTask', 'deletePlannedTask',
-  'createProject', 'updateProject', 'updateSettings', 'saveAiKey', 'applyBackupImport'
+  'createProject', 'updateProject', 'updateSettings', 'saveAiKey', 'applyBackupImport', 'importTasks'
 ])
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
   response.end(JSON.stringify(body))
-}
-
-/** Receives activity pushed by a local producer such as tabs-manager. */
-export interface LocalActivitySink {
-  pairing(): { deviceId: string; sourceId: string }
-  deliver(raw: unknown): { day: string; records: number; receivedAt: number }
 }
 
 async function readJson(request: IncomingMessage, limit = 1_048_576): Promise<unknown> {
@@ -73,7 +67,6 @@ export class WorkBuddyLocalServer {
     private readonly accessKey: string,
     private readonly invoke: RemoteAction,
     private readonly onDataChanged: () => void,
-    private readonly activity?: LocalActivitySink,
     private readonly port: number = WORK_BUDDY_LOCAL_PORT
   ) {}
 
@@ -198,26 +191,6 @@ export class WorkBuddyLocalServer {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
         writeJson(response, 400, { error: message })
-      }
-      return
-    }
-
-    if (this.activity && request.method === 'GET' && url.pathname === '/activity/pair') {
-      writeJson(response, 200, this.activity.pairing())
-      return
-    }
-    if (this.activity && request.method === 'POST' && url.pathname === '/activity') {
-      if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
-        writeJson(response, 415, { error: 'Expected application/json.' })
-        return
-      }
-      try {
-        // A day of browser activity can reach a few megabytes; the cloud endpoint allows 5 MB.
-        const receipt = this.activity.deliver(await readJson(request, 6 * 1_048_576))
-        writeJson(response, 200, receipt)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unexpected server error'
-        writeJson(response, message === 'Paired PC ID differs' ? 409 : 400, { error: message })
       }
       return
     }

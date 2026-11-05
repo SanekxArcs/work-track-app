@@ -113,3 +113,8 @@ export function workdayOvertimeMs(
   }
   return total + end - start
 }
+
+/** Whether the given moment falls on one of the configured working weekdays. */
+export function isScheduledWorkday(settings: AppSettings, now = Date.now()): boolean {
+  return settings.workday.days.includes(new Date(now).getDay())
+}

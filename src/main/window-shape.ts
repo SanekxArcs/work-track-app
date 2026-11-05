@@ -1,12 +1,17 @@
 import type { WindowRect } from './window-layout'
-/** Scanline region excludes every transparent rounded corner from native hit testing. */
+/**
+ * Scanline region excludes every transparent rounded corner from native hit testing.
+ * `flare` adds the concave "ears" that join an unrounded edge to the screen: a quarter
+ * circle of that radius cut from a square sitting just outside each corner on that edge.
+ */
 export function surfaceRegion(
   rect: WindowRect,
   radius: number,
   roundTop: boolean,
   roundBottom: boolean,
   roundLeft = true,
-  roundRight = true
+  roundRight = true,
+  flare = 0
 ): WindowRect[] {
   const x = Math.ceil(rect.x),
     y = Math.ceil(rect.y),
@@ -26,10 +31,20 @@ export function surfaceRegion(
       distance > 0
         ? Math.ceil(r - Math.sqrt(Math.max(0, r * r - distance * distance)))
         : 0
+    const flareDistance =
+      flare > 0 && !roundTop && row < flare
+        ? row + 0.5
+        : flare > 0 && !roundBottom && height - row <= flare
+          ? height - row - 0.5
+          : -1
+    const ear =
+      flareDistance >= 0
+        ? Math.round(flare - Math.sqrt(Math.max(0, flare * flare - (flare - flareDistance) ** 2)))
+        : 0
     const left = roundLeft ? inset : 0,
       right = roundRight ? inset : 0
     const previous = rows.at(-1),
-      line = { x: x + left, y: y + row, width: width - left - right, height: 1 }
+      line = { x: x + left - ear, y: y + row, width: width - left - right + 2 * ear, height: 1 }
     if (line.width <= 0) continue
     if (
       previous &&

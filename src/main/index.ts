@@ -1,16 +1,10 @@
 import { surfaceRegion,notchBounds } from './window-shape'
-import { ActivityLearningService } from './activity-learning'
-import { AutoTrackingService } from './activity-auto'
-import { acceptActivityDrafts } from './activity-import'
-import { ActivityStore } from './activity-store'
-import { ActivityService } from './activity'
-import { activityReview } from '../shared/activity-review'
 import { ConvexSyncService } from './convex-sync'
 import type { ConvexSyncConfig } from '../shared/convex-sync'
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
 import { WorkBuddyDatabase } from './database'
 import { GeminiService } from './gemini'
 import { ReminderService } from './reminders'
@@ -18,7 +12,9 @@ import { WORK_BUDDY_LOCAL_PORT, WorkBuddyLocalServer } from './local-server'
 import { fitWindowHeight, isBottomAnchored } from './window-layout'
 import { syncWindowTopmost } from './window-topmost'
 import { localDateKey } from '../shared/local-date'
+import type { TaskImportEntry } from '../shared/task-import'
 import { channels } from '../shared/channels'
+import { EXTERNAL_LINK_HOSTS } from '../shared/about'
 import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
@@ -26,12 +22,6 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
-let learning:ActivityLearningService
-let autoTracking:AutoTrackingService
-let activity: ActivityService
-/** Daily activity view for the renderer: review state plus the automatic tracking journal. */
-function activityDayView(day:string){return {...learning.day(day),auto:autoTracking.state(day)}}
-const activityPreviews = new Map<string,{expires:number;epoch:number;review:ReturnType<typeof activityReview>}>()
 let convexSync: ConvexSyncService
 let database: WorkBuddyDatabase
 let reminders: ReminderService
@@ -63,8 +53,10 @@ function syncNativeSurface():void {
 
  if(process.platform!=='win32'&&process.platform!=='linux')return
  const {width,height}=mainWindow.getContentBounds()
- const rect=notchSurface??{x:0,y:0,width,height}
- const region=notchState?surfaceRegion(rect,notchSurface?.radius??(notchState==='open'?20:11),notchEdge==='bottom',notchEdge==='top'):dockedSide?surfaceRegion({x:0,y:0,width,height},16,true,true,dockedSide==='right',dockedSide==='left'):null
+ const rect=notchSurface??{x:NOTCH_FLARE,y:0,width:Math.max(0,width-2*NOTCH_FLARE),height}
+ const painted=notchState?surfaceRegion(rect,notchSurface?.radius??(notchState==='open'?20:11),notchEdge==='bottom',notchEdge==='top',true,true,NOTCH_FLARE):dockedSide?surfaceRegion({x:0,y:0,width,height},16,true,true,dockedSide==='right',dockedSide==='left'):null
+ // A pill slid off-screen (travelling or hidden on request) leaves nothing to click: let everything through.
+ const region=painted?.filter((row)=>row.y+row.height>0&&row.y<height)??null
  mainWindow.setIgnoreMouseEvents(region?.length===0,{forward:true})
  mainWindow.setShape(region??[])
 
@@ -79,7 +71,58 @@ const chosenSoundPaths = new Set<string>()
 
 const WINDOW_WIDTH = 430
 const DOCK_SIZE = { width: 104, height: 46 }
-const NOTCH_SIZE = { width: 264, height: 30 }
+/** The concave corners that join the notch to the screen edge; the window is this much wider on each side. */
+const NOTCH_FLARE = 12
+const NOTCH_HEIGHT = 30
+/** The painted pill width the renderer asked for; it grows with the quick actions shown inside. */
+let notchPillWidth = 264
+/** The window that holds the collapsed pill, including its flared corners. */
+function notchPillSize(): { width: number; height: number } {
+  return { width: notchPillWidth + 2 * NOTCH_FLARE, height: NOTCH_HEIGHT }
+}
+/** The height the open notch last fitted to its content, so reopening lands there in one motion. */
+let notchFitHeight: number | null = null
+/** The window that holds the opened notch: the normal page plus the flared corners. */
+function notchOpenSize(area: Electron.Rectangle): { width: number; height: number } {
+  return { width: WINDOW_WIDTH + 2 * NOTCH_FLARE, height: Math.min(notchFitHeight ?? manualHeight, area.height - 24) }
+}
+
+/** Windows cannot animate native resizes, so programmatic size changes are tweened here instead. */
+let boundsAnimation: { timer: NodeJS.Timeout; target: Electron.Rectangle } | null = null
+function cancelBoundsAnimation(): void {
+  if (!boundsAnimation) return
+  clearInterval(boundsAnimation.timer)
+  boundsAnimation = null
+}
+/** Where the window is heading if a resize is still in flight, otherwise where it is. */
+function settledBounds(): Electron.Rectangle {
+  return boundsAnimation?.target ?? mainWindow?.getBounds() ?? { x: 0, y: 0, width: WINDOW_WIDTH, height: 0 }
+}
+function animateBounds(target: Electron.Rectangle, duration = 220): void {
+  if (!mainWindow) return
+  cancelBoundsAnimation()
+  const from = mainWindow.getBounds()
+  const unchanged = from.x === target.x && from.y === target.y && from.width === target.width && from.height === target.height
+  if (unchanged) return
+  const distance = Math.max(Math.abs(from.height - target.height), Math.abs(from.width - target.width), Math.abs(from.y - target.y))
+  if (duration <= 0 || distance <= 2) {
+    mainWindow.setBounds(target, false)
+    return
+  }
+  const startedAt = Date.now()
+  const timer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      cancelBoundsAnimation()
+      return
+    }
+    const progress = Math.min(1, (Date.now() - startedAt) / duration)
+    const eased = 1 - Math.pow(1 - progress, 3)
+    const mix = (a: number, b: number): number => Math.round(a + (b - a) * eased)
+    mainWindow.setBounds(progress >= 1 ? target : { x: mix(from.x, target.x), y: mix(from.y, target.y), width: mix(from.width, target.width), height: mix(from.height, target.height) }, false)
+    if (progress >= 1) cancelBoundsAnimation()
+  }, 16)
+  boundsAnimation = { timer, target }
+}
 
 /** Windows can enforce a native minimum height larger than the painted 30px pill. */
 function positionNotch(area:Electron.Rectangle,center:number,size:{width:number;height:number}):void {
@@ -101,7 +144,8 @@ function overlapArea(a: Electron.Rectangle, b: Electron.Rectangle): number {
  * window it opens into is always centred on it and the pill never jumps while it grows.
  */
 function clampNotchCenter(center: number, area: Electron.Rectangle): number {
-  return Math.min(Math.max(center, area.x + WINDOW_WIDTH / 2), area.x + area.width - WINDOW_WIDTH / 2)
+  const half = WINDOW_WIDTH / 2 + NOTCH_FLARE
+  return Math.min(Math.max(center, area.x + half), area.x + area.width - half)
 }
 
 /** The saved notch spot, or the top centre of the screen the window is on. */
@@ -133,7 +177,7 @@ function followNotchCursor(): void {
   if (display.id === notchDisplayId) {
     notchCandidate = null
     // Also restore a reachable position after resolution, scale or taskbar changes.
-    const x = Math.round(center - NOTCH_SIZE.width / 2)
+    const x = Math.round(center - notchPillSize().width / 2)
     const current = mainWindow.getBounds()
     const y=notchEdge==='bottom'?area.y+area.height-current.height:area.y
     if (current.x !== x || current.y !== y) {
@@ -156,10 +200,31 @@ function followNotchCursor(): void {
     // Use the latest cursor location if it crossed another screen during the exit.
     notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
     const target = notchAnchor()
-    positionNotch(target.area,target.center,NOTCH_SIZE)
+    positionNotch(target.area,target.center,notchPillSize())
     restoreWindowTopmost()
     notchTravelTimer = setTimeout(cancelNotchTravel, 50)
   }, 200)
+}
+
+let notchPointerInside: boolean | null = null
+/**
+ * DOM mouseleave is not reliable for the open notch (it can be missed after the
+ * window grows under a click), so the main process reports when the cursor leaves it.
+ */
+function watchOpenNotchPointer(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || notchState !== 'open' || notchDragging || !mainWindow.isVisible()) {
+    notchPointerInside = null
+    return
+  }
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = mainWindow.getContentBounds()
+  const rect = notchSurface ?? { x: 0, y: 0, width: bounds.width, height: bounds.height }
+  const x = cursor.x - bounds.x
+  const y = cursor.y - bounds.y
+  const inside = x >= rect.x - 2 && x <= rect.x + rect.width + 2 && y >= rect.y - 2 && y <= rect.y + rect.height + 2
+  if (inside === notchPointerInside) return
+  notchPointerInside = inside
+  mainWindow.webContents.send(channels.notchPointer, inside)
 }
 
 /** The tallest the normal window may grow: the full height of the screen it is on, not the primary one. */
@@ -168,7 +233,7 @@ function syncWindowMaxHeight(): void {
   if (notchState) {
     cancelNotchTravel()
     const { area, center } = notchAnchor()
-    const size = notchState === 'collapsed' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+    const size = notchState === 'collapsed' ? notchPillSize() : notchOpenSize(area)
     mainWindow.setMinimumSize(size.width, size.height)
     mainWindow.setMaximumSize(size.width, size.height)
     positionNotch(area,center,size)
@@ -181,7 +246,7 @@ function syncWindowMaxHeight(): void {
 }
 
 function snapWindowToScreen(): void {
-  if (!mainWindow || applyingSnap || notchState) return
+  if (!mainWindow || applyingSnap || notchState || boundsAnimation) return
   syncWindowMaxHeight()
   const bounds = mainWindow.getBounds()
   const displays = screen.getAllDisplays()
@@ -388,6 +453,8 @@ function createWindow(): void {
   mainWindow.on('move', ()=>{scheduleSnap();if(notchState)syncNativeSurface()})
   mainWindow.on('resize', () => {
     if(notchState||dockedSide)syncNativeSurface()
+    // Frames of a tweened resize are not the user's doing; only the final size counts below.
+    if (boundsAnimation) return
     if (!compactWindow && mainWindow) {
       const nextHeight = mainWindow.getBounds().height
       if (programmaticHeight === nextHeight) {
@@ -450,6 +517,7 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'getDaySnapshot': return database.getDaySnapshot(first as string)
     case 'getOvertimeOverview': return database.getOvertimeOverview()
     case 'setOvertimeRedeemed': return database.setOvertimeRedeemed(first as string, second as boolean)
+    case 'importTasks': return database.importTasks(first as string, second as TaskImportEntry[])
     case 'startWorkday': return database.startWorkday()
     case 'endWorkday': return database.endWorkday()
     case 'resumeWorkday': return database.resumeWorkday()
@@ -557,61 +625,16 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
 }
 
 function registerIpc(): void {
-  ipcMain.handle(channels.activityLearning,(_,action,input)=>learning.run(action,input))
-  ipcMain.handle(channels.activityAcceptDrafts,(_,input)=>{const result=acceptActivityDrafts(activity,database,input);emitChanged();return result})
-  ipcMain.handle(channels.activityAuto,async(_,action:string,input:unknown)=>{
-    const value=(input&&typeof input==='object'?input:{}) as Record<string,unknown>
-    const day=typeof value.day==='string'?value.day:localDateKey(Date.now())
-    if(action==='configure')autoTracking.configure(value.config)
-    else if(action==='run')await autoTracking.run([day])
-    else if(action==='dismiss')autoTracking.dismiss(day,value.id)
-    else if(action==='restore')autoTracking.restore(day,value.id)
-    else if(action==='update')autoTracking.update(day,value.id,value.patch as {project?:'auto'|string|null;notes?:string})
-    else if(action==='promote'){
-      const result=autoTracking.promote(day,value.ids)
-      return {data:activityDayView(day),snapshot:result.snapshot,created:result.created}
-    }
-    else throw new Error('Unknown automatic tracking action')
-    return {data:activityDayView(day)}
-  })
-  ipcMain.handle(channels.activityDay,(_,day:string)=>activityDayView(day))
-  ipcMain.handle(channels.activityConfigure,(_,config,writeKey,readKey)=>activity.configure(config,writeKey,readKey))
-  ipcMain.handle(channels.activitySyncNow,async()=>{await activity.resync();return activity.status()})
-  ipcMain.handle(channels.activityImport,async()=>{
-    const result=await dialog.showOpenDialog({title:'Import Work Buddy connection',properties:['openFile']})
-    if(result.canceled||!result.filePaths[0])return null
-    const contents=await readFile(result.filePaths[0],'utf8')
-    if(contents.length>16384)throw new Error('Connection file is too large')
-    return activity.importConnection(contents)
-  })
-  ipcMain.handle(channels.activityRefresh,async(_,day:string)=>{await activity.refresh(day);if(autoTracking.config().enabled)autoTracking.reconcile(day);return activityDayView(day)})
-  ipcMain.handle(channels.activityAssign,(_,value)=>activity.assign(value))
-  ipcMain.handle(channels.activityRemember,(_,rule)=>{
-    if(!database.getSnapshot().projects.some(p=>p.id===rule?.projectId))throw new Error('Choose an existing Work Buddy project')
-    activity.remember(rule)
-  })
-  ipcMain.handle(channels.activityForgetRules,()=>activity.forgetRules())
-  ipcMain.handle(channels.activityDelete,async(_,day:string)=>{activity.deleteDay(day);await activity.resync()})
-  ipcMain.handle(channels.activityPreview,(_,day:string)=>{
-    const data=activity.day(day),snapshot=database.getDaySnapshot(day)
-    const review=activityReview(data,snapshot,data.assignments,data.rules)
-    if(!review.report.segments.length&&!review.tasks.length)throw new Error('No activity or tracked tasks for this day')
-    const id=randomBytes(16).toString('hex')
-    activityPreviews.clear();activityPreviews.set(id,{expires:Date.now()+300000,epoch:activity.privacyEpoch,review})
-    return {id,review}
-  })
-  ipcMain.handle(channels.activityRecap,async(_,id:string)=>{
-    const preview=activityPreviews.get(id);activityPreviews.delete(id)
-    if(!preview||preview.expires<Date.now()||preview.epoch!==activity.privacyEpoch)throw new Error('Preview expired or privacy settings changed. Review the data again.')
-    const result=await gemini.summarizeActivity(preview.review)
-    if(preview.epoch!==activity.privacyEpoch)throw new Error('Activity privacy settings changed during generation. Review the data again.')
-    activity.store.saveRecap(preview.review.day,{summary:result.summary,generatedAt:Date.now(),through:preview.review.through,evidence:preview.review.evidence})
-    return result
-  })
   ipcMain.handle(channels.convexSyncStatus, () => convexSync.status())
   ipcMain.handle(channels.convexSyncConfigure, (_, config: ConvexSyncConfig, key?: string) => convexSync.configure(config, key))
   ipcMain.handle(channels.convexSyncNow, () => convexSync.sync())
   ipcMain.handle(channels.appVersion, () => app.getVersion())
+  ipcMain.handle(channels.openExternal, async (_, url: unknown) => {
+    if (typeof url !== 'string') throw new Error('Unsupported link')
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || !EXTERNAL_LINK_HOSTS.has(parsed.hostname)) throw new Error(`Refusing to open ${url}`)
+    await shell.openExternal(parsed.toString())
+  })
   ipcMain.handle(channels.snapshot, () => database.getSnapshot())
   ipcMain.handle(channels.history, (_, days?: number) => database.getHistory(days))
   ipcMain.handle(channels.daySnapshot, (_, date: string) => database.getDaySnapshot(date))
@@ -854,9 +877,10 @@ function registerIpc(): void {
   ipcMain.handle(channels.transcribeVoice, (_, input: VoiceInput) => gemini.transcribeVoice(input))
   ipcMain.handle(channels.summarizeDay, () => gemini.summarizeDay())
   ipcMain.handle(channels.notify, (_, input: NotificationInput) => showNotification(input))
-  ipcMain.handle(channels.windowMode, (_, mode: WindowMode, rows = 1) => {
+  ipcMain.handle(channels.windowMode, (_, mode: WindowMode, rows = 1, pillWidth?: number) => {
     if (!mainWindow) return null
     cancelNotchTravel()
+    cancelBoundsAnimation()
     clearTimeout(snapTimer)
     applyingSnap=true
     notchSurface=null
@@ -864,9 +888,10 @@ function registerIpc(): void {
     let current = mainWindow.getBounds()
     if (mode === 'notch' || mode === 'notch-open') {
       if (!notchState) notchDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
+      if (mode === 'notch' && typeof pillWidth === 'number' && Number.isFinite(pillWidth)) notchPillWidth = Math.round(Math.min(Math.max(pillWidth, 160), WINDOW_WIDTH))
       // The notch hangs from the top edge where the user left it; hovering opens it in place.
       const { area, center } = notchAnchor()
-      const size = mode === 'notch' ? NOTCH_SIZE : { width: WINDOW_WIDTH, height: Math.min(manualHeight, area.height - 24) }
+      const size = mode === 'notch' ? notchPillSize() : notchOpenSize(area)
       notchState = mode === 'notch' ? 'collapsed' : 'open'
       dockedSide = null
       dockRestoreBounds = null
@@ -999,12 +1024,12 @@ function registerIpc(): void {
   })
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
     if (!mainWindow || compactWindow) return
-    const current = mainWindow.getBounds()
+    const current = settledBounds()
     const area = screen.getDisplayMatching(current).workArea
     const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
     if (current.height !== next.height || current.y !== next.y || current.x !== next.x) {
       programmaticHeight = next.height
-      mainWindow.setBounds(next, false)
+      animateBounds(next)
     }
   })
   ipcMain.handle(channels.windowEditor, (_, open: boolean) => {
@@ -1012,8 +1037,9 @@ function registerIpc(): void {
     const current = mainWindow.getBounds()
     const area = screen.getDisplayMatching(current).workArea
     if(notchState==='open'){
-      if(open){if(!editorRestoreBounds)editorRestoreBounds=current;mainWindow.setMinimumSize(WINDOW_WIDTH,230);mainWindow.setMaximumSize(WINDOW_WIDTH,area.height);programmaticHeight=Math.min(Math.max(current.height,700),area.height-16);mainWindow.setBounds(notchBounds(area,current.x+current.width/2,{width:WINDOW_WIDTH,height:programmaticHeight},notchEdge),false)}
-      else if(editorRestoreBounds){mainWindow.setBounds(editorRestoreBounds,false);editorRestoreBounds=null}
+      const width = WINDOW_WIDTH + 2 * NOTCH_FLARE
+      if(open){if(!editorRestoreBounds)editorRestoreBounds=current;mainWindow.setMinimumSize(width,230);mainWindow.setMaximumSize(width,area.height);programmaticHeight=Math.min(Math.max(current.height,700),area.height-16);animateBounds(notchBounds(area,current.x+current.width/2,{width,height:programmaticHeight},notchEdge))}
+      else if(editorRestoreBounds){animateBounds(editorRestoreBounds);editorRestoreBounds=null}
       syncNativeSurface();return
     }
     if (open) {
@@ -1021,7 +1047,7 @@ function registerIpc(): void {
       const requestedHeight = Math.max(current.height, Math.min(700, area.height - 16))
       const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
       programmaticHeight = next.height
-      mainWindow.setBounds(next, false)
+      animateBounds(next)
       return
     }
     if (!editorRestoreBounds) return
@@ -1029,24 +1055,26 @@ function registerIpc(): void {
     editorRestoreBounds = null
     const next = fitWindowHeight(restore, area, restore.height, isBottomAnchored(restore, area), 230)
     programmaticHeight = next.height
-    mainWindow.setBounds(next, false)
+    animateBounds(next)
   })
   ipcMain.handle(channels.windowFit, (_, requestedHeight: number) => {
     if (!mainWindow || !Number.isFinite(requestedHeight)) return
     if (notchState === 'open') {
       const { area, center } = notchAnchor()
-      const current = mainWindow.getBounds()
-      const next = fitWindowHeight({ ...current, x: Math.round(center - WINDOW_WIDTH / 2), y: area.y }, area, requestedHeight, notchEdge==='bottom', 230)
+      const current = settledBounds()
+      const width = WINDOW_WIDTH + 2 * NOTCH_FLARE
+      const next = fitWindowHeight({ ...current, width, x: Math.round(center - width / 2), y: area.y }, area, requestedHeight, notchEdge==='bottom', 230)
       if(notchEdge==='bottom')next.y=area.y+area.height-next.height
       // Opening the notch fixes its native size; release those constraints before fitting.
-      mainWindow.setMinimumSize(WINDOW_WIDTH, 230)
-      mainWindow.setMaximumSize(WINDOW_WIDTH, Math.max(230, area.height - 16))
+      mainWindow.setMinimumSize(width, 230)
+      mainWindow.setMaximumSize(width, Math.max(230, area.height - 16))
       programmaticHeight = next.height
-      mainWindow.setBounds(next, false)
+      notchFitHeight = next.height
+      animateBounds(next)
       return
     }
     if (compactWindow) return
-    const current = mainWindow.getBounds()
+    const current = settledBounds()
     const area = screen.getDisplayMatching(current).workArea
     // Re-read the anchor only after the user moved or resized the window (a snap nudges it by
     // at most the magnet distance). Otherwise a page that grew the window up against the bottom
@@ -1058,7 +1086,7 @@ function registerIpc(): void {
     fitAnchor.last = next
     manualHeight = next.height
     programmaticHeight = next.height
-    mainWindow.setBounds(next, false)
+    animateBounds(next)
   })
   // Kept for preload compatibility: the renderer no longer drives window views through IPC.
   ipcMain.handle(channels.windowView, () => undefined)
@@ -1100,31 +1128,10 @@ else {
       },
       decrypt: (key) => safeStorage.decryptString(Buffer.from(key, 'base64'))
     })
-    activity = new ActivityService(new ActivityStore(join(app.getPath('userData'),'activity.sqlite'),convexSync.status().sourceId),{
-      encrypt:(key)=>{if(!safeStorage.isEncryptionAvailable())throw new Error('Secure storage is unavailable');return safeStorage.encryptString(key).toString('base64')},
-      decrypt:(key)=>safeStorage.decryptString(Buffer.from(key,'base64'))
-    },()=>powerMonitor.getSystemIdleTime())
-    activity.setProjectProvider(()=>database.getSnapshot().projects.map(({id,name,color,archived})=>({id,name,color,archived:!!archived})))
-    learning=new ActivityLearningService(activity,database,gemini)
-    autoTracking=new AutoTrackingService(activity,database,emitChanged)
-    activity.start()
-    autoTracking.start()
-    powerMonitor.on('suspend',()=>activity.system('suspend'))
-    powerMonitor.on('resume',()=>{activity.system('resume');autoTracking.soon()})
-    powerMonitor.on('lock-screen',()=>activity.system('lock'))
-    powerMonitor.on('unlock-screen',()=>activity.system('unlock'))
     convexSync.start()
     registerIpc()
     try {
-      localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged, {
-        pairing: () => activity.pairing(),
-        deliver: (raw) => {
-          const receipt = activity.deliver(raw)
-          // Fresh browser evidence may extend or settle automatic entries; do not wait for the interval.
-          autoTracking.soon()
-          return receipt
-        }
-      })
+      localServer = new WorkBuddyLocalServer(extensionAccessKey(), invokeExtensionApi, emitChanged)
       localServer.onStatusChange(emitExtensionServerStatus)
       await localServer.start().catch(() => {
         // A port conflict must not block the time tracker. The settings page
@@ -1137,7 +1144,7 @@ else {
       console.error('Extension server could not start', error)
     }
     createWindow()
-    notchFollowTimer = setInterval(followNotchCursor, 80)
+    notchFollowTimer = setInterval(() => { followNotchCursor(); watchOpenNotchPointer() }, 80)
     // Other applications can change the native z-order after our window loses focus.
     topmostTimer = setInterval(restoreWindowTopmost, 2000)
     screen.on('display-added', syncWindowMaxHeight)
@@ -1169,14 +1176,12 @@ else {
 app.on('before-quit', () => {
   isQuitting = true
   clearInterval(notchFollowTimer)
+  cancelBoundsAnimation()
   clearInterval(topmostTimer)
   clearTimeout(notchTravelTimer)
   reminders?.stop()
   void localServer?.stop()
   convexSync?.stop()
-  autoTracking?.stop()
-  activity?.stop()
-  activity?.store.close()
   database?.close()
 })
 
