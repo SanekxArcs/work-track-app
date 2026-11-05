@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Scissors, GitMerge, Sparkles, Trash2, X } from 'lucide-react'
 import type { AppSnapshot, StartMode, Task, TaskIntervalOperation } from '@shared/types'
@@ -52,6 +52,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
   const [projectId, setProjectId] = useState<string>('')
   const [plannedTaskId, setPlannedTaskId] = useState<string>('')
   const [notes, setNotes] = useState('')
+  const [tags, setTags] = useState<string[]>([])
+  const [tagDraft, setTagDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiMessage, setAiMessage] = useState('')
@@ -76,6 +78,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setProjectId(task?.projectId ?? '')
     setPlannedTaskId(task?.plannedTaskId ?? '')
     setNotes(task?.notes ?? '')
+    setTags(task?.tags ?? [])
+    setTagDraft('')
     setAiMessage('')
     setAdvancedTime(false)
     setIntervalDraftTask(task)
@@ -154,6 +158,16 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
     setSaveError('')
   }
 
+  /** Tags already used on other tasks, offered as completions. */
+  const knownTags = useMemo(() => [...new Set(snapshot.tasks.flatMap((item) => item.tags))].filter((tag) => !tags.includes(tag)).sort((a, b) => a.localeCompare(b)), [snapshot.tasks, tags])
+
+  const addTag = (raw: string): void => {
+    const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, 30)
+    setTagDraft('')
+    if (!tag || tags.some((item) => item.localeCompare(tag, undefined, { sensitivity: 'base' }) === 0)) return
+    setTags([...tags, tag])
+  }
+
   const saveTask = async (mode: StartMode): Promise<void> => {
     setBusy(true)
     setSaveError('')
@@ -164,8 +178,8 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
         return { id: range.id, startedAt: draft ? editedTime(range.startedAt, draft.start) : undefined, endedAt: range.endedAt !== null && draft ? editedTime(range.endedAt, draft.end) : undefined }
       }).filter((range) => range.startedAt !== undefined || range.endedAt !== undefined)
       const result = task
-        ? await window.workBuddy.updateTask({ id: task.id, intervalUpdates, intervalOperations, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [] })
-        : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags: [], mode })
+        ? await window.workBuddy.updateTask({ id: task.id, intervalUpdates, intervalOperations, projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags })
+        : await window.workBuddy.startTask({ projectId: projectId || null, plannedTaskId: plannedTaskId || null, notes, tags, mode })
       onSaved(result)
     } catch (error) {
       setSaveError(errorText(error, t, 'timeUpdateError'))
@@ -324,6 +338,28 @@ export function TaskEditor({ open, task, intervalId, defaultMode, snapshot, t, o
               <span>{t('notes')}</span>
               <textarea autoFocus={Boolean(task)} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t('notesPlaceholder')} rows={3} />
             </label>
+
+            <div className="field tag-field">
+              <span>{t('tags')}</span>
+              <div className="tag-editor">
+                {tags.map((tag) => <button type="button" key={tag} className="tag-chip tag-chip--removable" disabled={busy} title={t('removeTag')} aria-label={`${t('removeTag')}: ${tag}`} onClick={() => setTags(tags.filter((item) => item !== tag))}>#{tag}<X size={10} /></button>)}
+                <input
+                  list="task-tag-options"
+                  value={tagDraft}
+                  maxLength={30}
+                  disabled={busy}
+                  placeholder={t('tagsPlaceholder')}
+                  aria-label={t('tags')}
+                  onChange={(event) => setTagDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTag(tagDraft) }
+                    else if (event.key === 'Backspace' && !tagDraft && tags.length) setTags(tags.slice(0, -1))
+                  }}
+                  onBlur={() => addTag(tagDraft)}
+                />
+                <datalist id="task-tag-options">{knownTags.map((tag) => <option key={tag} value={tag} />)}</datalist>
+              </div>
+            </div>
 
             <Collapse open={Boolean(aiMessage)}><p className="ai-note">{aiMessage}</p></Collapse>
 

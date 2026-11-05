@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/channels'
-import type { AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
+import type { IdlePeriod, AppSettings, AppSnapshot, BackupImportMode, BackupPreview, ExtensionServerStatus, HistoryDay, NotificationInput, NotificationSound, OvertimeOverview, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput, VoiceTaskDraft, WorkBuddyApi } from '../shared/types'
 
 const api: WorkBuddyApi = {
   getConvexSyncStatus: () => ipcRenderer.invoke(channels.convexSyncStatus),
@@ -13,6 +13,15 @@ const api: WorkBuddyApi = {
   getDaySnapshot: (date: string) => ipcRenderer.invoke(channels.daySnapshot, date),
   getOvertimeOverview: (): Promise<OvertimeOverview> => ipcRenderer.invoke(channels.overtimeOverview),
   setOvertimeRedeemed: (date: string, redeemed: boolean): Promise<OvertimeOverview> => ipcRenderer.invoke(channels.overtimeRedeemed, date, redeemed),
+  getWeekReport: (weekStart) => ipcRenderer.invoke(channels.weekReport, weekStart),
+  getPendingIdle: () => ipcRenderer.invoke(channels.idlePending),
+  resolveIdle: (period, resolution) => ipcRenderer.invoke(channels.idleResolve, period, resolution),
+  dismissIdle: () => ipcRenderer.invoke(channels.idleDismiss),
+  onIdleDetected: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, period: IdlePeriod): void => callback(period)
+    ipcRenderer.on(channels.idleDetected, listener)
+    return () => ipcRenderer.removeListener(channels.idleDetected, listener)
+  },
   startWorkday: () => ipcRenderer.invoke(channels.startWorkday),
   endWorkday: () => ipcRenderer.invoke(channels.endWorkday),
   updateWorkdayStart: (startedAt: number) => ipcRenderer.invoke(channels.updateWorkdayStart, startedAt),
@@ -81,7 +90,6 @@ const api: WorkBuddyApi = {
   setWindowHeight: (height: number) => ipcRenderer.invoke(channels.windowHeight, height),
   setWindowEditor: (open: boolean) => ipcRenderer.invoke(channels.windowEditor, open),
   fitWindowToContent: (height: number) => ipcRenderer.invoke(channels.windowFit, height),
-  setWindowView: (view) => ipcRenderer.invoke(channels.windowView, view),
   chooseNotificationSound: () => ipcRenderer.invoke(channels.chooseSound),
   getCustomSoundData: () => ipcRenderer.invoke(channels.soundData),
   minimizeToTray: () => ipcRenderer.invoke(channels.minimize),

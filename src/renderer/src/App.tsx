@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowRightLeft, ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, GripVertical, ListTodo, Minus, Pause, Play, Plus, Settings2, EyeOff, Sparkles, Square, Sunrise, Sunset, Undo2 } from 'lucide-react'
-import type { AppSnapshot, Locale, NotchSettings, StartMode, Task } from '@shared/types'
-import { restRemaining } from '@shared/rest'
+import { ArrowRightLeft, ArrowRightToLine, ArrowUpToLine, ArrowDownFromLine, BarChart3, BriefcaseBusiness, ChevronDown, ChevronUp, Clock3, Coffee, Dumbbell, GripVertical, Hourglass, ListTodo, Minus, Pause, Play, Plus, Settings2, EyeOff, Sparkles, Square, Sunrise, Sunset, Undo2, UserRoundX } from 'lucide-react'
+import type { AppSnapshot, IdlePeriod, IdleResolution, Locale, NotchSettings, StartMode, Task } from '@shared/types'
+import { restRemaining, workSinceLastRest } from '@shared/rest'
 import { scheduledWorkdayEndAt } from '@shared/workday'
 import { DaySummary } from './components/DaySummary'
 import { SettingsPage } from './components/Settings'
@@ -14,7 +14,7 @@ import { ProjectsPage } from './components/ProjectsPage'
 import { AnimatedDuration, AnimatedHm, AnimatedNumber, StackCollapse, ease } from './components/Animated'
 import { translator } from './lib/i18n'
 import { errorText } from './lib/errors'
-import { dayIntervals, formatDuration, taskDuration, unionDuration } from './lib/time'
+import { dayIntervals, formatClock, formatDuration, taskDuration, unionDuration } from './lib/time'
 import { playNotificationSound } from './lib/sounds'
 import { localDayBounds } from '@shared/local-date'
 
@@ -187,6 +187,9 @@ export default function App(): React.JSX.Element {
 
   const [loadFailed, setLoadFailed] = useState(false)
   const [actionError, setActionError] = useState('')
+  /** An absence the main process noticed while a task ran; stays until the user decides what it was. */
+  const [idlePeriod, setIdlePeriod] = useState<IdlePeriod | null>(null)
+  const [idleBusy, setIdleBusy] = useState(false)
   const actionErrorTimer = useRef<number | undefined>(undefined)
 
   const reload = async (): Promise<void> => {
@@ -224,12 +227,15 @@ export default function App(): React.JSX.Element {
     })
     const unsubscribeDockSide = window.workBuddy.onDockSide(setDockSide)
     const unsubscribeSound = window.workBuddy.onPlaySound((sound, volume) => { void playNotificationSound(sound, undefined, volume).catch(() => undefined) })
+    const unsubscribeIdle = window.workBuddy.onIdleDetected(setIdlePeriod)
+    void window.workBuddy.getPendingIdle().then((period) => { if (period) setIdlePeriod(period) }).catch(() => undefined)
     return () => {
       window.clearInterval(clock)
       unsubscribe()
       unsubscribeSettings()
       unsubscribeDockSide()
       unsubscribeSound()
+      unsubscribeIdle()
     }
   }, [])
 
@@ -608,7 +614,7 @@ export default function App(): React.JSX.Element {
     } else compactOpenTimer.current = window.setTimeout(() => {
       compactTasksOpen.current = true
       setCompactHovered(true)
-    }, 2000)
+    }, snapshot.settings.compact.revealDelayMs)
   }
 
   const concealCompactTasks = (): void => {
@@ -618,7 +624,21 @@ export default function App(): React.JSX.Element {
     compactCloseTimer.current = window.setTimeout(() => {
       compactTasksOpen.current = false
       setCompactHovered(false)
-    }, 2000)
+    }, Math.max(500, snapshot.settings.compact.revealDelayMs))
+  }
+
+  const keepIdle = (): void => {
+    setIdlePeriod(null)
+    void window.workBuddy.dismissIdle().catch(() => undefined)
+  }
+
+  const resolveIdle = (resolution: IdleResolution): Promise<void> => {
+    if (!idlePeriod) return Promise.resolve()
+    setIdleBusy(true)
+    return attempt(async () => {
+      setSnapshot(await window.workBuddy.resolveIdle(idlePeriod, resolution))
+      setIdlePeriod(null)
+    }).finally(() => setIdleBusy(false))
   }
 
   const handleEditorSaved = (result: AppSnapshot): void => {
@@ -703,6 +723,38 @@ export default function App(): React.JSX.Element {
     </header>
   )
 
+  const idleBanner = (
+    <StackCollapse open={Boolean(idlePeriod)}>
+      {idlePeriod && <section className="idle-banner no-drag" role="alertdialog" aria-labelledby="idle-banner-title">
+        <div className="idle-banner__icon"><UserRoundX size={17} /></div>
+        <div className="idle-banner__copy">
+          <strong id="idle-banner-title">{t('idleReturnTitle')}</strong>
+          <p>{t('idleReturnBody').replace('{from}', formatClock(idlePeriod.startedAt, t.locale)).replace('{to}', formatClock(idlePeriod.endedAt, t.locale)).replace('{duration}', formatDuration(idlePeriod.endedAt - idlePeriod.startedAt, true, t.locale))}</p>
+        </div>
+        <div className="idle-banner__actions">
+          <button type="button" className="secondary-button" disabled={idleBusy} onClick={keepIdle}>{t('idleKeep')}</button>
+          <button type="button" className="secondary-button" disabled={idleBusy} onClick={() => void resolveIdle('discard')}>{t('idleDiscard')}</button>
+          <button type="button" className="primary-button" disabled={idleBusy} onClick={() => void resolveIdle('break')}><Dumbbell size={13} />{t('idleToBreak')}</button>
+        </div>
+      </section>}
+    </StackCollapse>
+  )
+
+  const pomodoroTotalMs = snapshot.settings.breaks.everyMinutes * 60_000
+  const pomodoroWorkedMs = snapshot.settings.pomodoro.enabled && snapshot.settings.breaks.enabled && snapshot.workday?.endedAt === null && !activeRest
+    ? Math.min(pomodoroTotalMs, workSinceLastRest(snapshot.workday, snapshot.rests, snapshot.tasks, now))
+    : null
+  const pomodoroCard = pomodoroWorkedMs !== null && (
+    <section className={`pomodoro-card ${pomodoroWorkedMs >= pomodoroTotalMs ? 'is-due' : ''} ${liveTasks.length ? 'is-live' : ''}`} aria-live="polite">
+      <div className="pomodoro-card__top">
+        <span className="pomodoro-card__icon"><Hourglass size={14} /></span>
+        <div><span className="eyebrow">{pomodoroWorkedMs >= pomodoroTotalMs ? t('pomodoroBreakNow') : t('pomodoroUntilBreak')}</span><strong><AnimatedDuration ms={Math.max(0, pomodoroTotalMs - pomodoroWorkedMs)} /></strong></div>
+        <small>{snapshot.settings.breaks.everyMinutes} {t('minutes')} · {snapshot.settings.breaks.durationMinutes} {t('minutes')}</small>
+      </div>
+      <div className="pomodoro-card__bar"><span style={{ width: `${Math.min(100, pomodoroWorkedMs / pomodoroTotalMs * 100)}%` }} /></div>
+    </section>
+  )
+
   const expandedView = (
           <motion.div key="expanded" className="expanded-view" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2, ease }}>
             <nav ref={tabBarRef} className="tab-bar no-drag">
@@ -714,11 +766,13 @@ export default function App(): React.JSX.Element {
               ))}
             </nav>
 
+            {idleBanner}
             <div ref={attachContent} className="content-scroll no-drag">
               <AnimatePresence mode="wait">
                 {tab === 'focus' && (
                   <motion.div key="focus" className="page-stack" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} transition={{ duration: 0.16, ease }}>
                     <RestControl snapshot={snapshot} now={now} t={t} onSnapshot={setSnapshot} attempt={attempt} />
+                    {pomodoroCard}
                     {openWorkdayStartedAt && <section className="focus-hero">
                       <div className="focus-hero__top">
                         <div>

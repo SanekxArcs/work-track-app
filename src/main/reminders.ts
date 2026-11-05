@@ -1,5 +1,5 @@
 import { Notification, powerMonitor } from 'electron'
-import type { AppSettings, Locale, NotificationSound, WellnessAction } from '../shared/types'
+import type { AppSettings, IdlePeriod, Locale, NotificationSound, WellnessAction } from '../shared/types'
 import { breakStreakStartedAt, dueRestTypes, restRemaining } from '../shared/rest'
 import { isScheduledWorkday, scheduledWorkdayClockEndAt, scheduledWorkdayEndAt } from '../shared/workday'
 import type { WorkBuddyDatabase } from './database'
@@ -13,6 +13,7 @@ const copy = {
   uk: {
     breakTitle: 'Гей, видихни трохи 👋',
     breakBody: (minutes: number) => `Ти гарно попрацював. Відлипни від екрана хоча б на ${minutes} хв.`,
+    pomodoroBody: (minutes: number) => `Фокус-відрізок закінчився. Перерва на ${minutes} хв уже йде, задачі на паузі.`,
     lunchTitle: 'Друже, час поїсти 🍜',
     lunchBody: (minutes: number) => `Серйозно, задачі нікуди не втечуть. Забирай свої ${minutes} хвилин на обід.`,
     wellness: (action: string) => `Ідеальний момент: ${action.toLocaleLowerCase('uk-UA')}.`,
@@ -25,13 +26,16 @@ const copy = {
     plannedTaskTitle: 'Час для запланованої задачі ⏰',
     plannedTaskBody: (title: string, notes: string) => notes ? `${title} — ${notes}` : title,
     idleTitle: 'Ти кудись відійшов?',
-    idleBody: (minutes: number) => `Не бачу активності вже ${minutes} хв. Перевір, чи варто залишити цей час.`,
+    idleBody: (minutes: number) => `Не бачу активності вже ${minutes} хв. Коли повернешся, запитаю, що робити з цим часом.`,
+    idleReturnTitle: 'З поверненням 👋',
+    idleReturnBody: (minutes: number) => `Тебе не було ${minutes} хв. У Work Buddy можна залишити цей час, викинути або зробити з нього перерву.`,
     restDoneTitle: 'Таймер відпочинку закінчився ⏰',
     restDoneBody: 'Як ти? Завершуй перерву — я поверну твої задачі в роботу.',
   },
   en: {
     breakTitle: 'Hey, take a breather 👋',
     breakBody: (minutes: number) => `Nice work. Step away from the screen for at least ${minutes} minutes.`,
+    pomodoroBody: (minutes: number) => `The focus stretch is over. A ${minutes}-minute break is already running and your tasks are paused.`,
     lunchTitle: 'Buddy, food time 🍜',
     lunchBody: (minutes: number) => `Seriously, the tasks can wait. Take your ${minutes}-minute lunch.`,
     wellness: (action: string) => `Perfect moment to: ${action.toLocaleLowerCase('en-US')}.`,
@@ -44,7 +48,9 @@ const copy = {
     plannedTaskTitle: 'Time for your planned task ⏰',
     plannedTaskBody: (title: string, notes: string) => notes ? `${title} — ${notes}` : title,
     idleTitle: 'Did you step away?',
-    idleBody: (minutes: number) => `No activity for ${minutes} minutes. Check whether you want to keep this time.`,
+    idleBody: (minutes: number) => `No activity for ${minutes} minutes. When you are back I will ask what to do with that time.`,
+    idleReturnTitle: 'Welcome back 👋',
+    idleReturnBody: (minutes: number) => `You were away for ${minutes} min. In Work Buddy you can keep that time, discard it or turn it into a break.`,
     restDoneTitle: 'Your rest timer is up ⏰',
     restDoneBody: "How are you feeling? Finish the break and I'll bring your tasks back.",
   }
@@ -64,11 +70,18 @@ function currentMinute(timestamp: number): number {
   return now.getHours() * 60 + now.getMinutes()
 }
 
-function enabledWellness(settings: AppSettings): WellnessAction | undefined {
+function enabledWellness(settings: AppSettings, now: number): WellnessAction | undefined {
   const actions = settings.wellnessActions.filter((item) => item.enabled)
   if (!settings.wellnessEnabled || !actions.length) return undefined
-  const index = new Date().getDate() % actions.length
+  const index = new Date(now).getDate() % actions.length
   return actions[index]
+}
+
+export interface ReminderHooks {
+  /** The user is back after an idle stretch (or the PC woke up) that overlapped a running task. */
+  onIdleReturn?: (period: IdlePeriod) => void
+  /** The reminders changed tracked data by themselves (a Pomodoro break started). */
+  onDataChanged?: () => void
 }
 
 export class ReminderService {
@@ -77,10 +90,16 @@ export class ReminderService {
   private firedDate = ''
   private restAlarm: { restId: string; nextAt: number } | null = null
   private idleBucket = 0
+  /** When the current idle stretch began, once it passed the threshold with a task running. */
+  private idleSince: number | null = null
+  private suspendedAt: number | null = null
+  private readonly onSuspend = (): void => { this.suspendedAt = Date.now() }
+  private readonly onResume = (): void => this.handleResume()
 
   constructor(
     private readonly database: WorkBuddyDatabase,
-    private readonly onSound?: (sound: NotificationSound, volume: number) => void
+    private readonly onSound?: (sound: NotificationSound, volume: number) => void,
+    private readonly hooks: ReminderHooks = {}
   ) {}
 
   start(): void {
@@ -88,6 +107,8 @@ export class ReminderService {
     this.seedStale()
     this.check()
     this.timer = setInterval(() => this.check(), CHECK_INTERVAL)
+    powerMonitor.on('suspend', this.onSuspend)
+    powerMonitor.on('resume', this.onResume)
   }
 
   /** Reminders scheduled long before launch are treated as already shown. */
@@ -104,6 +125,29 @@ export class ReminderService {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    powerMonitor.off('suspend', this.onSuspend)
+    powerMonitor.off('resume', this.onResume)
+  }
+
+  /** Sleep counts as absence: a task left running overnight should not swallow the night. */
+  private handleResume(): void {
+    const startedAt = this.suspendedAt
+    this.suspendedAt = null
+    if (startedAt === null) return
+    const endedAt = Date.now()
+    if (endedAt - startedAt < MINUTE) return
+    try {
+      const snapshot = this.database.getSnapshot()
+      const wasTracking = snapshot.tasks.some((task) => task.intervals.some((interval) => interval.startedAt < startedAt && (interval.endedAt ?? endedAt) > startedAt))
+      if (!wasTracking) return
+      this.idleSince = null
+      this.idleBucket = 0
+      this.hooks.onIdleReturn?.({ startedAt, endedAt })
+      const text = copy[snapshot.settings.locale]
+      this.show(text.idleReturnTitle, text.idleReturnBody(Math.round((endedAt - startedAt) / MINUTE)))
+    } catch (error) {
+      console.error('Resume handling failed', error)
+    }
   }
 
   private show(title: string, body: string): void {
@@ -174,10 +218,22 @@ export class ReminderService {
     const due = dueRestTypes(settings, snapshot.workday, snapshot.rests, snapshot.tasks, now)
     if (due.includes('break')) {
       const streakStart = snapshot.workday ? breakStreakStartedAt(snapshot.workday, snapshot.rests) : now
+      // In Pomodoro mode the break starts on its own; the notification then says so instead of asking.
+      const autoBreak = settings.pomodoro.enabled && settings.pomodoro.autoStartBreak && activeTasks.length > 0
       this.once(now, `break-due:${streakStart}`, () => {
-        const wellness = enabledWellness(settings)
+        const wellness = enabledWellness(settings, now)
         const extra = wellness ? ` ${text.wellness(locale === 'uk' ? wellness.labelUk : wellness.labelEn)}` : ''
-        this.show(text.breakTitle, `${text.breakBody(settings.breaks.durationMinutes)}${extra}`)
+        let started = false
+        if (autoBreak) {
+          try {
+            this.database.startRest('break')
+            started = true
+            this.hooks.onDataChanged?.()
+          } catch (error) {
+            console.error('Pomodoro break could not start', error)
+          }
+        }
+        this.show(text.breakTitle, `${started ? text.pomodoroBody(settings.breaks.durationMinutes) : text.breakBody(settings.breaks.durationMinutes)}${extra}`)
       })
     }
     if (due.includes('lunch')) {
@@ -189,12 +245,32 @@ export class ReminderService {
       this.once(now, `rest-done:${runningRest.id}`, () => this.show(text.restDoneTitle, text.restDoneBody))
       this.repeatRestAlarm(runningRest.id, settings, now)
     } else this.restAlarm = null
-    if (activeTasks.length && settings.idle.enabled) {
-      const idleMinutes = Math.floor(powerMonitor.getSystemIdleTime() / 60)
-      // Buckets restart with every idle period, so each absence gets its own reminders.
-      const bucket = Math.floor(idleMinutes / settings.idle.thresholdMinutes)
-      if (bucket > this.idleBucket) this.show(text.idleTitle, text.idleBody(idleMinutes))
-      this.idleBucket = bucket
-    } else this.idleBucket = 0
+    this.checkIdle(settings, activeTasks.length > 0, now, text)
+  }
+
+  /**
+   * Nudges during a long absence, then, once input returns, hands the whole stretch to the window
+   * so the user can keep it, cut it out of the running tasks or turn it into a break.
+   */
+  private checkIdle(settings: AppSettings, tracking: boolean, now: number, text: (typeof copy)[Locale]): void {
+    const idleMs = powerMonitor.getSystemIdleTime() * 1000
+    const thresholdMs = settings.idle.thresholdMinutes * MINUTE
+    if (this.idleSince !== null && idleMs < thresholdMs) {
+      const period = { startedAt: this.idleSince, endedAt: Math.max(this.idleSince + MINUTE, now - idleMs) }
+      this.idleSince = null
+      this.idleBucket = 0
+      this.hooks.onIdleReturn?.(period)
+      return
+    }
+    if (!tracking || !settings.idle.enabled) {
+      this.idleSince = null
+      this.idleBucket = 0
+      return
+    }
+    if (idleMs >= thresholdMs && this.idleSince === null) this.idleSince = now - idleMs
+    // Buckets restart with every idle period, so each absence gets its own reminders.
+    const bucket = Math.floor(idleMs / thresholdMs)
+    if (bucket > this.idleBucket) this.show(text.idleTitle, text.idleBody(Math.floor(idleMs / MINUTE)))
+    this.idleBucket = bucket
   }
 }

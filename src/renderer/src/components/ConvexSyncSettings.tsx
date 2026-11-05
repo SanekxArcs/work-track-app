@@ -33,19 +33,19 @@ export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.J
       setStatus(saved); setKey('')
       const result = sync ? await window.workBuddy.syncConvexNow() : saved
       setStatus(result)
-      setMessage(result.error || (uk ? 'Збережено' : 'Saved'))
+      setMessage(result.error || t('saved'))
     } catch (error) { setMessage(errorText(error, t, 'saveFailed')) }
     finally { setBusy(false) }
   }
   const date = (time: number | null): string => time ? new Date(time).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'
-  return <SettingsSection id="convex" icon={<Cloud size={17} />} title={uk ? 'Синхронізація з Convex' : 'Convex sync'} body={uk ? 'Копія робочих даних у хмарі для інших застосунків.' : 'A cloud copy of your work data for other apps.'} className="convex-sync-settings">
-    <label className="setting-line"><span>{uk ? 'Автоматичне завантаження' : 'Automatic upload'}</span><button type="button" role="switch" aria-checked={enabled} aria-label={uk ? 'Автоматичне завантаження' : 'Automatic upload'} className={`toggle ${enabled ? 'toggle--on' : ''}`} disabled={busy} onClick={() => setEnabled(!enabled)}><span /></button></label>
-    <label className="convex-field"><span>{uk ? 'Адреса Convex' : 'Convex site URL'}</span><input placeholder="https://your-deployment.convex.site" value={siteUrl} disabled={busy} onChange={(event) => setSiteUrl(event.target.value)} /></label>
-    <label className="convex-field"><span>{uk ? 'Ключ запису' : 'Write key'}</span><input type="password" autoComplete="off" placeholder={status?.hasKey ? (uk ? 'Ключ збережено' : 'Key saved') : (uk ? 'Щонайменше 32 символи' : 'At least 32 characters')} value={key} disabled={busy} onChange={(event) => setKey(event.target.value)} /></label>
-    <div className="setting-line"><span>{uk ? 'Завантажувати кожні' : 'Upload every'}</span><div className="convex-frequency">{([6, 12, 24] as const).map((value) => <button type="button" key={value} className={hours === value ? 'primary-button' : 'secondary-button'} aria-pressed={hours === value} disabled={busy} onClick={() => setHours(value)}>{value}{uk ? ' год' : 'h'}</button>)}</div></div>
-    <p className="settings-note">{uk ? 'Локальна база залишається основною. Потрібен запущений Work Buddy та інтернет. Інші застосунки читають останню копію окремим ключем лише для читання.' : 'Your local database stays primary. Work Buddy must be running and online. Other apps read the latest copy using a separate read-only key.'}</p>
-    <div className="convex-actions"><button type="button" className="secondary-button" disabled={!status || busy || status.syncing} onClick={() => void save(false)}>{uk ? 'Зберегти' : 'Save'}</button><button type="button" className="primary-button" disabled={!status || busy || status.syncing || !enabled} onClick={() => void save(true)}><RefreshCw size={14} />{busy || status?.syncing ? (uk ? 'Синхронізація…' : 'Syncing…') : (uk ? 'Синхронізувати зараз' : 'Sync now')}</button></div>
-    {status && <><p className="settings-note">{uk ? 'Остання успішна: ' : 'Last successful: '}{date(status.lastSyncedAt)}<br />{uk ? 'Наступна спроба: ' : 'Next attempt: '}{date(status.nextSyncAt)}</p><label className="convex-field"><span>{uk ? 'ID джерела для інших застосунків' : 'Source ID for other apps'}</span><input readOnly value={status.sourceId} onFocus={(event) => event.target.select()} /></label></>}
+  return <SettingsSection id="convex" icon={<Cloud size={17} />} title={t('convexTitle')} body={t('convexBody')} className="convex-sync-settings">
+    <label className="setting-line"><span>{t('convexAutoUpload')}</span><button type="button" role="switch" aria-checked={enabled} aria-label={t('convexAutoUpload')} className={`toggle ${enabled ? 'toggle--on' : ''}`} disabled={busy} onClick={() => setEnabled(!enabled)}><span /></button></label>
+    <label className="convex-field"><span>{t('convexSiteUrl')}</span><input placeholder="https://your-deployment.convex.site" value={siteUrl} disabled={busy} onChange={(event) => setSiteUrl(event.target.value)} /></label>
+    <label className="convex-field"><span>{t('convexWriteKey')}</span><input type="password" autoComplete="off" placeholder={status?.hasKey ? t('convexKeySaved') : t('convexKeyMin')} value={key} disabled={busy} onChange={(event) => setKey(event.target.value)} /></label>
+    <div className="setting-line"><span>{t('convexUploadEvery')}</span><div className="convex-frequency">{([6, 12, 24] as const).map((value) => <button type="button" key={value} className={hours === value ? 'primary-button' : 'secondary-button'} aria-pressed={hours === value} disabled={busy} onClick={() => setHours(value)}>{value}{t('convexHoursShort')}</button>)}</div></div>
+    <p className="settings-note">{t('convexNote')}</p>
+    <div className="convex-actions"><button type="button" className="secondary-button" disabled={!status || busy || status.syncing} onClick={() => void save(false)}>{t('save')}</button><button type="button" className="primary-button" disabled={!status || busy || status.syncing || !enabled} onClick={() => void save(true)}><RefreshCw size={14} />{busy || status?.syncing ? t('convexSyncing') : t('convexSyncNow')}</button></div>
+    {status && <><p className="settings-note">{t('convexLastSuccess')}{date(status.lastSyncedAt)}<br />{t('convexNextAttempt')}{date(status.nextSyncAt)}</p><label className="convex-field"><span>{t('convexSourceId')}</span><input readOnly value={status.sourceId} onFocus={(event) => event.target.select()} /></label></>}
     {(message || status?.error) && <p className="settings-note" role="status">{message || status?.error}</p>}
   </SettingsSection>
 }

@@ -8,7 +8,7 @@ The interface is available in Ukrainian and English.
 
 - Parallel task timers with quick Play/Pause controls and projects
 - Workday, lunch, and manual-break tracking with actual-duration summaries
-- Six-month GitHub-style history map and editable daily timeline
+- GitHub-style history map (30 days to a year) and editable daily timeline
 - Planned-task backlog that can be attached to a tracked task
 - Gemini-powered task refinement and optional voice input
 - Portable `.workbuddy.json` backups with Merge or Replace restore modes
@@ -16,7 +16,9 @@ The interface is available in Ukrainian and English.
 - Tray controls, autostart, reminders, custom sounds, and desktop-transparent UI
 - Local SQLite storage; the tracker works offline
 - Optional scheduled Convex uploads and read-only access for other apps ([setup guide](docs/convex-sync.md))
-- PC and browser activity review with an automatic tracking journal that can be recorded as tasks ([guide](docs/activity-tracking.md))
+- Task tags, a weekly report by day and project, and a Pomodoro-style focus countdown built on the micro-break cadence
+- Idle and sleep detection that asks whether to keep, discard or turn the absence into a break
+- Local bridge for other apps on this PC ([data access](docs/data-access.md))
 
 ## Tech stack
 
@@ -146,12 +148,6 @@ Voice input is push-to-record: Work Buddy asks for microphone permission only af
 Open **Day**, select a day from history, and choose **Export `.ics`**. Import the
 file manually into any calendar that supports the standard `.ics` format. Work Buddy
 does not connect to or sync with calendar accounts.
-
-### Web companion
-
-The web companion is temporarily deprecated while Work Buddy moves to a self-hosted
-local companion service. The desktop application is fully local: it does not use
-Sanity, cloud credentials, background cloud requests, or cloud backups.
 
 ### Backups
 

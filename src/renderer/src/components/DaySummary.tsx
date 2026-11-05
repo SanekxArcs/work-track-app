@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, RotateCcw, Sparkles, Undo2, X } from 'lucide-react'
+import { AlarmClock, ArrowRightLeft, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Coffee, Download, Dumbbell, GitBranch, HeartHandshake, Layers3, Pencil, RedoDot, RotateCcw, Sparkles, Undo2, X } from 'lucide-react'
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
@@ -13,6 +13,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { HistoryPanel } from './HistoryPanel'
 import { TimeInput } from './TimeInput'
 import { RestSummary } from './RestSummary'
+import { WeekSummary } from './WeekSummary'
 import { SettingsSection as FoldCard } from './SettingsSection'
 
 interface DaySummaryProps {
@@ -99,6 +100,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const [selectedDate, setSelectedDate] = useState(todayKey)
   const [history, setHistory] = useState<HistoryDay[]>([])
   const [overtimeOverview, setOvertimeOverview] = useState<OvertimeOverview>({ balanceMs: 0, days: [] })
+  const [tagFilter, setTagFilter] = useState('')
   const [historicalSnapshot, setHistoricalSnapshot] = useState<AppSnapshot | null>(null)
   const [mergeMode, setMergeMode] = useState(false)
   const [mergeTaskIds, setMergeTaskIds] = useState<string[]>([])
@@ -183,6 +185,16 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const overtime = hasOpenDay
     ? workdayOvertimeMs(reportSnapshot.settings, reportSnapshot.workday, reportSnapshot.rests, reportNow, reportSnapshot.tasks.flatMap((task) => task.intervals))
     : overtimeDay?.overtimeMs ?? 0
+  const dayTags = [...new Set(tasks.flatMap((task) => task.tags))].sort((a, b) => a.localeCompare(b))
+  const visibleTasks = tagFilter && dayTags.includes(tagFilter) ? tasks.filter((task) => task.tags.includes(tagFilter)) : tasks
+  const balanceMs = overtimeOverview.balanceMs
+  // The message gets blunter as the unclaimed balance grows; a clean slate gets a cheer instead.
+  const balanceTier = balanceMs <= 0 ? 0 : balanceMs < 30 * 60_000 ? 1 : balanceMs < 60 * 60_000 ? 2 : balanceMs < 4 * 60 * 60_000 ? 3 : 4
+  const balanceText = balanceTier === 0 ? t('overtimeBalanceZeroBody')
+    : balanceTier === 1 ? t('overtimeTier1')
+    : balanceTier === 2 ? t('overtimeTier2')
+    : balanceTier === 3 ? t('overtimeTier3')
+    : t('overtimeTier4').replace('{hours}', String(Math.floor(balanceMs / 3_600_000)))
   const canMergeTasks = dayReady && tasks.length > 1
   const mergeSuggestions = dayReady ? suggestTaskMerges(tasks).filter((group) => reportSnapshot.projects.some((project) => project.id === group.projectId)) : []
   const canShowAiSummary = !isHistorical && Boolean(reportSnapshot.workday?.endedAt) && tasks.length > 0 && reportSnapshot.settings.ai.enabled && reportSnapshot.settings.ai.hasApiKey
@@ -194,6 +206,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
 
   useEffect(() => {
     setCalendarExportStatus('')
+    setTagFilter('')
     setMergeMode(false)
     setMergeTaskIds([])
     setMergeError('')
@@ -366,6 +379,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
 
       {tasks.length > 0 && <section className="panel day-tasks-panel">
         <div className="section-heading"><div><span className="eyebrow">{t('tasksEyebrow')}</span><h3>{isHistorical ? t('dayTasks') : t('todayTasks')}</h3></div>{!mergeMode && canMergeTasks ? <button className="day-merge-toggle" disabled={mergeBusy} onClick={() => setMergeMode(true)}><GitBranch size={13} />{t('mergeTasks')}</button> : <span className="timeline-range">{tasks.length}</span>}</div>
+        {dayTags.length > 0 && <div className="tag-filter" role="group" aria-label={t('filterByTag')}>
+          <button type="button" className={`tag-chip ${tagFilter ? '' : 'is-active'}`} onClick={() => setTagFilter('')}>{t('allTags')}</button>
+          {dayTags.map((tag) => <button type="button" key={tag} className={`tag-chip ${tagFilter === tag ? 'is-active' : ''}`} aria-pressed={tagFilter === tag} onClick={() => setTagFilter((current) => current === tag ? '' : tag)}>#{tag}</button>)}
+        </div>}
         {!mergeMode && mergeSuggestions.length > 0 && <div className="day-smart-merge">
           <div className="day-smart-merge__heading"><Sparkles size={12} /><strong>{t('smartMerge')}</strong><span>{t('smartMergeReason')}</span></div>
           <p>{t('smartMergeHint')}</p>
@@ -384,12 +401,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         {!mergeMode && mergeError && <p className="form-error" role="alert">{mergeError}</p>}
         <Collapse open={mergeMode}><div className="day-merge-controls"><p>{t('mergeTasksHint')}</p><Collapse open={Boolean(mergeError)}><small>{mergeError}</small></Collapse><div><button className="secondary-button" disabled={mergeBusy} onClick={leaveMergeMode}>{t('cancel')}</button><button className="primary-button" disabled={mergeBusy || mergeTaskIds.length < 2} onClick={() => void mergeTasks()}><GitBranch size={14} />{t('mergeSelected')} {mergeTaskIds.length > 1 ? `(${mergeTaskIds.length})` : ''}</button></div></div></Collapse>
         <div className="day-task-list">
-          {tasks.map((task) => {
+          {visibleTasks.map((task) => {
             const project = getProject(reportSnapshot.projects, task)
             const selected = mergeTaskIds.includes(task.id)
             const taskIntervals = visibleTimelineIntervals(task, todayStart, todayEnd, reportNow)
             const taskRow = <><span className="day-task-row__color" style={{ background: project?.color ?? '#b8e986' }} />
-              <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}</small></span>
+              <span className="day-task-row__copy"><strong>{taskLabel(task, t)}</strong><small>{project?.name ?? t('noProject')}{task.tags.length > 0 && ` · ${task.tags.map((tag) => `#${tag}`).join(' ')}`}</small></span>
               <span>{formatDuration(visibleTimelineDuration(task, todayStart, todayEnd, reportNow), true, t.locale)}</span></>
             return mergeMode ? <button type="button" className={`day-task-row day-task-row--selectable ${selected ? 'is-selected' : ''}`} key={task.id} disabled={mergeBusy} aria-pressed={selected} onClick={() => toggleMergeTask(task.id)}><span className="day-task-row__check">{selected && <Check size={10} strokeWidth={3} />}</span>{taskRow}</button> : <button className="day-task-row" key={task.id} onClick={() => onEdit(task, taskIntervals[taskIntervals.length - 1]?.id)} title={t('editTaskHint')}>
               {taskRow}
@@ -405,7 +422,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         </div>
         <motion.div key={timelineLayout} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, ease }}>
         {timelineLayout === 'lanes' ? <div className="timeline">
-            {tasks.map((task) => {
+            {visibleTasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
               const color = project?.color ?? '#b8e986'
               const label = timelineLabel(task, project, t)
@@ -424,7 +441,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
             })}
           </div> : <div className="timeline timeline--overlay">
             <div className="timeline-track timeline-track--overlay">
-              {tasks.flatMap((task) => {
+              {visibleTasks.flatMap((task) => {
                 const project = getProject(reportSnapshot.projects, task)
                 const color = project?.color ?? '#b8e986'
                 const label = timelineLabel(task, project, t)
@@ -435,7 +452,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
                 })
               })}
             </div>
-            <div className="timeline-overlay-legend">{tasks.map((task) => {
+            <div className="timeline-overlay-legend">{visibleTasks.map((task) => {
               const project = getProject(reportSnapshot.projects, task)
               const label = timelineLabel(task, project, t)
               return <span key={task.id} title={label}><i style={{ background: project?.color ?? '#b8e986' }} />{label}</span>
@@ -451,8 +468,13 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         </section>
       </StackCollapse>
 
-      <section className="overtime-balance-card">
-        <span><AlarmClock size={18} /></span><div><small>{t('overtimeBalance')}</small><strong>+<AnimatedDuration ms={overtimeOverview.balanceMs} compact locale={t.locale} /></strong><p>{t('overtimeBalanceBody')}</p></div>
+      <section className={`overtime-balance-card overtime-balance-card--tier-${balanceTier}`}>
+        <span>{balanceTier === 0 ? <HeartHandshake size={18} /> : <AlarmClock size={18} />}</span>
+        <div>
+          <small>{t('overtimeBalance')}</small>
+          <strong>{balanceTier === 0 ? t('overtimeBalanceZero') : <>+<AnimatedDuration ms={balanceMs} compact locale={t.locale} /></>}</strong>
+          <p><AnimatedText text={balanceText} /></p>
+        </div>
       </section>
 
       <StackCollapse open={canShowAiSummary}>
@@ -478,6 +500,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       <FoldCard id="day:history" icon={<CalendarDays size={17} />} title={t('workHistory')} body={t('workHistoryBody')} className="history-fold">
         <HistoryPanel embedded days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
       </FoldCard>
+      <WeekSummary snapshot={snapshot} now={now} t={t} />
       <FoldCard id="day:export" icon={<Download size={17} />} title={t('calendarRangeTitle')} className="settings-section--backup calendar-range-export">
         <div className="calendar-range-presets">
           {([['presetDay', 0, 0], ['presetLast7', -6, 0], ['presetLast30', -29, 0]] as const).map(([label, fromOffset]) => {

@@ -153,6 +153,18 @@ export interface AppSettings {
   /** Resizes the window to fit the page whenever its content changes. */
   autoFitHeight: boolean
   notch: NotchSettings
+  /** Project that instantly started tasks belong to until they are edited; null starts them without one. */
+  defaultProjectId: string | null
+  compact: {
+    /** How long the pointer rests on the compact window before the other tasks slide out. */
+    revealDelayMs: number
+  }
+  pomodoro: {
+    /** Shows a focus countdown to the next micro-break on the Focus tab. */
+    enabled: boolean
+    /** Starts the micro-break by itself when the countdown runs out. */
+    autoStartBreak: boolean
+  }
   workday: {
     startReminder: boolean
     startTime: string
@@ -228,6 +240,42 @@ export interface OvertimeDay {
 export interface OvertimeOverview {
   balanceMs: number
   days: OvertimeDay[]
+}
+
+/** A stretch without keyboard or mouse input (or with the PC asleep) while a task was running. */
+export interface IdlePeriod {
+  startedAt: number
+  endedAt: number
+}
+
+/** discard cuts the idle stretch out of the running tasks; break also records it as a completed micro-break. */
+export type IdleResolution = 'discard' | 'break'
+
+export interface WeekReportDay {
+  date: string
+  workedMs: number
+  breakMs: number
+  lunchMs: number
+  overtimeMs: number
+}
+
+export interface WeekReportProject {
+  projectId: string | null
+  ms: number
+}
+
+export interface WeekReport {
+  /** Monday of the week as a local YYYY-MM-DD string. */
+  weekStart: string
+  days: WeekReportDay[]
+  /** Worked time per project, most first; null groups tasks without a project. */
+  projects: WeekReportProject[]
+  totalMs: number
+  /** The same measure for the week before, for the trend. */
+  previousTotalMs: number
+  breakMs: number
+  lunchMs: number
+  overtimeMs: number
 }
 
 export interface StartTaskInput {
@@ -378,6 +426,12 @@ export interface WorkBuddyApi {
   getDaySnapshot: (date: string) => Promise<AppSnapshot>
   getOvertimeOverview: () => Promise<OvertimeOverview>
   setOvertimeRedeemed: (date: string, redeemed: boolean) => Promise<OvertimeOverview>
+  getWeekReport: (weekStart: string) => Promise<WeekReport>
+  /** The idle stretch the main process noticed and the user has not answered yet. */
+  getPendingIdle: () => Promise<IdlePeriod | null>
+  resolveIdle: (period: IdlePeriod, resolution: IdleResolution) => Promise<AppSnapshot>
+  dismissIdle: () => Promise<void>
+  onIdleDetected: (callback: (period: IdlePeriod) => void) => () => void
   startWorkday: () => Promise<AppSnapshot>
   endWorkday: () => Promise<AppSnapshot>
   updateWorkdayStart: (startedAt: number) => Promise<AppSnapshot>
@@ -436,7 +490,6 @@ export interface WorkBuddyApi {
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>
   fitWindowToContent: (height: number) => Promise<void>
-  setWindowView: (view: 'focus' | 'manual') => Promise<void>
   chooseNotificationSound: () => Promise<{ path: string; name: string; dataUrl: string } | null>
   getCustomSoundData: () => Promise<string>
   minimizeToTray: () => Promise<void>

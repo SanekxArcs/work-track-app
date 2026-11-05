@@ -16,7 +16,7 @@ Read methods: `getSnapshot` (projects, tasks, intervals, workday, rests, setting
 
 Write method for collectors: `importTasks(day, entries)`. Each entry is `{ key, intervals: [{ start, end }], projectId, notes }`. `key` is a stable 64-character hex string chosen by the producer; sending the same key again is idempotent. Ranges must be closed, inside the given local day, in the past, and must not overlap tracked tasks or breaks. The result is `{ snapshot, taskIds, created }`. Imports never start a timer or a workday.
 
-All other task, project, rest and workday methods used by the Chrome extension are also available; they change data, so call them deliberately.
+Task, project, planned-task, rest and workday methods are also available; they change data, so call them deliberately. Settings, the Gemini key, backups and anything that opens a native dialog are deliberately not reachable over the bridge: only the desktop window can change those.
 
 ## Convex backup (secondary)
 

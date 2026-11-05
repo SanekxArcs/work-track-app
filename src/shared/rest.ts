@@ -62,6 +62,11 @@ export function breakStreakStartedAt(workday: Workday, rests: RestSession[]): nu
   return Math.max(workday.startedAt, ...completedRestEnds)
 }
 
+/** Work done since the last finished rest: what the focus countdown and the break cadence measure. */
+export function workSinceLastRest(workday: Workday, rests: RestSession[], tasks: Task[], now = Date.now()): number {
+  return unionDuration(tasks.flatMap((task) => task.intervals), breakStreakStartedAt(workday, rests), now)
+}
+
 export function dueRestTypes(settings: AppSettings, workday: Workday | null, rests: RestSession[], tasks: Task[], now = Date.now()): RestType[] {
   if (!workday || workday.endedAt !== null || rests.some((rest) => rest.status !== 'completed')) return []
   const due: RestType[] = []

@@ -131,6 +131,9 @@ function run() {
       build = npm('build', dirname(extensionPackagePath))
     }
 
+    // A release must never ship with a red test suite.
+    if (!build || (!build.error && build.status === 0)) build = npm('test', root)
+
     if (!build || (!build.error && build.status === 0)) {
       const desktopBuild = process.env.WORK_BUDDY_LOCAL_ELECTRON === '1'
         ? 'dist:win -- --config.electronDist=node_modules/electron/dist'

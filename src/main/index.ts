@@ -2,6 +2,7 @@ import { surfaceRegion,notchBounds } from './window-shape'
 import { ConvexSyncService } from './convex-sync'
 import type { ConvexSyncConfig } from '../shared/convex-sync'
 import { randomBytes } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from 'electron'
@@ -15,9 +16,24 @@ import { localDateKey } from '../shared/local-date'
 import type { TaskImportEntry } from '../shared/task-import'
 import { channels } from '../shared/channels'
 import { EXTERNAL_LINK_HOSTS } from '../shared/about'
-import type { WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
+import type { IdlePeriod, IdleResolution, WindowMode, AppSettings, AppSnapshot, BackupData, BackupImportMode, NotificationInput, PlannedTaskInput, PlannedTaskUpdateInput, ProjectInput, ProjectUpdateInput, RestType, StartMode, StartTaskInput, TaskSplitInput, TaskMergeInput, TaskUpdateInput, VoiceInput } from '../shared/types'
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
+/** Failures are appended to work-buddy.log in the user data folder; the tracker itself keeps running. */
+function logFailure(scope: string, error: unknown): void {
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error)
+  const line = `${new Date().toISOString()} [${scope}] ${detail}\n`
+  console.error(line)
+  try {
+    appendFileSync(join(app.getPath('userData'), 'work-buddy.log'), line)
+  } catch {
+    // Logging must never become a second failure.
+  }
+}
+process.on('uncaughtException', (error) => logFailure('uncaughtException', error))
+process.on('unhandledRejection', (reason) => logFailure('unhandledRejection', reason))
+app.on('child-process-gone', (_, details) => logFailure('child-process-gone', new Error(`${details.type}: ${details.reason}`)))
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -65,6 +81,10 @@ let notchDisplayId: number | null = null
 let notchDragging = false
 let notchFollowTimer: NodeJS.Timeout | undefined
 let topmostTimer: NodeJS.Timeout | undefined
+/** Mirrors the alwaysOnTop setting so the periodic re-raise never touches the database. */
+let alwaysOnTopEnabled = true
+/** The last idle stretch the reminders noticed, until the user keeps, discards or converts it. */
+let pendingIdle: IdlePeriod | null = null
 let notchTravelTimer: NodeJS.Timeout | undefined
 let notchCandidate: { id: number; since: number } | null = null
 const chosenSoundPaths = new Set<string>()
@@ -321,7 +341,7 @@ function toggleWindow(): void {
 
 function restoreWindowTopmost(): void {
   if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) return
-  if (!database.getSettings().alwaysOnTop) return
+  if (!alwaysOnTopEnabled || mainWindow.isFocused()) return
   // Keep native file dialogs above their owner while they are open.
   if (mainWindow.getChildWindows().some((child) => child.isVisible())) return
   syncWindowTopmost(mainWindow, true)
@@ -372,7 +392,9 @@ function applyAppSettings(settings: AppSettings, ensureGlobalShortcut = false): 
   settings = guardCustomSoundPath(settings, current)
   if (current.globalShortcut !== settings.globalShortcut || (ensureGlobalShortcut && !globalShortcut.isRegistered(settings.globalShortcut))) registerToggleShortcut(settings.globalShortcut)
   const result = database.updateSettings(settings)
-  app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
+  // A registry write on every autosave is wasteful; only a changed choice needs one.
+  if (current.autoStart !== result.settings.autoStart) app.setLoginItemSettings({ openAtLogin: result.settings.autoStart })
+  alwaysOnTopEnabled = result.settings.alwaysOnTop
   syncWindowTopmost(mainWindow, result.settings.alwaysOnTop)
   syncNativeSurface()
   updateTrayMenu()
@@ -446,6 +468,12 @@ function createWindow(): void {
   // accidental link or popup replace it with untrusted web content.
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  // A crashed page would leave an invisible frameless window behind; reload it instead.
+  mainWindow.webContents.on('render-process-gone', (_, details) => {
+    logFailure('render-process-gone', new Error(details.reason))
+    if (details.reason !== 'clean-exit' && details.reason !== 'killed') mainWindow?.webContents.reload()
+  })
+  mainWindow.webContents.on('unresponsive', () => logFailure('renderer', new Error('The page stopped responding')))
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.on('show', ()=>{restoreWindowTopmost();syncNativeSurface()})
@@ -477,6 +505,11 @@ function createWindow(): void {
 
 function emitChanged(): void {
   mainWindow?.webContents.send(channels.dataChanged)
+  localServer?.notifyChanged()
+}
+
+/** For changes the window itself requested: it already holds the returned snapshot, so only the bridge is told. */
+function emitChangedFromWindow(): void {
   localServer?.notifyChanged()
 }
 
@@ -544,61 +577,8 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'deletePlannedTask': return database.deletePlannedTask(first as string)
     case 'createProject': return database.createProject(first as ProjectInput)
     case 'updateProject': return database.updateProject(first as ProjectUpdateInput)
-    case 'updateSettings': {
-      return applyAppSettings(first as AppSettings)
-    }
-    case 'saveAiKey': {
-      const clean = (first as string).trim()
-      if (!clean) database.deleteSecret('gemini_api_key')
-      else {
-        if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
-        database.setSecret('gemini_api_key', safeStorage.encryptString(clean).toString('base64'))
-      }
-      return database.getSnapshot()
-    }
-    case 'exportBackup': {
-      if (!mainWindow) return null
-      const date = localDateKey(Date.now())
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: database.getSettings().locale === 'uk' ? 'Зберегти резервну копію' : 'Save backup',
-        defaultPath: join(app.getPath('downloads'), `work-buddy-backup-${date}.workbuddy.json`),
-        filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
-      })
-      if (result.canceled || !result.filePath) return null
-      await writeFile(result.filePath, JSON.stringify(database.exportBackup(), null, 2), 'utf8')
-      return { path: result.filePath }
-    }
-    case 'chooseBackupImport': {
-      if (!mainWindow) return null
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: database.getSettings().locale === 'uk' ? 'Обрати резервну копію' : 'Choose backup',
-        properties: ['openFile'],
-        filters: [{ name: 'Work Buddy backup', extensions: ['json'] }]
-      })
-      const path = result.filePaths[0]
-      if (result.canceled || !path) return null
-      pendingBackup = database.parseBackup(await readFile(path, 'utf8'))
-      return database.getBackupPreview(pendingBackup)
-    }
-    case 'applyBackupImport': {
-      if (!pendingBackup) throw new Error('Choose a backup file first')
-      const result = database.importBackup(pendingBackup, first as BackupImportMode)
-      pendingBackup = null
-      return result
-    }
-    case 'exportDayCalendar': {
-      if (!mainWindow) return null
-      const date = first as string
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: database.getSettings().locale === 'uk' ? 'Експортувати день у календар' : 'Export day to calendar',
-        defaultPath: join(app.getPath('downloads'), `work-buddy-${date}.ics`),
-        filters: [{ name: 'Calendar file', extensions: ['ics'] }]
-      })
-      if (result.canceled || !result.filePath) return null
-      await writeFile(result.filePath, database.createDayCalendarIcs(date), 'utf8')
-      return { path: result.filePath }
-    }
-    case 'chooseNotificationSound': return chooseSoundFile()
+    // Settings, secrets, backups and native dialogs stay with the desktop window: the loopback
+    // bridge is for tracking only, so a stray local process cannot wipe or reconfigure the tracker.
     case 'suggestTask': return gemini.suggestTask(first as string)
     case 'interpretVoiceTask': return gemini.interpretVoiceTask(first as VoiceInput, second as string | undefined)
     case 'interpretPlannedVoice': return gemini.interpretVoiceTask(first as VoiceInput, undefined, true)
@@ -618,7 +598,6 @@ async function invokeExtensionApi(method: string, args: unknown[]): Promise<unkn
     case 'setWindowHeight':
     case 'setWindowEditor':
     case 'fitWindowToContent':
-    case 'setWindowView':
     case 'minimizeToTray': return undefined
     default: throw new Error(`Unsupported extension action: ${method}`)
   }
@@ -639,172 +618,184 @@ function registerIpc(): void {
   ipcMain.handle(channels.history, (_, days?: number) => database.getHistory(days))
   ipcMain.handle(channels.daySnapshot, (_, date: string) => database.getDaySnapshot(date))
   ipcMain.handle(channels.overtimeOverview, () => database.getOvertimeOverview())
+  ipcMain.handle(channels.weekReport, (_, weekStart: string) => {
+    if (typeof weekStart !== 'string') throw new Error('Invalid history date')
+    return database.getWeekReport(weekStart)
+  })
+  ipcMain.handle(channels.idlePending, () => pendingIdle)
+  ipcMain.handle(channels.idleDismiss, () => { pendingIdle = null })
+  ipcMain.handle(channels.idleResolve, (_, period: IdlePeriod, resolution: IdleResolution) => {
+    const result = database.resolveIdle(period, resolution)
+    pendingIdle = null
+    emitChangedFromWindow()
+    return result
+  })
   ipcMain.handle(channels.overtimeRedeemed, (_, date: string, redeemed: boolean) => {
     const result = database.setOvertimeRedeemed(date, redeemed)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.startWorkday, () => {
     const result = database.startWorkday()
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.endWorkday, () => {
     const result = database.endWorkday()
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.resumeWorkday, () => {
     const result = database.resumeWorkday()
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.resetWorkday, (_, workdayId: string) => {
     if (typeof workdayId !== 'string') throw new Error('Workday not found')
     const result = database.resetWorkday(workdayId)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.projectStats, () => database.getProjectStats())
   ipcMain.handle(channels.projectTasks, (_, projectId: string) => database.getProjectTasks(projectId))
   ipcMain.handle(channels.deleteProject, (_, id: string) => {
     const result = database.deleteProject(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.mergeProjects, (_, sourceId: string, targetId: string) => {
     const result = database.mergeProjects(sourceId, targetId)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.reorderProjects, (_, ids: string[]) => {
     const result = database.reorderProjects(ids)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updateWorkdayStart, (_, startedAt: number) => {
     const result = database.updateWorkdayStart(startedAt)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.startTask, (_, input: StartTaskInput) => {
     const result = database.startTask(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.pauseTask, (_, id: string) => {
     const result = database.pauseTask(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.resumeTask, (_, id: string, mode: StartMode) => {
     const result = database.resumeTask(id, mode)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.stopTask, (_, id: string) => {
     const result = database.stopTask(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.pauseAllTasks, () => {
     const result = database.pauseAllTasks()
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.stopAllTasks, () => {
     const result = database.stopAllTasks()
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.startRest, (_, type: RestType) => {
     const result = database.startRest(type)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.pauseRest, (_, id: string) => {
     const result = database.pauseRest(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.resumeRest, (_, id: string) => {
     const result = database.resumeRest(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.completeRest, (_, id: string) => {
     const result = database.completeRest(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.skipRest, (_, type: RestType) => {
     const result = database.skipRest(type)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updateRestStart, (_, id: string, startedAt: number) => {
     const result = database.updateRestStart(id, startedAt)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.setRestAlarmMuted, (_, id: string, muted: boolean) => {
     const result = database.setRestAlarmMuted(id, muted)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updateTask, (_, input: TaskUpdateInput) => {
     const result = database.updateTask(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.splitTask, (_, input: TaskSplitInput) => {
     const result = database.splitTask(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.mergeTasks, (_, input: TaskMergeInput) => {
     const result = database.mergeTasks(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.deleteTask, (_, id: string) => {
     const result = database.deleteTask(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.createPlannedTask, (_, input: PlannedTaskInput) => {
     const result = database.createPlannedTask(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updatePlannedTask, (_, input: PlannedTaskUpdateInput) => {
     const result = database.updatePlannedTask(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.deletePlannedTask, (_, id: string) => {
     const result = database.deletePlannedTask(id)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.createProject, (_, input: ProjectInput) => {
     const result = database.createProject(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updateProject, (_, input: ProjectUpdateInput) => {
     const result = database.updateProject(input)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.updateSettings, (_, settings: AppSettings) => {
     const result = applyAppSettings(settings)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.setGlobalShortcut, (_, shortcut: string) => {
     const result = applyAppSettings({ ...database.getSettings(), globalShortcut: shortcut }, true)
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.saveAiKey, (_, key: string) => {
@@ -814,7 +805,7 @@ function registerIpc(): void {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this device')
       database.setSecret('gemini_api_key', safeStorage.encryptString(clean).toString('base64'))
     }
-    emitChanged()
+    emitChangedFromWindow()
     return database.getSnapshot()
   })
   ipcMain.handle(channels.backupExport, async () => {
@@ -845,7 +836,7 @@ function registerIpc(): void {
     if (!pendingBackup) throw new Error('Choose a backup file first')
     const result = database.importBackup(pendingBackup, mode)
     pendingBackup = null
-    emitChanged()
+    emitChangedFromWindow()
     return result
   })
   ipcMain.handle(channels.calendarExportRange, async (_, from: string, to: string) => {
@@ -1023,7 +1014,7 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle(channels.windowHeight, (_, requestedHeight: number) => {
-    if (!mainWindow || compactWindow) return
+    if (!mainWindow || compactWindow || !Number.isFinite(requestedHeight)) return
     const current = settledBounds()
     const area = screen.getDisplayMatching(current).workArea
     const next = fitWindowHeight(current, area, requestedHeight, isBottomAnchored(current, area), 230)
@@ -1089,7 +1080,6 @@ function registerIpc(): void {
     animateBounds(next)
   })
   // Kept for preload compatibility: the renderer no longer drives window views through IPC.
-  ipcMain.handle(channels.windowView, () => undefined)
   ipcMain.handle(channels.chooseSound, () => chooseSoundFile())
   ipcMain.handle(channels.soundData, async () => {
     const path = database.getSettings().notifications.customSoundPath
@@ -1146,7 +1136,9 @@ else {
     createWindow()
     notchFollowTimer = setInterval(() => { followNotchCursor(); watchOpenNotchPointer() }, 80)
     // Other applications can change the native z-order after our window loses focus.
-    topmostTimer = setInterval(restoreWindowTopmost, 2000)
+    alwaysOnTopEnabled = database.getSettings().alwaysOnTop
+    app.setLoginItemSettings({ openAtLogin: database.getSettings().autoStart })
+    topmostTimer = setInterval(restoreWindowTopmost, 4000)
     screen.on('display-added', syncWindowMaxHeight)
     screen.on('display-removed', syncWindowMaxHeight)
     screen.on('display-metrics-changed', syncWindowMaxHeight)
@@ -1164,6 +1156,12 @@ else {
     reminders = new ReminderService(database, (sound, volume) => {
       if (sound === 'system') shell.beep()
       else mainWindow?.webContents.send(channels.playSound, sound, volume)
+    }, {
+      onIdleReturn: (period) => {
+        pendingIdle = period
+        mainWindow?.webContents.send(channels.idleDetected, period)
+      },
+      onDataChanged: emitChanged
     })
     reminders.start()
   }).catch((error: unknown) => {

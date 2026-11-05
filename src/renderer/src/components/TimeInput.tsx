@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { translator } from '../lib/i18n'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { Clock3 } from 'lucide-react'
@@ -18,11 +19,6 @@ interface TimeInputProps {
 
 const hours = Array.from({ length: 24 }, (_, value) => String(value).padStart(2, '0'))
 const minutes = Array.from({ length: 60 }, (_, value) => String(value).padStart(2, '0'))
-
-const labels = {
-  uk: { hours: 'Години', minutes: 'Хвилини', now: 'Зараз', previous: 'Попередня', done: 'Готово', clear: 'Без часу', type: 'ГГ:ХХ' },
-  en: { hours: 'Hours', minutes: 'Minutes', now: 'Now', previous: 'Prev', done: 'Done', clear: 'No time', type: 'HH:MM' }
-}
 
 function splitTime(value: string): [string, string] | null {
   const match = value.match(/^(\d{2}):(\d{2})$/)
@@ -71,7 +67,7 @@ export function TimeInput({ value, onChange, className, autoFocus = false, ariaL
   const [draft, setDraft] = useState(value)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuStyle = useAnchoredMenu(open, rootRef, menuRef)
-  const copy = labels[document.documentElement.lang === 'en' ? 'en' : 'uk']
+  const copy = translator(document.documentElement.lang === 'en' ? 'en' : 'uk')
   const current = splitTime(value)
   const hour = current?.[0] ?? ''
   const minute = current?.[1] ?? ''
@@ -127,22 +123,22 @@ export function TimeInput({ value, onChange, className, autoFocus = false, ariaL
         className="tp-typed"
         inputMode="numeric"
         value={draft}
-        placeholder={copy.type}
+        placeholder={copy('timeType')}
         aria-label={ariaLabel}
         onChange={(event) => type(event.target.value)}
         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setOpen(false) } }}
         onBlur={() => setDraft(value)}
       />
       <div className="tp-columns">
-        <Column items={hours} selected={hour} label={copy.hours} onPick={(item) => onChange(`${item}:${minute || '00'}`)} />
+        <Column items={hours} selected={hour} label={copy('timeHours')} onPick={(item) => onChange(`${item}:${minute || '00'}`)} />
         <span className="tp-colon">:</span>
-        <Column items={minutes} selected={minute} label={copy.minutes} onPick={(item) => onChange(`${hour || '00'}:${item}`)} />
+        <Column items={minutes} selected={minute} label={copy('timeMinutes')} onPick={(item) => onChange(`${hour || '00'}:${item}`)} />
       </div>
       <div className="tp-footer">
-        <button type="button" className="tp-secondary" onClick={setNow}>{copy.now}</button>
-        {previousTime && <button type="button" className="tp-secondary" onClick={() => onChange(previousTime)} title={previousTime}>{copy.previous}</button>}
-        {allowEmpty && <button type="button" className="tp-secondary tp-secondary--danger" onClick={() => { onChange(''); setOpen(false) }}>{copy.clear}</button>}
-        <button type="button" className="tp-done" onClick={() => setOpen(false)}>{copy.done}</button>
+        <button type="button" className="tp-secondary" onClick={setNow}>{copy('timeNow')}</button>
+        {previousTime && <button type="button" className="tp-secondary" onClick={() => onChange(previousTime)} title={previousTime}>{copy('timePrevious')}</button>}
+        {allowEmpty && <button type="button" className="tp-secondary tp-secondary--danger" onClick={() => { onChange(''); setOpen(false) }}>{copy('timeClear')}</button>}
+        <button type="button" className="tp-done" onClick={() => setOpen(false)}>{copy('timeDone')}</button>
       </div>
     </motion.div>}</AnimatePresence>, document.body)}
   </div>

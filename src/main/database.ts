@@ -31,8 +31,7 @@ import type {
   TaskSplitInput, TaskMergeInput,
   TaskUpdateInput,
   TimeInterval,
-  Workday
-} from '../shared/types'
+  Workday, IdlePeriod, IdleResolution, WeekReport, WeekReportDay } from '../shared/types'
 import { scheduledWorkdayDurationMs, workdayOvertimeMs } from '../shared/workday'
 import { localDateKey, localDateTimestamp, localDayBounds, localDaysBefore } from '../shared/local-date'
 
@@ -65,6 +64,9 @@ export const defaultSettings: AppSettings = {
   globalShortcut: 'CommandOrControl+Shift+T',
   notchEnabled: false,
   autoFitHeight: false,
+  defaultProjectId: null,
+  compact: { revealDelayMs: 600 },
+  pomodoro: { enabled: false, autoStartBreak: true },
   notch: {
     openOn: 'hover',
     hoverDelayMs: 400,
@@ -348,6 +350,11 @@ function deepSettings(raw?: string): AppSettings {
   const storedIdle: Record<string, unknown> = isRecord(stored.idle) ? stored.idle : {}
   const storedNotifications: Record<string, unknown> = isRecord(stored.notifications) ? stored.notifications : {}
   const storedAi: Record<string, unknown> = isRecord(stored.ai) ? stored.ai : {}
+  const storedCompact: Record<string, unknown> = isRecord(stored.compact) ? stored.compact : {}
+  const storedPomodoro: Record<string, unknown> = isRecord(stored.pomodoro) ? stored.pomodoro : {}
+  const revealDelayMs = typeof storedCompact.revealDelayMs === 'number' && Number.isFinite(storedCompact.revealDelayMs) && storedCompact.revealDelayMs >= 0 && storedCompact.revealDelayMs <= 10_000
+    ? Math.round(storedCompact.revealDelayMs)
+    : defaultSettings.compact.revealDelayMs
   const storedNotch: Record<string, unknown> = isRecord(stored.notch) ? stored.notch : {}
   const storedNotchActions: Record<string, unknown> = isRecord(storedNotch.actions) ? storedNotch.actions : {}
   const notchAction = (key: keyof AppSettings['notch']['actions']): boolean =>
@@ -380,6 +387,12 @@ function deepSettings(raw?: string): AppSettings {
     globalShortcut: isGlobalShortcut(stored.globalShortcut) ? stored.globalShortcut : defaultSettings.globalShortcut,
     notchEnabled: typeof stored.notchEnabled === 'boolean' ? stored.notchEnabled : defaultSettings.notchEnabled,
     autoFitHeight: typeof stored.autoFitHeight === 'boolean' ? stored.autoFitHeight : defaultSettings.autoFitHeight,
+    defaultProjectId: isId(stored.defaultProjectId) ? stored.defaultProjectId : null,
+    compact: { revealDelayMs },
+    pomodoro: {
+      enabled: typeof storedPomodoro.enabled === 'boolean' ? storedPomodoro.enabled : defaultSettings.pomodoro.enabled,
+      autoStartBreak: typeof storedPomodoro.autoStartBreak === 'boolean' ? storedPomodoro.autoStartBreak : defaultSettings.pomodoro.autoStartBreak
+    },
     notch: {
       openOn: storedNotch.openOn === 'click' ? 'click' : 'hover',
       hoverDelayMs: typeof storedNotch.hoverDelayMs === 'number' && Number.isFinite(storedNotch.hoverDelayMs)
@@ -486,14 +499,27 @@ export class WorkBuddyDatabase {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
+    // Another local reader (a backup tool, an explorer preview) must not turn into an immediate failure.
+    this.db.exec('PRAGMA busy_timeout = 3000')
     this.migrate()
   }
 
   close(): void {
+    try {
+      // Fold the write-ahead log back into the database so a copy of the file alone is complete.
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    } catch {
+      // Closing still succeeds; the log is replayed on the next open.
+    }
     this.db.close()
   }
 
+  /** Schema changes land together or not at all, so a crash mid-upgrade never leaves a half-migrated file. */
   private migrate(): void {
+    this.transaction(() => this.migrateSchema())
+  }
+
+  private migrateSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -1303,7 +1329,7 @@ export class WorkBuddyDatabase {
             `INSERT INTO tasks (id, title, project_id, planned_task_id, notes, tags_json, status, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`
           )
-          .run(taskId, input.title?.trim() ?? '', input.projectId ?? null, input.plannedTaskId ?? null, input.notes?.trim() ?? '', JSON.stringify(input.tags ?? []), now, now)
+          .run(taskId, input.title?.trim() ?? '', this.resolvedProjectId(input.projectId), input.plannedTaskId ?? null, input.notes?.trim() ?? '', JSON.stringify(input.tags ?? []), now, now)
         if (input.plannedTaskId) this.completePlannedTask(input.plannedTaskId, now)
       }
 
@@ -1491,9 +1517,6 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
-  hasTaskImport(key:string):boolean {
-    return Boolean(this.db.prepare('SELECT task_id FROM activity_task_imports WHERE source_key=?').get(key))
-  }
 
   /** Imports closed, reviewed ranges from an external producer as stopped tasks. Never starts a timer or workday. */
   importTasks(day:string,entries:TaskImportEntry[]):{snapshot:AppSnapshot;taskIds:string[];created:number} {
@@ -1999,6 +2022,122 @@ export class WorkBuddyDatabase {
       }
     }
     return total + end - start
+  }
+
+  /** The chosen project, or the default project from settings when the caller left it undefined. */
+  private resolvedProjectId(projectId: string | null | undefined): string | null {
+    if (projectId !== undefined) return projectId
+    const fallback = this.getSettings().defaultProjectId
+    if (!fallback) return null
+    return this.db.prepare('SELECT id FROM projects WHERE id = ? AND archived = 0').get(fallback) ? fallback : null
+  }
+
+  /**
+   * Cuts an idle stretch out of every task interval that overlaps it; tasks still running keep
+   * running from the moment the user came back. With `break` the stretch is also kept as a finished
+   * micro-break, so the break balance and the next break reminder count it.
+   */
+  resolveIdle(period: IdlePeriod, resolution: IdleResolution): AppSnapshot {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
+    if (!isRecord(period) || !isTimestamp(period.startedAt) || !isTimestamp(period.endedAt)) throw new Error('Invalid idle period')
+    const startedAt = Math.round(period.startedAt)
+    const endedAt = Math.min(Math.round(period.endedAt), now)
+    if (endedAt - startedAt < 60_000) throw new Error('Idle period is too short')
+    if (now - startedAt > 48 * 60 * 60_000) throw new Error('Idle period is too old')
+    if (resolution !== 'discard' && resolution !== 'break') throw new Error('Unknown idle resolution')
+    this.transaction(() => {
+      const rows = this.db.prepare('SELECT * FROM time_intervals WHERE started_at < ? AND (ended_at IS NULL OR ended_at > ?)').all(endedAt, startedAt) as IntervalRow[]
+      const setEnd = this.db.prepare('UPDATE time_intervals SET ended_at = ? WHERE id = ?')
+      const setStart = this.db.prepare('UPDATE time_intervals SET started_at = ? WHERE id = ?')
+      const remove = this.db.prepare('DELETE FROM time_intervals WHERE id = ?')
+      const insert = this.db.prepare('INSERT INTO time_intervals (id, task_id, started_at, ended_at) VALUES (?, ?, ?, ?)')
+      for (const row of rows) {
+        const rowEnd = row.ended_at
+        const startsBefore = row.started_at < startedAt
+        const endsAfter = rowEnd === null || rowEnd > endedAt
+        if (startsBefore && endsAfter) {
+          setEnd.run(startedAt, row.id)
+          insert.run(randomUUID(), row.task_id, endedAt, rowEnd)
+        } else if (startsBefore) setEnd.run(startedAt, row.id)
+        else if (endsAfter) setStart.run(endedAt, row.id)
+        else remove.run(row.id)
+      }
+      if (resolution === 'break') {
+        const id = randomUUID()
+        this.db.prepare("INSERT INTO rest_sessions (id, type, status, planned_minutes, created_at, ended_at, resume_task_ids_json) VALUES (?, 'break', 'completed', ?, ?, ?, '[]')")
+          .run(id, Math.max(1, Math.round((endedAt - startedAt) / 60_000)), startedAt, endedAt)
+        this.db.prepare('INSERT INTO rest_intervals (id, rest_id, started_at, ended_at) VALUES (?, ?, ?, ?)').run(randomUUID(), id, startedAt, endedAt)
+      }
+    })
+    return this.getSnapshot()
+  }
+
+  /** Worked, rested and overtime totals for the Monday-to-Sunday week that starts on the given day. */
+  getWeekReport(weekStart: string): WeekReport {
+    const now = Date.now()
+    this.normalizeStaleWorkday(now)
+    const anchor = localDateTimestamp(weekStart)
+    const [rangeStart] = localDayBounds(anchor)
+    const rangeEnd = localDayBounds(localDaysBefore(rangeStart, -6))[1]
+    const previousStart = localDaysBefore(rangeStart, 7)
+    const coverage = (ranges: Array<[number, number]>): number => {
+      const sorted = ranges.filter(([start, end]) => end > start).sort((a, b) => a[0] - b[0])
+      let total = 0
+      let current: [number, number] | undefined
+      for (const [start, end] of sorted) {
+        if (current && start <= current[1]) current[1] = Math.max(current[1], end)
+        else {
+          if (current) total += current[1] - current[0]
+          current = [start, end]
+        }
+      }
+      return current ? total + current[1] - current[0] : 0
+    }
+    const intervals = this.db.prepare(
+      `SELECT i.started_at, i.ended_at, t.project_id
+       FROM time_intervals i JOIN tasks t ON t.id = i.task_id
+       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)`
+    ).all(rangeEnd, previousStart) as Array<{ started_at: number; ended_at: number | null; project_id: string | null }>
+    const clip = (row: { started_at: number; ended_at: number | null }, from: number, to: number): [number, number] =>
+      [Math.max(row.started_at, from), Math.min(row.ended_at ?? now, now, to)]
+    const days: WeekReportDay[] = []
+    const perProject = new Map<string | null, Array<[number, number]>>()
+    for (let dayStart = rangeStart; dayStart < rangeEnd; dayStart = localDayBounds(dayStart)[1]) {
+      const [, dayEnd] = localDayBounds(dayStart)
+      days.push({ date: localDateKey(dayStart), workedMs: coverage(intervals.map((row) => clip(row, dayStart, dayEnd))), breakMs: 0, lunchMs: 0, overtimeMs: 0 })
+    }
+    for (const row of intervals) {
+      const range = clip(row, rangeStart, rangeEnd)
+      if (range[1] <= range[0]) continue
+      perProject.set(row.project_id, [...perProject.get(row.project_id) ?? [], range])
+    }
+    const rests = this.db.prepare(
+      `SELECT r.type, i.started_at, i.ended_at FROM rest_intervals i JOIN rest_sessions r ON r.id = i.rest_id
+       WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)`
+    ).all(rangeEnd, rangeStart) as Array<{ type: RestType; started_at: number; ended_at: number | null }>
+    for (const day of days) {
+      const [dayStart, dayEnd] = localDayBounds(localDateTimestamp(day.date))
+      for (const rest of rests) {
+        const [start, end] = clip(rest, dayStart, dayEnd)
+        if (end <= start) continue
+        if (rest.type === 'lunch') day.lunchMs += end - start
+        else day.breakMs += end - start
+      }
+    }
+    const overtimeByDate = new Map(this.getOvertimeOverview().days.map((day) => [day.date, day.overtimeMs]))
+    for (const day of days) day.overtimeMs = overtimeByDate.get(day.date) ?? 0
+    const sum = (key: 'workedMs' | 'breakMs' | 'lunchMs' | 'overtimeMs'): number => days.reduce((total, day) => total + day[key], 0)
+    return {
+      weekStart: localDateKey(rangeStart),
+      days,
+      projects: [...perProject.entries()].map(([projectId, ranges]) => ({ projectId, ms: coverage(ranges) })).filter((entry) => entry.ms > 0).sort((a, b) => b.ms - a.ms),
+      totalMs: sum('workedMs'),
+      previousTotalMs: coverage(intervals.map((row) => clip(row, previousStart, rangeStart))),
+      breakMs: sum('breakMs'),
+      lunchMs: sum('lunchMs'),
+      overtimeMs: sum('overtimeMs')
+    }
   }
 
   private getOpenWorkday(): WorkdayRow | undefined {

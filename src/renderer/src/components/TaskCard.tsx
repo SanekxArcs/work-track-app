@@ -56,6 +56,7 @@ export function TaskCard({ task, projects, now, t, onPause, onResume, onEdit, co
           <AnimatedDuration className="task-time" ms={taskDuration(task, now)} />
           <AnimatedText className="task-status" text={isRunning ? t('running') : task.status === 'stopped' ? t('taskCompleted') : t('paused')} />
         </div>
+        {task.tags.length > 0 && <div className="tag-row">{task.tags.map((tag) => <span className="tag-chip" key={tag}>#{tag}</span>)}</div>}
 
       </div>
       <div className="task-card__controls no-drag" onDoubleClick={(event) => event.stopPropagation()}>

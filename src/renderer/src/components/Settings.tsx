@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SettingsSection } from './SettingsSection'
 import { AboutSection } from './AboutSection'
 import { AnimatePresence, motion } from 'motion/react'
-import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2, X } from 'lucide-react'
+import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderKanban, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Timer, Trash2, Upload, Volume2, X } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
@@ -13,6 +13,7 @@ import { ColorPicker } from './ColorPicker'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CustomSelect } from './CustomSelect'
 import { TimeInput } from './TimeInput'
+import { ProjectPicker } from './ProjectPicker'
 
 interface SettingsProps {
   snapshot: AppSnapshot
@@ -128,23 +129,34 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     return window.workBuddy.onExtensionServerStatus(setExtensionServer)
   }, [])
 
-  useEffect(() => {
-    const serialized = JSON.stringify(settings)
-    if (serialized === lastSynced.current) return
-    lastSynced.current = serialized
+  // Typing into a field changes settings on every keystroke; one save per pause is enough for the
+  // main process, which rebuilds the tray and re-applies window flags on each write.
+  const pendingSave = useRef<AppSettings | null>(null)
+  const persist = (next: AppSettings): void => {
+    pendingSave.current = null
     const revision = ++saveRevision.current
-    setSaveState('saving')
-    void window.workBuddy.updateSettings(settings).then((result) => {
+    void window.workBuddy.updateSettings(next).then((result) => {
       if (revision !== saveRevision.current) return
       onSnapshot(result)
       setSaveState('saved')
     }).catch(() => {
       if (revision === saveRevision.current) setSaveState('error')
     })
+  }
+  useEffect(() => {
+    const serialized = JSON.stringify(settings)
+    if (serialized === lastSynced.current) return
+    lastSynced.current = serialized
+    pendingSave.current = settings
+    setSaveState('saving')
+    const timer = window.setTimeout(() => persist(settings), 300)
+    return () => window.clearTimeout(timer)
   }, [settings])
+  // Leaving the page before the pause must not drop the last edit.
+  useEffect(() => () => { if (pendingSave.current) persist(pendingSave.current) }, [])
 
   const patch = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void => setSettings((current) => ({ ...current, [key]: value }))
-  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications' | 'notch'>(key: K, value: Partial<AppSettings[K]>): void => {
+  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications' | 'notch' | 'compact' | 'pomodoro'>(key: K, value: Partial<AppSettings[K]>): void => {
     setSettings((current) => ({ ...current, [key]: { ...current[key], ...value } }))
   }
 
@@ -392,6 +404,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           {notchActionRows.map(([key, label]) => <div className="setting-line setting-line--sub" key={key}><span>{t(label)}</span><Toggle label={t(label)} checked={settings.notch.actions[key]} onChange={(value) => nested('notch', { actions: { ...settings.notch.actions, [key]: value } })} /></div>)}
         </div></Collapse>
         <div className="setting-line"><div><strong>{t('autoFitHeight')}</strong><p>{t('autoFitHeightBody')}</p></div><Toggle label={t('autoFitHeight')} checked={settings.autoFitHeight} onChange={(value) => patch('autoFitHeight', value)} /></div>
+        <div className="setting-line"><div><strong>{t('compactRevealDelay')}</strong><p>{t('compactRevealDelayBody')}</p></div><NumberField value={settings.compact.revealDelayMs} min={0} onChange={(value) => nested('compact', { revealDelayMs: Math.min(10_000, value) })} suffix={t('milliseconds')} /></div>
         <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
         {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
       </SettingsSection>
@@ -425,6 +438,10 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <div><span>{t('dailyBreakLimit')}</span><NumberField value={settings.breaks.dailyMinutes} onChange={(value) => nested('breaks', { dailyMinutes: value })} suffix={t('minutes')} /></div>
         </div>
       </SettingsSection>
+      <SettingsSection id="pomodoro" icon={<Timer size={17} />} title={t('pomodoro')} body={t('pomodoroBody')} control={<Toggle label={t('pomodoro')} checked={settings.pomodoro.enabled} onChange={(value) => nested('pomodoro', { enabled: value })} />} className="settings-section--pomodoro">
+        <div className="setting-line"><div><strong>{t('pomodoroAutoBreak')}</strong><p>{t('pomodoroAutoBreakBody')}</p></div><Toggle label={t('pomodoroAutoBreak')} checked={settings.pomodoro.autoStartBreak} onChange={(value) => nested('pomodoro', { autoStartBreak: value })} /></div>
+        <Collapse open={settings.pomodoro.enabled && !settings.breaks.enabled}><p className="form-error">{t('pomodoroNeedsBreaks')}</p></Collapse>
+      </SettingsSection>
       <SettingsSection id="lunch" icon={<Coffee size={17} />} title={t('lunch')} body={t('lunchBody')} control={<Toggle label={t('lunch')} checked={settings.lunch.enabled} onChange={(value) => nested('lunch', { enabled: value })} />} className="settings-section--lunch">
         <div className="segment-control segment-control--small">
           <button className={settings.lunch.mode === 'clock' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'clock' })}>{t('atTime')}</button>
@@ -451,6 +468,9 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction} title={t('addAction')} aria-label={t('addAction')}><Plus size={16} /></button></div>
       </SettingsSection>
       <h4 className="settings-group">{t('settingsGroupProjects')}</h4>
+      <SettingsSection id="default-project" icon={<FolderKanban size={17} />} title={t('defaultProject')} body={t('defaultProjectBody')} defaultOpen>
+        <ProjectPicker value={settings.defaultProjectId ?? ''} snapshot={snapshot} ariaLabel={t('defaultProject')} activeOnly t={t} onChange={(value) => patch('defaultProjectId', value || null)} onSnapshot={onSnapshot} onError={() => undefined} />
+      </SettingsSection>
       <SettingsSection id="palette" icon={<Palette size={17} />} title={t('projectPalette')} body={t('projectPaletteBody')}>
         <div className="palette-grid">
           <AnimatePresence initial={false} mode="popLayout">
