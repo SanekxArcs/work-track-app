@@ -3,6 +3,7 @@ import { Cloud, RefreshCw } from 'lucide-react'
 import type { ConvexSyncStatus } from '@shared/convex-sync'
 import { translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
+import { SettingsSection } from './SettingsSection'
 
 export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.JSX.Element {
   const uk = locale === 'uk'
@@ -37,8 +38,7 @@ export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.J
     finally { setBusy(false) }
   }
   const date = (time: number | null): string => time ? new Date(time).toLocaleString(uk ? 'uk-UA' : 'en-GB') : '—'
-  return <section className="settings-section convex-sync-settings">
-    <div className="settings-title"><Cloud size={17} /><div><h3>{uk ? 'Синхронізація з Convex' : 'Convex sync'}</h3><p>{uk ? 'Копія робочих даних у хмарі для інших застосунків.' : 'A cloud copy of your work data for other apps.'}</p></div></div>
+  return <SettingsSection id="convex" icon={<Cloud size={17} />} title={uk ? 'Синхронізація з Convex' : 'Convex sync'} body={uk ? 'Копія робочих даних у хмарі для інших застосунків.' : 'A cloud copy of your work data for other apps.'} className="convex-sync-settings">
     <label className="setting-line"><span>{uk ? 'Автоматичне завантаження' : 'Automatic upload'}</span><button type="button" role="switch" aria-checked={enabled} aria-label={uk ? 'Автоматичне завантаження' : 'Automatic upload'} className={`toggle ${enabled ? 'toggle--on' : ''}`} disabled={busy} onClick={() => setEnabled(!enabled)}><span /></button></label>
     <label className="convex-field"><span>{uk ? 'Адреса Convex' : 'Convex site URL'}</span><input placeholder="https://your-deployment.convex.site" value={siteUrl} disabled={busy} onChange={(event) => setSiteUrl(event.target.value)} /></label>
     <label className="convex-field"><span>{uk ? 'Ключ запису' : 'Write key'}</span><input type="password" autoComplete="off" placeholder={status?.hasKey ? (uk ? 'Ключ збережено' : 'Key saved') : (uk ? 'Щонайменше 32 символи' : 'At least 32 characters')} value={key} disabled={busy} onChange={(event) => setKey(event.target.value)} /></label>
@@ -47,5 +47,5 @@ export function ConvexSyncSettings({ locale }: { locale: 'uk' | 'en' }): React.J
     <div className="convex-actions"><button type="button" className="secondary-button" disabled={!status || busy || status.syncing} onClick={() => void save(false)}>{uk ? 'Зберегти' : 'Save'}</button><button type="button" className="primary-button" disabled={!status || busy || status.syncing || !enabled} onClick={() => void save(true)}><RefreshCw size={14} />{busy || status?.syncing ? (uk ? 'Синхронізація…' : 'Syncing…') : (uk ? 'Синхронізувати зараз' : 'Sync now')}</button></div>
     {status && <><p className="settings-note">{uk ? 'Остання успішна: ' : 'Last successful: '}{date(status.lastSyncedAt)}<br />{uk ? 'Наступна спроба: ' : 'Next attempt: '}{date(status.nextSyncAt)}</p><label className="convex-field"><span>{uk ? 'ID джерела для інших застосунків' : 'Source ID for other apps'}</span><input readOnly value={status.sourceId} onFocus={(event) => event.target.select()} /></label></>}
     {(message || status?.error) && <p className="settings-note" role="status">{message || status?.error}</p>}
-  </section>
+  </SettingsSection>
 }

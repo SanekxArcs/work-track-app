@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { AlarmClock, ArrowRightLeft, Check, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, RotateCcw, Sparkles, Undo2, X } from 'lucide-react'
+import { AlarmClock, ArrowRightLeft, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Coffee, Download, Dumbbell, GitBranch, Layers3, Pencil, RedoDot, RotateCcw, Sparkles, Undo2, X } from 'lucide-react'
 import type { AppSnapshot, HistoryDay, OvertimeOverview, Project, Task } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
@@ -13,6 +13,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { HistoryPanel } from './HistoryPanel'
 import { TimeInput } from './TimeInput'
 import { RestSummary } from './RestSummary'
+import { SettingsSection as FoldCard } from './SettingsSection'
 
 interface DaySummaryProps {
   snapshot: AppSnapshot
@@ -63,6 +64,12 @@ function historyLabel(value: string, locale: 'uk' | 'en'): string {
   return new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'en-US', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(year, month - 1, day, 12))
 }
 
+/** The calendar day `offset` days after a local YYYY-MM-DD key. */
+function shiftDateKey(value: string, offset: number): string {
+  const [year, month, day] = value.split('-').map(Number)
+  return localDateKey(new Date(year, month - 1, day + offset, 12).getTime())
+}
+
 function scheduleSegments(snapshot: AppSnapshot, reference: number, extraLunchMs = 0): { start: number; end: number; segments: ScheduleSegment[]; lunchMinutes: number } {
   const { workday, lunch } = snapshot.settings
   // The day starts with its first session; gaps between sessions within the plan move the end.
@@ -103,6 +110,12 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   const [resetError, setResetError] = useState('')
   const [timelineLayout, setTimelineLayout] = useState<'lanes' | 'overlay'>('lanes')
   const [editingWorkdayStart, setEditingWorkdayStart] = useState(false)
+  const datePicker = useRef<HTMLInputElement>(null)
+  const openDatePicker = (): void => {
+    const input = datePicker.current
+    if (!input) return
+    try { input.showPicker() } catch { input.focus() }
+  }
   const [workdayStartTime, setWorkdayStartTime] = useState('')
   const [workdayStartError, setWorkdayStartError] = useState('')
   const isHistorical = selectedDate !== todayKey
@@ -292,7 +305,21 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
   ]
 
   return (
-    <motion.div className={`page-stack day-summary ${dayReady ? '' : 'day-summary--pending'}`} aria-busy={!dayReady} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
+    <motion.div className={`page-stack day-summary ${dayReady ? '' : 'day-summary--pending'}`} aria-busy={!dayReady} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} transition={{ duration: 0.16, ease }}>
+      <nav className="day-nav" aria-label={t('pickDate')}>
+        <button type="button" className="day-nav__arrow" onClick={() => setSelectedDate(shiftDateKey(selectedDate, -1))} title={t('prevDay')} aria-label={t('prevDay')}><ChevronLeft size={16} /></button>
+        <button type="button" className="day-nav__date" onClick={openDatePicker} title={t('pickDate')}>
+          <CalendarDays size={13} />
+          <strong>{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</strong>
+          {isHistorical && <small>{historyLabel(todayKey, reportSnapshot.settings.locale)}</small>}
+          <input ref={datePicker} type="date" tabIndex={-1} aria-hidden="true" max={todayKey} value={selectedDate} onChange={(event) => { if (event.target.value && event.target.value <= todayKey) setSelectedDate(event.target.value) }} />
+        </button>
+        {isHistorical && <button type="button" className="day-nav__today" onClick={() => setSelectedDate(todayKey)}>{t('today')}</button>}
+        <button type="button" className="day-nav__arrow" disabled={!isHistorical} onClick={() => setSelectedDate(shiftDateKey(selectedDate, 1))} title={t('nextDay')} aria-label={t('nextDay')}><ChevronRight size={16} /></button>
+      </nav>
+
+      {isHistorical && dayReady && !hasDayDetails && <section className="empty-state empty-state--day"><div className="empty-state__art"><span /><span /><span /></div><h2>{t('noRecordsThatDay')}</h2><p>{t('noRecordsThatDayBody')}</p></section>}
+
       {hasDayDetails && <section className="day-hero">
         <div>
           <span className="eyebrow">{isHistorical ? historyLabel(selectedDate, reportSnapshot.settings.locale) : t('today')}</span>
@@ -429,13 +456,11 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
       </section>
 
       <StackCollapse open={canShowAiSummary}>
-        <section className="panel ai-summary-panel">
-          <div className="section-heading"><div><span className="eyebrow">Gemini</span><h3>{t('aiDaySummary')}</h3></div><Sparkles size={16} /></div>
-          <Collapse open={!aiSummary}><p>{t('aiDaySummaryBody')}</p></Collapse>
+        <FoldCard id="day:ai" icon={<Sparkles size={17} />} title={t('aiDaySummary')} body={aiSummary ? undefined : t('aiDaySummaryBody')} className="settings-section--ai ai-summary-panel" defaultOpen>
           <Collapse open={Boolean(aiSummary)}><div className="ai-summary-copy">{aiSummary}</div></Collapse>
           <Collapse open={Boolean(aiError)}><p className="ai-error">{aiError}</p></Collapse>
           <button className="secondary-button wide" disabled={aiBusy || tasks.length === 0} onClick={generateSummary}><AnimatedText text={aiBusy ? t('aiThinking') : t('generateSummary')} /></button>
-        </section>
+        </FoldCard>
       </StackCollapse>
 
       <ConfirmDialog
@@ -450,9 +475,10 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         onCancel={() => setResetOpen(false)}
       />
 
-      <HistoryPanel days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
-      <section className="panel calendar-range-export">
-        <div className="section-heading"><div><span className="eyebrow">.ics</span><h3>{t('calendarRangeTitle')}</h3></div><Download size={16} /></div>
+      <FoldCard id="day:history" icon={<CalendarDays size={17} />} title={t('workHistory')} body={t('workHistoryBody')} className="history-fold">
+        <HistoryPanel embedded days={history} overtimeDays={overtimeOverview.days} selectedDate={selectedDate} locale={reportSnapshot.settings.locale} t={t} onSelect={setSelectedDate} />
+      </FoldCard>
+      <FoldCard id="day:export" icon={<Download size={17} />} title={t('calendarRangeTitle')} className="settings-section--backup calendar-range-export">
         <div className="calendar-range-presets">
           {([['presetDay', 0, 0], ['presetLast7', -6, 0], ['presetLast30', -29, 0]] as const).map(([label, fromOffset]) => {
             const from = localDateKey(localDaysBefore(now, -fromOffset))
@@ -468,7 +494,7 @@ export function DaySummary({ snapshot, now, t, onStartDay, onContinueDay, onEndD
         <button className="day-calendar-button" disabled={calendarExporting || exportInvalid} onClick={() => void exportCalendar()}><Download size={14} /><AnimatedText text={calendarExporting ? t('calendarExporting') : t('calendarExport')} /></button>
         <StackCollapse gap={10} open={exportTo >= todayKey && (snapshot.tasks.some((task) => task.status === 'running') || snapshot.rests.some((rest) => rest.status === 'running'))}><p className="calendar-export-status">{t('calendarExportRunningHint')}</p></StackCollapse>
         <StackCollapse gap={10} open={Boolean(calendarExportStatus)}><p className="calendar-export-status">{calendarExportStatus}</p></StackCollapse>
-      </section>
+      </FoldCard>
     </motion.div>
   )
 }

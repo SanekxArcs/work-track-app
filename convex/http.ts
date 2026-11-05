@@ -8,7 +8,7 @@ import {
   validateActivityEnvelope,
   validActivityId,
   validActivityDay
-} from '../src/shared/activity'
+} from './activity-envelope'
 import { MAX_SYNC_BYTES, validateSnapshot, validKeys } from './validation'
 
 const http = httpRouter()

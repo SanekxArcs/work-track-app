@@ -397,7 +397,7 @@ export function ProjectsPage({ snapshot, now, t, onSnapshot }: ProjectsPageProps
   }
 
   return (
-    <motion.div className="page-stack projects-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }}>
+    <motion.div className="page-stack projects-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} transition={{ duration: 0.16, ease }}>
       <div className="projects-toolbar">
         <label className="projects-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('searchProjects')} aria-label={t('searchProjects')} /></label>
         <button className="icon-button icon-button--accent" onClick={beginCreate} title={t('newProject')} aria-label={t('newProject')}><Plus size={16} /></button>

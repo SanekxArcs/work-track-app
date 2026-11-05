@@ -13,6 +13,8 @@ interface HistoryPanelProps {
   locale: 'uk' | 'en'
   t: Translator
   onSelect: (date: string) => void
+  /** Rendered inside another card: no outer panel, heading or intro of its own. */
+  embedded?: boolean
 }
 
 function labelForDate(value: string, locale: 'uk' | 'en'): string {
@@ -46,7 +48,7 @@ function weekdayIndex(date: string): number {
   return (new Date(year, month - 1, day, 12).getDay() + 6) % 7
 }
 
-export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSelect }: HistoryPanelProps): React.JSX.Element {
+export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSelect, embedded = false }: HistoryPanelProps): React.JSX.Element {
   const [range, setRange] = useState<Range>(storedRange)
   const visibleDays = days.slice(-range)
   // Rows are weekdays with Monday on top, so pad the first column up to the first day's weekday.
@@ -60,9 +62,10 @@ export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSe
   const recentDays = [...days].reverse().filter((day) => day.workedMs > 0).slice(0, 6)
   const unredeemedOvertime = new Map(overtimeDays.filter((day) => !day.redeemed && day.overtimeMs > 0).map((day) => [day.date, day.overtimeMs]))
 
-  return <section className="panel history-panel">
-    <div className="section-heading"><div><span className="eyebrow">{t('historyEyebrow')}</span><h3>{t('workHistory')}</h3></div><CalendarDays size={16} /></div>
-    <p>{t('workHistoryBody')}</p>
+  const Wrapper = embedded ? 'div' : 'section'
+  return <Wrapper className={`history-panel ${embedded ? 'history-panel--embedded' : 'panel'}`}>
+    {!embedded && <><div className="section-heading"><div><span className="eyebrow">{t('historyEyebrow')}</span><h3>{t('workHistory')}</h3></div><CalendarDays size={16} /></div>
+    <p>{t('workHistoryBody')}</p></>}
     <div className="history-range" role="group" aria-label={t('historyRange')}>
       {RANGES.map((item) => <button key={item} type="button" className={range === item ? 'active' : ''} onClick={() => chooseRange(item)}>{item}</button>)}
     </div>
@@ -79,5 +82,5 @@ export function HistoryPanel({ days, overtimeDays, selectedDate, locale, t, onSe
     {recentDays.length > 0 && <div className="history-recent">
       {recentDays.map((day) => <button key={day.date} className={selectedDate === day.date ? 'selected' : ''} onClick={() => onSelect(day.date)}><span>{labelForDate(day.date, locale)}</span><strong>{formatDuration(day.workedMs, true, locale)}</strong></button>)}
     </div>}
-  </section>
+  </Wrapper>
 }

@@ -1,7 +1,7 @@
 import { Notification, powerMonitor } from 'electron'
 import type { AppSettings, Locale, NotificationSound, WellnessAction } from '../shared/types'
 import { breakStreakStartedAt, dueRestTypes, restRemaining } from '../shared/rest'
-import { scheduledWorkdayClockEndAt, scheduledWorkdayEndAt } from '../shared/workday'
+import { isScheduledWorkday, scheduledWorkdayClockEndAt, scheduledWorkdayEndAt } from '../shared/workday'
 import type { WorkBuddyDatabase } from './database'
 import { staleReminderKeys } from './reminder-schedule'
 
@@ -153,8 +153,8 @@ export class ReminderService {
     const workday = snapshot.workday
     const openWorkday = workday?.endedAt === null
 
-    // Any workday today, even an ended one, means the day has already started.
-    if (!workday && settings.workday.startReminder && nowMinute >= minuteOfDay(settings.workday.startTime)) {
+    // Any workday today, even an ended one, means the day has already started. Days off stay quiet.
+    if (!workday && settings.workday.startReminder && isScheduledWorkday(settings, now) && nowMinute >= minuteOfDay(settings.workday.startTime)) {
       this.once(now, 'start', () => this.show(text.startTitle, text.startBody))
     }
     const scheduledEndAt = scheduledWorkdayEndAt(settings, snapshot.workday, snapshot.rests, now)

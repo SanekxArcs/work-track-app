@@ -1,7 +1,9 @@
 import { ConvexSyncSettings } from './ConvexSyncSettings'
 import { useEffect, useRef, useState } from 'react'
+import { SettingsSection } from './SettingsSection'
+import { AboutSection } from './AboutSection'
 import { AnimatePresence, motion } from 'motion/react'
-import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2 } from 'lucide-react'
+import { Archive, BellRing, BriefcaseBusiness, Check, Coffee, Copy, Download, Dumbbell, FolderOpen, Info, KeyRound, Laptop2, Languages, Palette, Play, PlugZap, Plus, Shapes, Sparkles, Tags, Trash2, Upload, Volume2, X } from 'lucide-react'
 import type { AppSettings, AppSnapshot, BackupPreview, ExtensionServerStatus, GeminiModel, Locale, NotificationSound, WellnessAction } from '@shared/types'
 import type { Translator } from '../lib/i18n'
 import { errorText } from '../lib/errors'
@@ -17,6 +19,8 @@ interface SettingsProps {
   t: Translator
   onSnapshot: (snapshot: AppSnapshot) => void
 }
+
+const notchActionRows = [['day', 'notchActionDay'], ['lunch', 'notchActionLunch'], ['break', 'notchActionBreak'], ['parallel', 'notchActionParallel'], ['switch', 'notchActionSwitch'], ['hide', 'notchActionHide']] as const
 
 function Toggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (checked: boolean) => void }): React.JSX.Element {
   return <button type="button" role="switch" aria-checked={checked} aria-label={label} className={`toggle ${checked ? 'toggle--on' : ''}`} onClick={() => onChange(!checked)}><motion.span layout transition={{ type: 'spring', stiffness: 500, damping: 32 }} /></button>
@@ -140,7 +144,7 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   }, [settings])
 
   const patch = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void => setSettings((current) => ({ ...current, [key]: value }))
-  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications'>(key: K, value: Partial<AppSettings[K]>): void => {
+  const nested = <K extends 'workday' | 'breaks' | 'lunch' | 'idle' | 'ai' | 'notifications' | 'notch'>(key: K, value: Partial<AppSettings[K]>): void => {
     setSettings((current) => ({ ...current, [key]: { ...current[key], ...value } }))
   }
 
@@ -200,10 +204,19 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
     }))
   }
 
-  const addColor = (): void => {
-    if (settings.projectColors.some((color) => color.toLowerCase() === newColor.toLowerCase())) return
-    patch('projectColors', [...settings.projectColors, newColor])
-  }
+  // The native picker fires React's onChange on every drag; only its final "change" adds a colour.
+  const newColorInput = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const input = newColorInput.current
+    if (!input) return
+    const commit = (): void => {
+      const color = input.value.toLowerCase()
+      setNewColor(color)
+      setSettings((current) => current.projectColors.some((item) => item.toLowerCase() === color) ? current : { ...current, projectColors: [...current.projectColors, color] })
+    }
+    input.addEventListener('change', commit)
+    return () => input.removeEventListener('change', commit)
+  }, [])
 
   const saveKey = async (): Promise<void> => {
     try {
@@ -359,41 +372,30 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
   const uk = settings.locale === 'uk'
 
   return (
-    <motion.div className="page-stack settings-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }}>
-      <section className="settings-section">
-        <div className="settings-title"><Languages size={17} /><div><h3>{t('language')}</h3></div></div>
+    <motion.div className="page-stack settings-page" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} transition={{ duration: 0.16, ease }}>
+      <h4 className="settings-group">{t('settingsGroupApp')}</h4>
+      <SettingsSection id="language" icon={<Languages size={17} />} title={t('language')}>
         <div className="segment-control">
           <button className={settings.locale === 'uk' ? 'active' : ''} onClick={() => setLocale('uk')}>{t('ukrainian')}</button>
           <button className={settings.locale === 'en' ? 'active' : ''} onClick={() => setLocale('en')}>{t('english')}</button>
         </div>
-      </section>
-
-      <section className="settings-section">
-        <div className="settings-title"><Laptop2 size={17} /><div><h3>{t('appBehavior')}</h3></div></div>
+      </SettingsSection>
+      <SettingsSection id="behavior" icon={<Laptop2 size={17} />} title={t('appBehavior')}>
         <div className="setting-line"><span>{t('alwaysOnTop')}</span><Toggle label={t('alwaysOnTop')} checked={settings.alwaysOnTop} onChange={(value) => patch('alwaysOnTop', value)} /></div>
         <div className="setting-line"><span>{t('autoStart')}</span><Toggle label={t('autoStart')} checked={settings.autoStart} onChange={(value) => patch('autoStart', value)} /></div>
         <div className="setting-line"><div><strong>{t('notchLook')}</strong><p>{t('notchLookBody')}</p></div><Toggle label={t('notchLook')} checked={settings.notchEnabled} onChange={(value) => patch('notchEnabled', value)} /></div>
+        <Collapse open={settings.notchEnabled}><div className="notch-settings">
+          <div className="setting-line"><div><strong>{t('notchOpenOn')}</strong><p>{t('notchOpenOnBody')}</p></div><div className="segment-control"><button className={settings.notch.openOn === 'hover' ? 'active' : ''} onClick={() => nested('notch', { openOn: 'hover' })}>{t('notchOpenHover')}</button><button className={settings.notch.openOn === 'click' ? 'active' : ''} onClick={() => nested('notch', { openOn: 'click' })}>{t('notchOpenClick')}</button></div></div>
+          <Collapse open={settings.notch.openOn === 'hover'}><div className="setting-line"><div><strong>{t('notchHoverDelay')}</strong><p>{t('notchHoverDelayBody')}</p></div><NumberField value={settings.notch.hoverDelayMs} min={0} onChange={(value) => nested('notch', { hoverDelayMs: Math.min(10_000, value) })} suffix={t('milliseconds')} /></div></Collapse>
+          <div className="setting-line"><div><strong>{t('notchActions')}</strong><p>{t('notchActionsBody')}</p></div></div>
+          <div className="setting-line"><div><strong>{t('notchHideSeconds')}</strong><p>{t('notchHideSecondsBody')}</p></div><NumberField value={settings.notch.hideSeconds} min={1} onChange={(value) => nested('notch', { hideSeconds: Math.min(600, value) })} suffix={t('secondsShort')} /></div>
+          {notchActionRows.map(([key, label]) => <div className="setting-line setting-line--sub" key={key}><span>{t(label)}</span><Toggle label={t(label)} checked={settings.notch.actions[key]} onChange={(value) => nested('notch', { actions: { ...settings.notch.actions, [key]: value } })} /></div>)}
+        </div></Collapse>
         <div className="setting-line"><div><strong>{t('autoFitHeight')}</strong><p>{t('autoFitHeightBody')}</p></div><Toggle label={t('autoFitHeight')} checked={settings.autoFitHeight} onChange={(value) => patch('autoFitHeight', value)} /></div>
         <div className="setting-line global-shortcut-setting"><div><strong>{t('globalShortcut')}</strong><p>{t('globalShortcutBody')}</p></div><div className="global-shortcut-controls"><button type="button" className="global-shortcut-capture" onKeyDown={captureGlobalShortcut} aria-label={t('globalShortcut')} title={t('globalShortcutBody')}>{shortcutLabel(settings.globalShortcut)}</button><button type="button" className="global-shortcut-reset" onClick={() => void saveGlobalShortcut('CommandOrControl+Shift+T')} title={t('globalShortcutReset')} aria-label={t('globalShortcutReset')}>↺</button></div></div>
         {shortcutError && <p className="form-error global-shortcut-error">{shortcutError}</p>}
-      </section>
-
-      <section className="settings-section extension-server-settings">
-        <div className="settings-title"><PlugZap size={17} /><div><h3>{t('extensionTitle')}</h3><p>{t('extensionBody')}</p></div></div>
-        <div className={`extension-server-state ${extensionServer?.running ? 'extension-server-state--online' : ''}`}>
-          <span />
-          <div><strong><AnimatedText text={extensionServer?.running ? t('extensionServerRunning') : t('extensionServerUnavailable')} /></strong><small>{extensionServer?.running ? `${t('extensionPort')} ${extensionServer.port} · ${extensionServer.connections} ${t('extensionConnections')}` : extensionServer?.error}</small></div>
-        </div>
-        <div className="extension-key-actions">
-          <button className="secondary-button" onClick={() => void revealExtensionKey()}><AnimatedText text={showExtensionKey ? t('extensionHideKey') : t('extensionShowKey')} /></button>
-          <Fade show={showExtensionKey && Boolean(extensionKey)}><button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={t('extensionCopyKey')} aria-label={t('extensionCopyKey')}><Swap id={extensionKeyCopied ? 'copied' : 'copy'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</Swap></button></Fade>
-        </div>
-        <Collapse open={showExtensionKey && Boolean(extensionKey)}><code className="extension-access-key">{extensionKey}</code></Collapse>
-        <Collapse open={Boolean(extensionKeyError)}><p className="form-error">{extensionKeyError}</p></Collapse>
-      </section>
-
-      <section className="settings-section settings-section--sound">
-        <div className="settings-title"><Volume2 size={17} /><div><h3>{t('notificationSound')}</h3><p>{t('notificationSoundBody')}</p></div></div>
+      </SettingsSection>
+      <SettingsSection id="sound" icon={<Volume2 size={17} />} title={t('notificationSound')} body={t('notificationSoundBody')} className="settings-section--sound">
         <label className="field"><span>{t('sound')}</span><CustomSelect value={settings.notifications.sound} ariaLabel={t('notificationSound')} onChange={(value) => { if (value === 'custom' && !settings.notifications.customSoundPath) void chooseSound(); else nested('notifications', { sound: value as NotificationSound }) }} options={soundOptions} /></label>
         <div className="sound-actions">
           <button className="secondary-button" onClick={previewSound}><Play size={14} fill="currentColor" />{t('previewSound')}</button>
@@ -401,25 +403,29 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         </div>
         <Collapse open={Boolean(soundError)}><p className="form-error">{soundError}</p></Collapse>
         <label className="sound-volume"><span>{t('volume')}</span><input type="range" min="0" max="100" value={Math.round(settings.notifications.volume * 100)} onChange={(event) => nested('notifications', { volume: Number(event.target.value) / 100 })} /><strong>{Math.round(settings.notifications.volume * 100)}%</strong></label>
-      </section>
-
-      <section className="settings-section">
-        <div className="settings-title"><BriefcaseBusiness size={17} /><div><h3>{t('workSchedule')}</h3></div></div>
+      </SettingsSection>
+      <h4 className="settings-group">{t('settingsGroupWorkday')}</h4>
+      <SettingsSection id="schedule" icon={<BriefcaseBusiness size={17} />} title={t('workSchedule')}>
+        <div className="setting-line"><div><strong>{t('workDays')}</strong><p>{t('workDaysBody')}</p></div></div>
+        <div className="weekday-picker" role="group" aria-label={t('workDays')}>
+          {[1, 2, 3, 4, 5, 6, 0].map((day) => {
+            const active = settings.workday.days.includes(day)
+            const label = new Intl.DateTimeFormat(uk ? 'uk-UA' : 'en-US', { weekday: 'short' }).format(new Date(2024, 0, 7 + day, 12))
+            return <button key={day} type="button" className={active ? 'active' : ''} aria-pressed={active} onClick={() => nested('workday', { days: active ? settings.workday.days.filter((item) => item !== day) : [...settings.workday.days, day].sort() })}>{label}</button>
+          })}
+        </div>
         <div className="setting-line"><span>{t('startReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('startReminder')} value={settings.workday.startTime} onChange={(value) => nested('workday', { startTime: value })} /><Toggle label={t('startReminder')} checked={settings.workday.startReminder} onChange={(value) => nested('workday', { startReminder: value })} /></div></div>
         <div className="setting-line"><span>{t('endReminder')}</span><div className="setting-inline"><TimeInput className="time-input" ariaLabel={t('endReminder')} value={settings.workday.endTime} onChange={(value) => nested('workday', { endTime: value })} /><Toggle label={t('endReminder')} checked={settings.workday.endReminder} onChange={(value) => nested('workday', { endReminder: value })} /></div></div>
-      </section>
-
-      <section className="settings-section settings-section--accent">
-        <div className="settings-title"><BellRing size={17} /><div><h3>{t('breaks')}</h3><p>{t('breakBody')}</p></div><Toggle label={t('breaks')} checked={settings.breaks.enabled} onChange={(value) => nested('breaks', { enabled: value })} /></div>
+        <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle label={t('idle')} checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
+      </SettingsSection>
+      <SettingsSection id="breaks" icon={<BellRing size={17} />} title={t('breaks')} body={t('breakBody')} control={<Toggle label={t('breaks')} checked={settings.breaks.enabled} onChange={(value) => nested('breaks', { enabled: value })} />} className="settings-section--accent">
         <div className="two-fields">
           <div><span>{t('every')}</span><NumberField value={settings.breaks.everyMinutes} onChange={(value) => nested('breaks', { everyMinutes: value })} suffix={t('minutes')} /></div>
           <div><span>{t('forMinutes')}</span><NumberField value={settings.breaks.durationMinutes} onChange={(value) => nested('breaks', { durationMinutes: value })} suffix={t('minutes')} /></div>
           <div><span>{t('dailyBreakLimit')}</span><NumberField value={settings.breaks.dailyMinutes} onChange={(value) => nested('breaks', { dailyMinutes: value })} suffix={t('minutes')} /></div>
         </div>
-      </section>
-
-      <section className="settings-section settings-section--lunch">
-        <div className="settings-title"><Coffee size={17} /><div><h3>{t('lunch')}</h3><p>{t('lunchBody')}</p></div><Toggle label={t('lunch')} checked={settings.lunch.enabled} onChange={(value) => nested('lunch', { enabled: value })} /></div>
+      </SettingsSection>
+      <SettingsSection id="lunch" icon={<Coffee size={17} />} title={t('lunch')} body={t('lunchBody')} control={<Toggle label={t('lunch')} checked={settings.lunch.enabled} onChange={(value) => nested('lunch', { enabled: value })} />} className="settings-section--lunch">
         <div className="segment-control segment-control--small">
           <button className={settings.lunch.mode === 'clock' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'clock' })}>{t('atTime')}</button>
           <button className={settings.lunch.mode === 'worked' ? 'active' : ''} onClick={() => nested('lunch', { mode: 'worked' })}>{t('afterWork')}</button>
@@ -429,22 +435,33 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <div><span>{t('lunchDuration')}</span><NumberField value={settings.lunch.durationMinutes} onChange={(value) => nested('lunch', { durationMinutes: value })} suffix={t('minutes')} /></div>
         </div>
         <div className="setting-line lunch-counting"><div><strong>{t('lunchIncluded')}</strong><p>{t('lunchIncludedBody')}</p></div><Toggle label={t('lunchIncluded')} checked={settings.lunch.includedInWorkHours} onChange={setLunchCounting} /></div>
-      </section>
-
-      <section className="settings-section">
-        <div className="settings-title"><Palette size={17} /><div><h3>{t('projectPalette')}</h3><p>{t('projectPaletteBody')}</p></div></div>
-        <div className="palette-editor">
+      </SettingsSection>
+      <SettingsSection id="wellness" icon={<Dumbbell size={17} />} title={t('wellness')} body={t('wellnessBody')} control={<Toggle label={t('wellness')} checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} />}>
+        <div className="wellness-list">
+          <AnimatePresence initial={false}>
+          {settings.wellnessActions.map((action) => (
+            <StackItem key={action.id} gap={6}><div className="wellness-item">
+              <Toggle label={settings.locale === 'uk' ? action.labelUk : action.labelEn} checked={action.enabled} onChange={(enabled) => patch('wellnessActions', settings.wellnessActions.map((item) => item.id === action.id ? { ...item, enabled } : item))} />
+              <span>{settings.locale === 'uk' ? action.labelUk : action.labelEn}</span>
+              <button className="icon-button icon-button--quiet" onClick={() => patch('wellnessActions', settings.wellnessActions.filter((item) => item.id !== action.id))} title={t('deleteAction')} aria-label={t('deleteAction')}><Trash2 size={14} /></button>
+            </div></StackItem>
+          ))}
+          </AnimatePresence>
+        </div>
+        <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction} title={t('addAction')} aria-label={t('addAction')}><Plus size={16} /></button></div>
+      </SettingsSection>
+      <h4 className="settings-group">{t('settingsGroupProjects')}</h4>
+      <SettingsSection id="palette" icon={<Palette size={17} />} title={t('projectPalette')} body={t('projectPaletteBody')}>
+        <div className="palette-grid">
           <AnimatePresence initial={false} mode="popLayout">
             {settings.projectColors.map((color) => (
-              <motion.button key={color} layout="position" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={{ duration: 0.18, ease }} className="palette-chip" style={{ '--chip-color': color } as React.CSSProperties} title={t('removeColor')} disabled={settings.projectColors.length <= 1} onClick={() => patch('projectColors', settings.projectColors.filter((item) => item !== color))}><span /><Trash2 size={12} /></motion.button>
+              <motion.button key={color} layout="position" initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.6 }} transition={{ duration: 0.16, ease }} className="palette-swatch" style={{ background: color }} title={`${color.toUpperCase()} · ${t('removeColor')}`} aria-label={t('removeColor')} disabled={settings.projectColors.length <= 1} onClick={() => patch('projectColors', settings.projectColors.filter((item) => item !== color))}><X size={11} /></motion.button>
             ))}
           </AnimatePresence>
-          <motion.div layout="position" transition={{ duration: 0.18, ease }} className="color-adder"><input type="color" value={newColor} aria-label={t('pickColor')} onChange={(event) => setNewColor(event.target.value)} /><button className="icon-button icon-button--accent" onClick={addColor} title={t('addColor')}><Plus size={15} /></button></motion.div>
+          <label className="color-picker__custom palette-add" title={t('addColor')}><input ref={newColorInput} type="color" defaultValue={newColor} aria-label={t('pickColor')} /><span>+</span></label>
         </div>
-      </section>
-
-      <section className="settings-section project-statuses-settings">
-        <div className="settings-title"><Tags size={17} /><div><h3>{t('projectStatuses')}</h3><p>{t('projectStatusesBody')}</p></div></div>
+      </SettingsSection>
+      <SettingsSection id="statuses" icon={<Tags size={17} />} title={t('projectStatuses')} body={t('projectStatusesBody')} className="project-statuses-settings">
         <div className="status-editor-list">
           <AnimatePresence initial={false}>
           {settings.projectStatuses.map((status) => (
@@ -458,10 +475,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <Collapse open={settings.projectStatuses.length === 0}><p className="empty-copy">{t('noStatusesYet')}</p></Collapse>
         </div>
         <div className="action-inputs status-add-row"><input value={newStatusName} maxLength={40} onChange={(event) => setNewStatusName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addStatus() }} placeholder={t('statusName')} /><button className="icon-button icon-button--accent" onClick={addStatus} title={t('addStatus')}><Plus size={16} /></button></div>
-      </section>
-
-      <section className="settings-section project-types-settings">
-        <div className="settings-title"><Shapes size={17} /><div><h3>{t('projectTypes')}</h3><p>{t('projectTypesBody')}</p></div></div>
+      </SettingsSection>
+      <SettingsSection id="types" icon={<Shapes size={17} />} title={t('projectTypes')} body={t('projectTypesBody')} className="project-types-settings">
         <div className="status-editor-list">
           <AnimatePresence initial={false}>
           {settings.projectTypes.map((type) => (
@@ -475,18 +490,29 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
           <Collapse open={settings.projectTypes.length === 0}><p className="empty-copy">{t('noTypesYet')}</p></Collapse>
         </div>
         <div className="action-inputs status-add-row"><input value={newTypeName} maxLength={40} onChange={(event) => setNewTypeName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') addType() }} placeholder={t('typeName')} /><button className="icon-button icon-button--accent" onClick={addType} title={t('addType')}><Plus size={16} /></button></div>
-      </section>
-
-      <section className="settings-section settings-section--ai">
-        <div className="settings-title"><Sparkles size={17} /><div><h3>{t('aiAssistant')}</h3><p>{t('aiAssistantBody')}</p></div><Toggle label={t('aiAssistant')} checked={settings.ai.enabled} onChange={(value) => nested('ai', { enabled: value })} /></div>
+      </SettingsSection>
+      <h4 className="settings-group">{t('settingsGroupIntegrations')}</h4>
+      <SettingsSection id="ai" icon={<Sparkles size={17} />} title={t('aiAssistant')} body={t('aiAssistantBody')} control={<Toggle label={t('aiAssistant')} checked={settings.ai.enabled} onChange={(value) => nested('ai', { enabled: value })} />} className="settings-section--ai">
         <label className="field"><span>{t('aiModel')}</span><CustomSelect value={settings.ai.model} ariaLabel={t('aiModel')} onChange={(value) => nested('ai', { model: value as GeminiModel })} options={modelOptions} /></label>
         <label className="field"><span><KeyRound size={13} /> {t('geminiApiKey')} {settings.ai.hasApiKey && <em>{t('configured')}</em>}</span><div className="api-key-row"><input type="password" value={aiKey} onChange={(event) => setAiKey(event.target.value)} placeholder={settings.ai.hasApiKey ? '••••••••••••••••' : 'AIza…'} /><button className="secondary-button" disabled={!aiKey.trim()} onClick={saveKey}>{t('saveKey')}</button>{settings.ai.hasApiKey && <button className="icon-button icon-button--quiet" title={t('removeKey')} onClick={removeKey}><Trash2 size={14} /></button>}</div></label>
         <Collapse open={Boolean(aiKeyStatus)}><p className="settings-status">{aiKeyStatus}</p></Collapse>
         <p className="security-note">{t('aiSecurity')}</p>
-      </section>
-
-      <section className="settings-section settings-section--backup">
-        <div className="settings-title"><Archive size={17} /><div><h3>{t('backup')}</h3><p>{t('backupBody')}</p></div></div>
+      </SettingsSection>
+      <SettingsSection id="extension" icon={<PlugZap size={17} />} title={t('extensionTitle')} body={t('extensionBody')} className="extension-server-settings">
+        <div className={`extension-server-state ${extensionServer?.running ? 'extension-server-state--online' : ''}`}>
+          <span />
+          <div><strong><AnimatedText text={extensionServer?.running ? t('extensionServerRunning') : t('extensionServerUnavailable')} /></strong><small>{extensionServer?.running ? `${t('extensionPort')} ${extensionServer.port} · ${extensionServer.connections} ${t('extensionConnections')}` : extensionServer?.error}</small></div>
+        </div>
+        <div className="extension-key-actions">
+          <button className="secondary-button" onClick={() => void revealExtensionKey()}><AnimatedText text={showExtensionKey ? t('extensionHideKey') : t('extensionShowKey')} /></button>
+          <Fade show={showExtensionKey && Boolean(extensionKey)}><button className="icon-button icon-button--quiet" onClick={() => void copyExtensionKey()} title={t('extensionCopyKey')} aria-label={t('extensionCopyKey')}><Swap id={extensionKeyCopied ? 'copied' : 'copy'}>{extensionKeyCopied ? <Check size={15} /> : <Copy size={15} />}</Swap></button></Fade>
+        </div>
+        <Collapse open={showExtensionKey && Boolean(extensionKey)}><code className="extension-access-key">{extensionKey}</code></Collapse>
+        <Collapse open={Boolean(extensionKeyError)}><p className="form-error">{extensionKeyError}</p></Collapse>
+      </SettingsSection>
+      <ConvexSyncSettings locale={settings.locale} />
+      <h4 className="settings-group">{t('settingsGroupData')}</h4>
+      <SettingsSection id="backup" icon={<Archive size={17} />} title={t('backup')} body={t('backupBody')} className="settings-section--backup">
         <div className="sound-actions">
           <button className="secondary-button" disabled={backupBusy} onClick={exportBackup}><Download size={14} />{t('backupExport')}</button>
           <button className="secondary-button" disabled={backupBusy} onClick={chooseBackup}><Upload size={14} />{t('backupImport')}</button>
@@ -502,30 +528,8 @@ export function SettingsPage({ snapshot, t, onSnapshot }: SettingsProps): React.
         </div>}</Collapse>
         <Collapse open={Boolean(backupStatus)}><p className="settings-status">{backupStatus}</p></Collapse>
         <p className="security-note">{t('backupSecurity')}</p>
-      </section>
-
-      <section className="settings-section">
-        <div className="settings-title"><Dumbbell size={17} /><div><h3>{t('wellness')}</h3><p>{t('wellnessBody')}</p></div><Toggle label={t('wellness')} checked={settings.wellnessEnabled} onChange={(value) => patch('wellnessEnabled', value)} /></div>
-        <div className="wellness-list">
-          <AnimatePresence initial={false}>
-          {settings.wellnessActions.map((action) => (
-            <StackItem key={action.id} gap={6}><div className="wellness-item">
-              <Toggle label={settings.locale === 'uk' ? action.labelUk : action.labelEn} checked={action.enabled} onChange={(enabled) => patch('wellnessActions', settings.wellnessActions.map((item) => item.id === action.id ? { ...item, enabled } : item))} />
-              <span>{settings.locale === 'uk' ? action.labelUk : action.labelEn}</span>
-              <button className="icon-button icon-button--quiet" onClick={() => patch('wellnessActions', settings.wellnessActions.filter((item) => item.id !== action.id))} title={t('deleteAction')} aria-label={t('deleteAction')}><Trash2 size={14} /></button>
-            </div></StackItem>
-          ))}
-          </AnimatePresence>
-        </div>
-        <div className="action-inputs"><input value={actionUk} onChange={(event) => setActionUk(event.target.value)} placeholder={t('actionUk')} /><input value={actionEn} onChange={(event) => setActionEn(event.target.value)} placeholder={t('actionEn')} /><button className="icon-button icon-button--accent" onClick={addAction} title={t('addAction')} aria-label={t('addAction')}><Plus size={16} /></button></div>
-      </section>
-
-      <section className="settings-section compact-settings">
-        <div className="setting-line"><div><strong>{t('idle')}</strong><p>{t('idleAfter')}</p></div><div className="setting-inline"><NumberField value={settings.idle.thresholdMinutes} onChange={(value) => nested('idle', { thresholdMinutes: value })} suffix={t('minutes')} /><Toggle label={t('idle')} checked={settings.idle.enabled} onChange={(value) => nested('idle', { enabled: value })} /></div></div>
-      </section>
-
-      <ConvexSyncSettings locale={settings.locale} />
-      <section className="app-version"><Info size={14} /><span>{t('appVersion')}</span><strong>{appVersion ? `v${appVersion}` : '…'}</strong></section>
+      </SettingsSection>
+      <AboutSection t={t} appVersion={appVersion} />
 
       <div className={`autosave-indicator autosave-indicator--${saveState}`}><span /><AnimatedText text={saveState === 'saving' ? t('saving') : saveState === 'error' ? t('saveFailed') : t('autosaved')} /></div>
 

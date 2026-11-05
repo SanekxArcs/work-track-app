@@ -1,4 +1,4 @@
-import { normalizeActivityRanges, type ActivityTaskImport } from '../shared/activity-drafts'
+import { normalizeTimeRanges, type TaskImportEntry } from '../shared/task-import'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { dailyRestBalance, restElapsed, restRemaining } from '../shared/rest'
@@ -65,11 +65,18 @@ export const defaultSettings: AppSettings = {
   globalShortcut: 'CommandOrControl+Shift+T',
   notchEnabled: false,
   autoFitHeight: false,
+  notch: {
+    openOn: 'hover',
+    hoverDelayMs: 400,
+    hideSeconds: 10,
+    actions: { day: true, lunch: true, break: true, parallel: true, switch: true, hide: true }
+  },
   workday: {
     startReminder: true,
     startTime: '09:00',
     endReminder: true,
-    endTime: '18:00'
+    endTime: '18:00',
+    days: [1, 2, 3, 4, 5]
   },
   breaks: {
     enabled: true,
@@ -341,6 +348,10 @@ function deepSettings(raw?: string): AppSettings {
   const storedIdle: Record<string, unknown> = isRecord(stored.idle) ? stored.idle : {}
   const storedNotifications: Record<string, unknown> = isRecord(stored.notifications) ? stored.notifications : {}
   const storedAi: Record<string, unknown> = isRecord(stored.ai) ? stored.ai : {}
+  const storedNotch: Record<string, unknown> = isRecord(stored.notch) ? stored.notch : {}
+  const storedNotchActions: Record<string, unknown> = isRecord(storedNotch.actions) ? storedNotch.actions : {}
+  const notchAction = (key: keyof AppSettings['notch']['actions']): boolean =>
+    typeof storedNotchActions[key] === 'boolean' ? storedNotchActions[key] as boolean : defaultSettings.notch.actions[key]
   const sounds = ['system', 'soft', 'bell', 'pop', 'custom'] as const
   const models = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const
   const colors = Array.isArray(stored.projectColors)
@@ -369,11 +380,24 @@ function deepSettings(raw?: string): AppSettings {
     globalShortcut: isGlobalShortcut(stored.globalShortcut) ? stored.globalShortcut : defaultSettings.globalShortcut,
     notchEnabled: typeof stored.notchEnabled === 'boolean' ? stored.notchEnabled : defaultSettings.notchEnabled,
     autoFitHeight: typeof stored.autoFitHeight === 'boolean' ? stored.autoFitHeight : defaultSettings.autoFitHeight,
+    notch: {
+      openOn: storedNotch.openOn === 'click' ? 'click' : 'hover',
+      hoverDelayMs: typeof storedNotch.hoverDelayMs === 'number' && Number.isFinite(storedNotch.hoverDelayMs)
+        ? Math.min(10_000, Math.max(0, Math.round(storedNotch.hoverDelayMs)))
+        : defaultSettings.notch.hoverDelayMs,
+      hideSeconds: typeof storedNotch.hideSeconds === 'number' && Number.isFinite(storedNotch.hideSeconds)
+        ? Math.min(600, Math.max(1, Math.round(storedNotch.hideSeconds)))
+        : defaultSettings.notch.hideSeconds,
+      actions: { day: notchAction('day'), lunch: notchAction('lunch'), break: notchAction('break'), parallel: notchAction('parallel'), switch: notchAction('switch'), hide: notchAction('hide') }
+    },
     workday: {
       startReminder: typeof storedWorkday.startReminder === 'boolean' ? storedWorkday.startReminder : defaultSettings.workday.startReminder,
       startTime: isClockTime(storedWorkday.startTime) ? storedWorkday.startTime : defaultSettings.workday.startTime,
       endReminder: typeof storedWorkday.endReminder === 'boolean' ? storedWorkday.endReminder : defaultSettings.workday.endReminder,
-      endTime: isClockTime(storedWorkday.endTime) ? storedWorkday.endTime : defaultSettings.workday.endTime
+      endTime: isClockTime(storedWorkday.endTime) ? storedWorkday.endTime : defaultSettings.workday.endTime,
+      days: Array.isArray(storedWorkday.days)
+        ? [...new Set(storedWorkday.days.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6))].sort()
+        : [...defaultSettings.workday.days]
     },
     breaks: {
       enabled: typeof storedBreaks.enabled === 'boolean' ? storedBreaks.enabled : defaultSettings.breaks.enabled,
@@ -1467,12 +1491,12 @@ export class WorkBuddyDatabase {
     return this.getSnapshot()
   }
 
-  hasActivityImport(key:string):boolean {
+  hasTaskImport(key:string):boolean {
     return Boolean(this.db.prepare('SELECT task_id FROM activity_task_imports WHERE source_key=?').get(key))
   }
 
-  /** Import only explicitly reviewed, closed ranges. Never starts a timer or workday. */
-  recordActivityTasks(day:string,entries:ActivityTaskImport[]):{snapshot:AppSnapshot;taskIds:string[];created:number} {
+  /** Imports closed, reviewed ranges from an external producer as stopped tasks. Never starts a timer or workday. */
+  importTasks(day:string,entries:TaskImportEntry[]):{snapshot:AppSnapshot;taskIds:string[];created:number} {
     const now=Date.now(),[dayStart,dayEnd]=localDayBounds(localDateTimestamp(day))
     if(!Array.isArray(entries)||!entries.length||entries.length>50)throw new Error('Review between 1 and 50 entries')
     const keys=new Set<string>()
@@ -1480,7 +1504,7 @@ export class WorkBuddyDatabase {
       if(!entry||typeof entry.key!=='string'||!/^[a-f0-9]{64}$/.test(entry.key)||keys.has(entry.key)||typeof entry.notes!=='string'||!entry.notes.trim()||entry.notes.length>2000||!Array.isArray(entry.intervals)||!entry.intervals.length||entry.intervals.length>2000)throw new Error('Invalid reviewed work entry')
       keys.add(entry.key)
       if(entry.projectId!==null&&!this.db.prepare('SELECT id FROM projects WHERE id=? AND archived=0').get(entry.projectId))throw new Error('Choose an existing active project')
-      const intervals=normalizeActivityRanges(entry.intervals)
+      const intervals=normalizeTimeRanges(entry.intervals)
       if(intervals.some(r=>r.start<dayStart||r.end>dayEnd||r.end>now))throw new Error('Work ranges must be in the reviewed day and in the past')
       return {...entry,notes:entry.notes.trim(),intervals}
     })
@@ -1492,10 +1516,10 @@ export class WorkBuddyDatabase {
         const previous=this.db.prepare('SELECT t.id AS task_id,t.notes,t.project_id FROM activity_task_imports a JOIN tasks t ON t.id=a.task_id WHERE a.source_key=?').get(entry.key) as {task_id:string;notes:string;project_id:string|null}|undefined
         if(previous){
           // Replaying the same reviewed range is idempotent; changing it must go through the task editor.
-          if(previous.notes!==entry.notes||previous.project_id!==entry.projectId)throw new Error('This activity was already recorded as a task. Edit that task instead.')
+          if(previous.notes!==entry.notes||previous.project_id!==entry.projectId)throw new Error('This period was already imported as a task. Edit that task instead.')
           taskIds.push(previous.task_id);continue
         }
-        for(const range of entry.intervals)if(overlap.get(range.end,now,range.start)||restOverlap.get(range.end,now,range.start))throw new Error('Tracked work or a break now overlaps this activity. Refresh and review again.')
+        for(const range of entry.intervals)if(overlap.get(range.end,now,range.start)||restOverlap.get(range.end,now,range.start))throw new Error('Tracked work or a break overlaps this period. Refresh and review again.')
         const id=randomUUID()
         this.db.prepare("INSERT INTO tasks (id,title,project_id,planned_task_id,notes,tags_json,status,created_at,updated_at) VALUES (?,'',?,NULL,?,'[]','stopped',?,?)").run(id,entry.projectId,entry.notes,entry.intervals[0].start,now)
         const insert=this.db.prepare('INSERT INTO time_intervals (id,task_id,started_at,ended_at) VALUES (?,?,?,?)')

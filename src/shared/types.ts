@@ -4,6 +4,18 @@ export type StartMode = 'parallel' | 'switch'
 export type RestType = 'lunch' | 'break'
 export type RestStatus = 'running' | 'paused' | 'completed'
 export type NotificationSound = 'system' | 'soft' | 'bell' | 'pop' | 'custom'
+/** How the collapsed notch pill expands: after hovering for a while, or only on click. */
+export type NotchOpenMode = 'hover' | 'click'
+/** Icon-only quick actions shown inside the collapsed notch pill. */
+export type NotchAction = 'day' | 'lunch' | 'break' | 'parallel' | 'switch' | 'hide'
+export interface NotchSettings {
+  openOn: NotchOpenMode
+  /** How long the pointer must rest on the pill before it opens (hover mode only). */
+  hoverDelayMs: number
+  /** How long the "hide" quick action tucks the notch away so whatever sits under it can be clicked. */
+  hideSeconds: number
+  actions: Record<NotchAction, boolean>
+}
 export type GeminiModel =
   | 'gemini-3.7-flash'
   | 'gemini-3.6-flash'
@@ -140,11 +152,14 @@ export interface AppSettings {
   notchEnabled: boolean
   /** Resizes the window to fit the page whenever its content changes. */
   autoFitHeight: boolean
+  notch: NotchSettings
   workday: {
     startReminder: boolean
     startTime: string
     endReminder: boolean
     endTime: string
+    /** Weekdays the start-of-day reminder applies to, as JS getDay() values (0 = Sunday). */
+    days: number[]
   }
   breaks: {
     enabled: boolean
@@ -352,24 +367,12 @@ export interface ExtensionServerStatus {
 }
 
 export interface WorkBuddyApi {
-  activityLearning:(action:'projects'|'link'|'saveRule'|'deleteRule'|'note'|'complete'|'preview'|'generate'|'confirm',input?:unknown)=>Promise<import('./activity-learning').ActivityLearningResponse>
-  activityAuto:(action:import('./activity-auto').AutoTrackingAction,input?:unknown)=>Promise<import('./activity-auto').AutoTrackingResponse>
-  acceptActivityDrafts: (input:{day:string;drafts:import('./activity-drafts').ActivityDraft[]}) => Promise<{snapshot:AppSnapshot;taskIds:string[];created:number}>
-  getActivityDay: (day:string) => Promise<import('./activity').ActivityDay>
-  configureActivity: (config:import('./activity').ActivityConfig,writeKey?:string,readKey?:string) => Promise<import('./activity').ActivityStatus>
-  importActivityConnection: () => Promise<import('./activity').ActivityStatus|null>
-  syncActivityNow: () => Promise<import('./activity').ActivityStatus>
-  refreshActivity: (day:string) => Promise<import('./activity').ActivityDay>
-  assignActivity: (value:import('./activity').ActivityAssignment) => Promise<void>
-  rememberActivityProject: (rule:import('./activity-review').ActivityRule) => Promise<void>
-  forgetActivityRules: () => Promise<void>
-  deleteActivityDay: (day:string) => Promise<void>
-  previewActivityRecap: (day:string) => Promise<{id:string;review:ReturnType<typeof import('./activity-review').activityReview>}>
-  generateActivityRecap: (previewId:string) => Promise<{summary:string}>
   getConvexSyncStatus: () => Promise<import('./convex-sync').ConvexSyncStatus>
   configureConvexSync: (config: import('./convex-sync').ConvexSyncConfig, key?: string) => Promise<import('./convex-sync').ConvexSyncStatus>
   syncConvexNow: () => Promise<import('./convex-sync').ConvexSyncStatus>
   getAppVersion: () => Promise<string>
+  /** Opens a trusted https link in the system browser; unknown hosts are refused by the main process. */
+  openExternal: (url: string) => Promise<void>
   getSnapshot: () => Promise<AppSnapshot>
   getHistory: (days?: number) => Promise<HistoryDay[]>
   getDaySnapshot: (date: string) => Promise<AppSnapshot>
@@ -421,12 +424,15 @@ export interface WorkBuddyApi {
   transcribeVoice: (input: VoiceInput) => Promise<string>
   summarizeDay: () => Promise<AiDaySummary>
   notify: (input: NotificationInput) => Promise<void>
-  setWindowMode: (mode: WindowMode, rows?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
+  /** For the collapsed notch, pillWidth is the painted pill width the window must fit (plus its flared corners). */
+  setWindowMode: (mode: WindowMode, rows?: number, pillWidth?: number) => Promise<'top' | 'bottom' | 'left' | 'right' | null>
   /** Drags the notch along the top or bottom edge; the main process follows the cursor. */
   dragNotch: (phase: 'start' | 'move' | 'end') => Promise<void>
-  setNotchSurface:(rect:{x:number;y:number;width:number;height:number;radius?:number})=>Promise<void>
+  setNotchSurface: (rect: { x: number; y: number; width: number; height: number; radius?: number }) => Promise<void>
   onNotchEdge:(callback:(edge:'top'|'bottom')=>void)=>()=>void
   onNotchTravel: (callback: (hidden: boolean) => void) => () => void
+  /** Whether the cursor is over the open notch, watched by the main process so leaving always registers. */
+  onNotchPointer: (callback: (inside: boolean) => void) => () => void
   setWindowHeight: (height: number) => Promise<void>
   setWindowEditor: (open: boolean) => Promise<void>
   fitWindowToContent: (height: number) => Promise<void>
